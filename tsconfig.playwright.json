@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "strict": true,
+    "types": ["node"]
+  },
+  "include": ["playwright.config.ts", "playwright.cloudflare-check.config.ts", "e2e/**/*.ts"]
+}

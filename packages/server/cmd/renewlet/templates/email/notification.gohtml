@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="{{.Lang}}">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <title>{{.Title}}</title>
+  <style>
+    :root { color-scheme: light dark; supported-color-schemes: light dark; }
+    body, table, td, p, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    @media screen and (max-width: 620px) {
+      .email-container { width: 100% !important; max-width: 100% !important; }
+      .email-px { padding-left: 18px !important; padding-right: 18px !important; }
+      .email-stack { display: block !important; width: 100% !important; text-align: left !important; }
+      .email-stack-pad { padding-top: 6px !important; }
+      .email-hide-mobile { display: none !important; }
+    }
+    @media (prefers-color-scheme: dark) {
+      .email-bg { background-color: #111827 !important; }
+      .email-card { background-color: #182230 !important; border-color: #334155 !important; }
+      .email-text { color: #F8FAFC !important; }
+      .email-muted { color: #CBD5E1 !important; }
+      .email-panel { background-color: #1F2937 !important; border-color: #334155 !important; }
+      .email-rule { border-color: #334155 !important; }
+    }
+  </style>
+</head>
+<body class="email-bg" style="margin:0; padding:0; background-color:{{.Theme.Background}}; color:{{.Theme.Text}}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  {{/* 隐藏 preheader 用零宽字符填充，防止部分客户端把正文第一行拼进收件箱摘要。 */}}
+  <div style="display:none; font-size:1px; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden; mso-hide:all;">{{.Preheader}}&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;</div>
+  <center class="email-bg" style="width:100%; background-color:{{.Theme.Background}};">
+    {{/* 邮件布局继续使用 table，是为了兼容 Outlook/老客户端，不要替换成 flex/grid。 */}}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse; background-color:{{.Theme.Background}};">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <table role="presentation" class="email-container email-card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; border-collapse:separate; border-spacing:0; background-color:{{.Theme.Surface}}; border:1px solid {{.Theme.Border}}; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(15,23,42,0.08);">
+            <tr>
+              <td height="4" style="height:4px; font-size:0; line-height:0; background-color:{{.Theme.Primary}};">&nbsp;</td>
+            </tr>
+            <tr>
+              <td class="email-px email-rule" style="padding:18px 28px 16px 28px; border-bottom:1px solid {{.Theme.Border}};">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
+                  <tr>
+                    <td align="left" valign="middle" style="vertical-align:middle;">
+                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+                        <tr>
+                          <td width="28" height="28" align="center" valign="middle" style="width:28px; height:28px; border-radius:7px; background-color:{{.Theme.PrimarySoft}}; color:{{.Theme.Primary}}; font-size:14px; font-weight:800; line-height:28px;">R</td>
+                          <td valign="middle" class="email-text" style="padding-left:10px; color:{{.Theme.Text}}; font-size:16px; font-weight:800; line-height:22px;">Renewlet</td>
+                        </tr>
+                      </table>
+                    </td>
+                    <td align="right" valign="middle" class="email-muted" style="vertical-align:middle; color:{{.Theme.Muted}}; font-size:12px; font-weight:600; line-height:18px;">{{.Copy.BrandTagline}}</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td class="email-px" style="padding:22px 28px 8px 28px;">
+                <p style="margin:0 0 7px 0; color:{{.Theme.Primary}}; font-size:13px; font-weight:700; line-height:18px;">{{.StatusLabel}}</p>
+                <h1 class="email-text" style="margin:0; color:{{.Theme.Text}}; font-size:22px; font-weight:800; line-height:29px;">{{.Title}}</h1>
+                {{if .SummaryRows}}
+                <p class="email-muted" style="margin:11px 0 0 0; color:{{.Theme.Muted}}; font-size:13px; line-height:20px;">{{range $index, $row := .SummaryRows}}{{if $index}} &middot; {{end}}{{$row.Label}}: <strong class="email-text" style="color:{{$.Theme.Text}}; font-weight:700;">{{$row.Value}}</strong>{{end}}</p>
+                {{end}}
+              </td>
+            </tr>
+            {{if .HasGroups}}
+              {{range .Groups}}
+            <tr>
+              <td class="email-px" style="padding:14px 28px 0 28px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-rule" style="width:100%; border-collapse:collapse; border-top:1px solid {{$.Theme.Border}};">
+                  <tr>
+                    <td style="padding:13px 0 7px 0;">
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
+                        <tr>
+                          <td align="left" class="email-text" style="color:{{$.Theme.Text}}; font-size:14px; font-weight:800; line-height:21px;">{{.Label}}</td>
+                          <td align="right" class="email-muted" style="color:{{$.Theme.Muted}}; font-size:12px; font-weight:700; line-height:18px;">{{.Count}}</td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                  {{range .Items}}
+                  <tr>
+                    <td class="email-rule" style="padding:11px 0; border-top:1px solid {{$.Theme.Border}};">
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
+                        <tr>
+                          <td width="45%" valign="top" style="width:45%; vertical-align:top; padding-right:14px;">
+                            <p class="email-text" style="margin:0; color:{{$.Theme.Text}}; font-size:15px; font-weight:800; line-height:21px;">{{.Name}}</p>
+                            <p class="email-muted" style="margin:4px 0 0 0; color:{{$.Theme.Muted}}; font-size:12px; line-height:18px;">{{.DateLabel}} · {{.TargetDate}}</p>
+                          </td>
+                          <td width="30%" valign="top" class="email-stack email-stack-pad" style="width:30%; vertical-align:top; padding-right:12px;">
+                            <p style="margin:0; color:{{.Accent.Text}}; font-size:13px; font-weight:700; line-height:19px;">{{.Detail}}</p>
+                          </td>
+                          <td width="25%" align="right" valign="top" class="email-stack email-stack-pad" style="width:25%; vertical-align:top; text-align:right; white-space:nowrap;">
+                            <p class="email-text" style="margin:0; color:{{$.Theme.Text}}; font-size:15px; font-weight:800; line-height:21px;">{{.Amount}} {{.Currency}}</p>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                  {{end}}
+                </table>
+              </td>
+            </tr>
+              {{end}}
+            {{else}}
+            <tr>
+              <td class="email-px" style="padding:16px 28px 0 28px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-panel" style="width:100%; border-collapse:separate; border-spacing:0; background-color:{{.Theme.SurfaceMuted}}; border:1px solid {{.Theme.Border}}; border-radius:8px;">
+                  <tr>
+                    <td style="padding:16px 18px;">
+                      <p class="email-muted" style="margin:0 0 7px 0; color:{{.Theme.Muted}}; font-size:12px; font-weight:700; line-height:18px;">{{.Copy.Message}}</p>
+                      <p class="email-text" style="margin:0; color:{{.Theme.Text}}; font-size:15px; line-height:24px;">{{range $index, $line := .ContentLines}}{{if $index}}<br>{{end}}{{$line}}{{end}}</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            {{end}}
+            {{if .ShowCTA}}
+            <tr>
+              <td class="email-px" style="padding:20px 28px 0 28px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="left" style="border-collapse:separate; border-spacing:0;">
+                  <tr>
+                    <td align="center" valign="middle" bgcolor="{{.Theme.Primary}}" style="background-color:{{.Theme.Primary}}; border-radius:8px;">
+                      <a href="{{.CTAURL}}" style="display:inline-block; padding:0 18px; color:{{.Theme.PrimaryText}}; font-size:14px; font-weight:800; line-height:44px; text-decoration:none;">{{.CTALabel}}</a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            {{end}}
+            <tr>
+              <td class="email-px" style="padding:20px 28px 26px 28px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-rule" style="width:100%; border-collapse:collapse; border-top:1px solid {{.Theme.Border}};">
+                  <tr>
+                    <td class="email-muted" style="padding-top:13px; color:{{.Theme.Muted}}; font-size:12px; line-height:19px;">
+                      <p style="margin:0;"><strong class="email-text" style="color:{{.Theme.Text}}; font-weight:700;">{{.Copy.GeneratedAt}}</strong> {{.Timestamp}}</p>
+                      <p style="margin:6px 0 0 0;">{{.Copy.Footer}}</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+</html>

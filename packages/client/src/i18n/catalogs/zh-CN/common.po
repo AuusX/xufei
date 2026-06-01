@@ -1,0 +1,439 @@
+msgid ""
+msgstr ""
+"POT-Creation-Date: 2026-05-25 00:00+0800\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: @lingui/cli\n"
+"Language: zh-CN\n"
+"Project-Id-Version: \n"
+"Report-Msgid-Bugs-To: \n"
+"PO-Revision-Date: \n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Plural-Forms: \n"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:32
+msgid "common.options"
+msgstr "{count} 个选项"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:31
+msgid "common.items"
+msgstr "{count} 项"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:33
+msgid "common.optionDisabled"
+msgstr "{label}（已禁用）"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:50
+msgid "locale.enUS"
+msgstr "English"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:66
+msgid "theme.hexColor"
+msgstr "Hex 颜色"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:17
+msgid "common.uploading"
+msgstr "上传中…"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:18
+msgid "common.uploadFailed"
+msgstr "上传失败"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:55
+msgid "time.noon"
+msgstr "中午"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:49
+msgid "locale.zhCN"
+msgstr "中文"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:63
+msgid "theme.variant"
+msgstr "主题风格"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:69
+msgid "theme.lightness"
+msgstr "亮度 (L)"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:22
+msgid "common.today"
+msgstr "今天"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:37
+msgid "nav.dashboard"
+msgstr "仪表盘"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:86
+msgid "theme.lavender.description"
+msgstr "优雅浪漫的紫色调"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:9
+msgid "common.save"
+msgstr "保存"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:11
+msgid "common.saving"
+msgstr "保存中..."
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:56
+msgid "time.evening"
+msgstr "傍晚"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:6
+msgid "common.close"
+msgstr "关闭"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:30
+msgid "common.dismissNotification"
+msgstr "关闭通知"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:28
+msgid "common.builtIn"
+msgstr "内置"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:53
+msgid "time.minute"
+msgstr "分"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:42
+msgid "header.toggleTheme"
+msgstr "切换主题"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:12
+msgid "common.creating"
+msgstr "创建中..."
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:7
+msgid "common.delete"
+msgstr "删除"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:10
+msgid "common.loading"
+msgstr "加载中..."
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:5
+msgid "common.cancel"
+msgstr "取消"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:25
+msgid "common.enable"
+msgstr "启用"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:36
+msgid "common.backToTop"
+msgstr "回到顶部"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:23
+msgid "common.enabled"
+msgstr "已启用"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:44
+msgid "header.logoutSuccessTitle"
+msgstr "已退出登录"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:70
+msgid "theme.quickPick"
+msgstr "快速选择"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:51
+msgid "reminder.days"
+msgstr "提前 {days} 天"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:15
+msgid "common.searchPlaceholder"
+msgstr "搜索..."
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:20
+msgid "common.none"
+msgstr "无"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:39
+msgid "nav.calendar"
+msgstr "日历"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:83
+msgid "theme.sunset.name"
+msgstr "日落橙"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:54
+msgid "time.morning"
+msgstr "早晨"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:52
+msgid "time.hour"
+msgstr "时"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:59
+msgid "theme.mode"
+msgstr "明暗模式"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:57
+msgid "time.night"
+msgstr "晚上"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:19
+msgid "common.noData"
+msgstr "暂无数据"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:45
+msgid "header.logoutSuccessDescription"
+msgstr "期待您的再次访问"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:24
+msgid "common.disabled"
+msgstr "未启用"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:21
+msgid "common.unknown"
+msgstr "未知"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:72
+msgid "theme.color.orange"
+msgstr "橙"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:13
+msgid "common.searching"
+msgstr "正在搜索..."
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:82
+msgid "theme.ocean.description"
+msgstr "沉稳优雅的海洋蓝"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:16
+msgid "common.noMatches"
+msgstr "没有匹配结果"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:60
+msgid "theme.light"
+msgstr "浅色"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:81
+msgid "theme.ocean.name"
+msgstr "深海蓝"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:61
+msgid "theme.dark"
+msgstr "深色"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:80
+msgid "theme.emerald.description"
+msgstr "清新自然的翡翠色调"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:84
+msgid "theme.sunset.description"
+msgstr "温暖活力的日落色"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:87
+msgid "theme.rose.name"
+msgstr "玫瑰粉"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:26
+msgid "common.disable"
+msgstr "禁用"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:78
+msgid "theme.color.pink"
+msgstr "粉"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:88
+msgid "theme.rose.description"
+msgstr "精致柔和的玫瑰色"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:71
+msgid "theme.color.red"
+msgstr "红"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:77
+msgid "theme.color.purple"
+msgstr "紫"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:40
+msgid "nav.statistics"
+msgstr "统计"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:74
+msgid "theme.color.green"
+msgstr "绿"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:8
+msgid "common.edit"
+msgstr "编辑"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:79
+msgid "theme.emerald.name"
+msgstr "翡翠绿"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:64
+msgid "theme.custom"
+msgstr "自定义"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:67
+msgid "theme.hue"
+msgstr "色相 (H)"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:76
+msgid "theme.color.blue"
+msgstr "蓝"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:85
+msgid "theme.lavender.name"
+msgstr "薰衣草紫"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:38
+msgid "nav.subscriptions"
+msgstr "订阅列表"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:4
+msgid "app.tagline"
+msgstr "订阅管理助手"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:41
+msgid "nav.settings"
+msgstr "设置"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:14
+msgid "common.selectPlaceholder"
+msgstr "请选择"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:62
+msgid "theme.system"
+msgstr "跟随系统"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:34
+msgid "common.backToLogin"
+msgstr "返回登录"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:35
+msgid "common.backHome"
+msgstr "返回首页"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:48
+msgid "notFound.home"
+msgstr "返回首页"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:46
+msgid "header.logoutFailedTitle"
+msgstr "退出失败"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:43
+msgid "header.logout"
+msgstr "退出登录"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:65
+msgid "theme.customDescription"
+msgstr "选择你喜欢的颜色"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:29
+msgid "common.notifications"
+msgstr "通知"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:58
+msgid "time.notificationAria"
+msgstr "通知时间，当前 {time}"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:27
+msgid "common.configure"
+msgstr "配置"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:75
+msgid "theme.color.cyan"
+msgstr "青"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:47
+msgid "notFound.title"
+msgstr "页面未找到"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:68
+msgid "theme.saturation"
+msgstr "饱和度 (S)"
+
+#. js-lingui-explicit-id
+#: src/i18n/descriptors/common.ts:73
+msgid "theme.color.yellow"
+msgstr "黄"

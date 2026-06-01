@@ -1,0 +1,37 @@
+services:
+  web:
+    image: ghcr.io/zhiyingzzhou/renewlet:latest
+    environment:
+      GOMEMLIMIT: ${GOMEMLIMIT:-128MiB}
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      PB_ENCRYPTION_KEY: ${PB_ENCRYPTION_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TLS: ${SMTP_TLS:-false}
+      BACKUPS_CRON: ${BACKUPS_CRON:-}
+      BACKUPS_CRON_MAX_KEEP: ${BACKUPS_CRON_MAX_KEEP:-3}
+      NOTIFICATION_SCHEDULER_ENABLED: ${NOTIFICATION_SCHEDULER_ENABLED:-true}
+      CRON_SECRET: ${CRON_SECRET:-}
+      NOTIFICATION_SCHEDULER_CRON: "${NOTIFICATION_SCHEDULER_CRON:-* * * * *}"
+      NOTIFICATION_CRON_WINDOW_MINUTES: ${NOTIFICATION_CRON_WINDOW_MINUTES:-2}
+      NOTIFICATION_MAX_RETRIES: ${NOTIFICATION_MAX_RETRIES:-3}
+      NOTIFICATION_STALE_SENDING_MINUTES: ${NOTIFICATION_STALE_SENDING_MINUTES:-15}
+    volumes:
+      - renewlet-pb-data:/pb_data
+    ports:
+      - "${PORT:-3000}:3000"
+    healthcheck:
+      test: [ "CMD", "/renewlet", "healthcheck" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    mem_limit: ${MEM_LIMIT:-256m}
+    restart: unless-stopped
+
+volumes:
+  renewlet-pb-data:

@@ -1,0 +1,152 @@
+import { z } from "zod";
+import {
+  NOTIFICATION_CHANNELS,
+  REPEAT_REMINDER_INTERVALS,
+  REPEAT_REMINDER_WINDOWS,
+  SUBSCRIPTION_STATUSES,
+  isValidDateOnly,
+  isValidLocalTime,
+  type DateOnly,
+  type LocalTime,
+} from "../runtime";
+import { okResponseSchema } from "./common";
+import { settingsUpdateBodySchema } from "./settings";
+
+export const notificationChannelSchema = z.enum(NOTIFICATION_CHANNELS);
+
+export const notificationsTestBodySchema = z.object({
+  channel: notificationChannelSchema,
+  settings: settingsUpdateBodySchema.optional(),
+}).strict();
+
+export const notificationsRunBodySchema = z.object({
+  force: z.boolean().optional(),
+  settings: settingsUpdateBodySchema.optional(),
+}).strict();
+
+const dateOnlyResponseSchema = z.string().refine(isValidDateOnly, "Invalid date").transform((value) => value as DateOnly);
+const localTimeResponseSchema = z.string().refine(isValidLocalTime, "Invalid local time").transform((value) => value as LocalTime);
+
+// 调度历史必须同时保存本地墙钟时间和 UTC instant：前者给用户解释，后者给排序/审计。
+export const localScheduleOccurrenceResponseSchema = z.object({
+  scheduledLocalDate: dateOnlyResponseSchema,
+  scheduledLocalTime: localTimeResponseSchema,
+  timeZone: z.string().min(1),
+  scheduledInstantUtc: z.string().min(1),
+}).strict();
+
+export const notificationContentItemResponseSchema = z.object({
+  type: z.enum(["renewal", "trial", "expired"]),
+  subscriptionId: z.string(),
+  name: z.string(),
+  price: z.number(),
+  currency: z.string(),
+  status: z.enum(SUBSCRIPTION_STATUSES),
+  targetDate: dateOnlyResponseSchema,
+  reminderDays: z.number().int().nonnegative(),
+  daysUntil: z.number().int(),
+  repeatReminder: z.object({
+    interval: z.enum(REPEAT_REMINDER_INTERVALS),
+    window: z.enum(REPEAT_REMINDER_WINDOWS),
+  }).strict().optional(),
+}).strict();
+
+export const upcomingNotificationBatchResponseSchema = localScheduleOccurrenceResponseSchema.extend({
+  items: z.array(notificationContentItemResponseSchema),
+}).strict();
+
+export const channelFailureResponseSchema = z.object({
+  channel: notificationChannelSchema,
+  error: z.string(),
+}).strict();
+
+export const jobChannelsResponseSchema = z.object({
+  attempted: z.array(notificationChannelSchema),
+  succeeded: z.array(notificationChannelSchema),
+  failed: z.array(channelFailureResponseSchema),
+}).strict();
+
+export const cronJobResultResponseSchema = z.object({
+  source: z.literal("cron"),
+  reason: z.string().nullable(),
+  force: z.boolean(),
+  windowMinutes: z.number().int().nonnegative(),
+  triggeredAtUtc: z.string(),
+  schedule: localScheduleOccurrenceResponseSchema,
+  settings: z.object({
+    timezone: z.string(),
+    locale: z.string(),
+    notificationTimeLocal: localTimeResponseSchema,
+    enabledChannels: z.array(notificationChannelSchema),
+    showExpired: z.boolean(),
+  }).strict(),
+  message: z.object({
+    title: z.string(),
+    content: z.string(),
+    timestamp: z.string(),
+    hasPayload: z.boolean(),
+    items: z.array(notificationContentItemResponseSchema),
+  }).strict(),
+  channels: jobChannelsResponseSchema,
+}).strict();
+
+export const emptyJobResultResponseSchema = z.object({}).strict();
+export const notificationJobResultResponseSchema = z.union([cronJobResultResponseSchema, emptyJobResultResponseSchema]);
+export const notificationHistoryStatusSchema = z.enum(["all", "sent", "failed", "skipped", "sending"]);
+export const notificationJobStatusSchema = z.enum(["pending", "sending", "sent", "failed", "skipped"]);
+
+export const notificationHistoryJobResponseSchema = z.object({
+  id: z.string(),
+  scheduledLocalDate: dateOnlyResponseSchema,
+  scheduledLocalTime: localTimeResponseSchema,
+  timeZone: z.string(),
+  scheduledInstantUtc: z.string(),
+  status: notificationJobStatusSchema,
+  attempts: z.number().int().nonnegative(),
+  lastError: z.string().nullable(),
+  result: notificationJobResultResponseSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).strict();
+
+export const notificationHistoryResponseSchema = z.object({
+  summary: z.object({
+    nextCheck: localScheduleOccurrenceResponseSchema,
+    nextContentBatch: upcomingNotificationBatchResponseSchema.nullable(),
+    blockers: z.array(z.string()),
+    enabledChannels: z.array(notificationChannelSchema),
+    upcomingDays: z.number().int().nonnegative(),
+    latestJob: notificationHistoryJobResponseSchema.nullable(),
+    latestFailedJob: notificationHistoryJobResponseSchema.nullable(),
+  }).strict(),
+  upcoming: z.array(upcomingNotificationBatchResponseSchema),
+  history: z.object({
+    jobs: z.array(notificationHistoryJobResponseSchema),
+    status: notificationHistoryStatusSchema,
+    limit: z.number().int().nonnegative(),
+    offset: z.number().int().nonnegative(),
+    hasMore: z.boolean(),
+  }).strict(),
+}).strict();
+
+export const notificationsTestResponseSchema = okResponseSchema;
+export const notificationRunSkippedResponseSchema = z.object({
+  ok: z.literal(true),
+  sent: z.literal(false),
+  reason: z.literal("no_due_items"),
+}).strict();
+export const notificationRunSentResponseSchema = z.object({
+  ok: z.literal(true),
+  sent: z.literal(true),
+  summary: jobChannelsResponseSchema,
+}).strict();
+export const notificationRunResponseSchema = z.discriminatedUnion("sent", [
+  notificationRunSkippedResponseSchema,
+  notificationRunSentResponseSchema,
+]);
+
+export type NotificationHistoryStatusFilter = z.infer<typeof notificationHistoryStatusSchema>;
+export type NotificationHistoryJob = z.infer<typeof notificationHistoryJobResponseSchema>;
+export type UpcomingNotificationBatch = z.infer<typeof upcomingNotificationBatchResponseSchema>;
+export type NotificationHistoryResponse = z.infer<typeof notificationHistoryResponseSchema>;
+export type NotificationJobResult = z.infer<typeof notificationJobResultResponseSchema>;

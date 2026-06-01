@@ -1,0 +1,76 @@
+import { act, renderHook } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_SETTINGS } from "@/types/subscription";
+import { useNotificationTest } from "./use-notification-test";
+
+type ApiFetchMock = (
+  url: string,
+  responseSchema: unknown,
+  init?: RequestInit,
+) => Promise<unknown>;
+
+const mocks = vi.hoisted(() => ({
+  apiFetch: vi.fn<ApiFetchMock>(),
+  toast: vi.fn(),
+}));
+
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return {
+    ...actual,
+    apiFetch: mocks.apiFetch,
+  };
+});
+
+vi.mock("@/hooks/use-toast", () => ({
+  useToast: () => ({
+    toast: mocks.toast,
+  }),
+}));
+
+describe("useNotificationTest", () => {
+  beforeEach(() => {
+    mocks.apiFetch.mockReset();
+    mocks.toast.mockReset();
+  });
+
+  it("does not show a loading toast before sending the test notification", async () => {
+    mocks.apiFetch.mockResolvedValue({ ok: true });
+    const { result } = renderHook(() => useNotificationTest(DEFAULT_SETTINGS));
+
+    await act(async () => {
+      await result.current.testConnection("telegram");
+    });
+
+    const call = mocks.apiFetch.mock.calls[0];
+    expect(call?.[0]).toBe("/api/app/notifications/test");
+    expect(call?.[2]).toEqual({
+      method: "POST",
+      body: JSON.stringify({ channel: "telegram", settings: DEFAULT_SETTINGS }),
+    });
+    expect(mocks.toast).not.toHaveBeenCalledWith(expect.objectContaining({
+      title: "正在发送测试通知…",
+    }));
+    expect(mocks.toast).toHaveBeenCalledTimes(1);
+    expect(mocks.toast).toHaveBeenCalledWith({
+      title: "测试通知发送成功",
+      description: "渠道：Telegram",
+    });
+  });
+
+  it("keeps the failure toast after a test notification fails", async () => {
+    mocks.apiFetch.mockRejectedValue(new Error("网络错误"));
+    const { result } = renderHook(() => useNotificationTest(DEFAULT_SETTINGS));
+
+    await act(async () => {
+      await result.current.testConnection("telegram");
+    });
+
+    expect(mocks.toast).toHaveBeenCalledTimes(1);
+    expect(mocks.toast).toHaveBeenCalledWith({
+      title: "测试通知发送失败",
+      description: "网络错误",
+      variant: "destructive",
+    });
+  });
+});

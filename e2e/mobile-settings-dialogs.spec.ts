@@ -1,0 +1,299 @@
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expectNoHorizontalOverflow } from "./support/layout";
+import { gotoSettingsAfterHydration } from "./support/settings";
+import {
+  createSubscription,
+  openAddSubscriptionDialog,
+  openSubscriptionEditDialog,
+  uniqueE2EName,
+} from "./support/subscriptions";
+
+const VIEWPORT_SYNC_SETTLE_MS = 540;
+
+async function setVisualViewportVars(page: Page, height: number, offsetTop = 0) {
+  await page.evaluate(({ nextHeight, nextOffsetTop }) => {
+    document.documentElement.style.setProperty("--app-layout-viewport-height", "640px");
+    document.documentElement.style.setProperty("--app-visual-viewport-offset-top", `${nextOffsetTop}px`);
+    document.documentElement.style.setProperty("--app-visual-viewport-offset-left", "0px");
+    document.documentElement.style.setProperty("--app-viewport-height", `${nextHeight}px`);
+  }, { nextHeight: height, nextOffsetTop: offsetTop });
+}
+
+async function waitForDialogLayout(dialog: Locator) {
+  await dialog.evaluate(async (element) => {
+    await Promise.all(element.getAnimations({ subtree: false }).map((animation) => (
+      animation.finished.catch(() => undefined)
+    )));
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+  });
+}
+
+async function captureDialogMetrics(
+  dialog: Locator,
+  selectors: { footer: string; header: string; scrollRegion: string },
+) {
+  return dialog.evaluate((element, targetSelectors) => {
+    const header = element.querySelector<HTMLElement>(targetSelectors.header);
+    const scrollRegion = element.querySelector<HTMLElement>(targetSelectors.scrollRegion);
+    const footer = element.querySelector<HTMLElement>(targetSelectors.footer);
+    if (!header || !scrollRegion || !footer) {
+      throw new Error("Missing dialog header, scroll region, or footer");
+    }
+
+    const rootStyle = window.getComputedStyle(document.documentElement);
+    const viewportHeight = Number.parseFloat(rootStyle.getPropertyValue("--app-viewport-height")) || window.innerHeight;
+    const viewportOffsetTop = Number.parseFloat(rootStyle.getPropertyValue("--app-visual-viewport-offset-top")) || 0;
+    const panelRect = element.getBoundingClientRect();
+    const headerRect = header.getBoundingClientRect();
+    const scrollRect = scrollRegion.getBoundingClientRect();
+    const footerRect = footer.getBoundingClientRect();
+    const panelStyle = window.getComputedStyle(element);
+    const scrollStyle = window.getComputedStyle(scrollRegion);
+    const appRoot = document.querySelector<HTMLElement>("#root");
+    return {
+      appRootScrollTop: appRoot?.scrollTop ?? 0,
+      documentScrollTop: document.scrollingElement?.scrollTop ?? 0,
+      footerTop: Math.round(footerRect.top),
+      panelBottom: Math.round(panelRect.bottom),
+      panelDisplay: panelStyle.display,
+      panelHeight: Math.round(panelRect.height),
+      panelScrollTop: element.scrollTop,
+      panelTop: Math.round(panelRect.top),
+      footerBottom: Math.round(footerRect.bottom),
+      footerHeight: Math.round(footerRect.height),
+      headerBottom: Math.round(headerRect.bottom),
+      headerTop: Math.round(headerRect.top),
+      rootViewportHeight: rootStyle.getPropertyValue("--app-viewport-height").trim(),
+      scrollBottom: Math.round(scrollRect.bottom),
+      scrollClientHeight: scrollRegion.clientHeight,
+      scrollHeight: scrollRegion.scrollHeight,
+      scrollOverflowY: scrollStyle.overflowY,
+      scrollTop: scrollRegion.scrollTop,
+      visualViewportBottom: Math.round(viewportOffsetTop + viewportHeight),
+    };
+  }, selectors);
+}
+
+async function expectDialogChromeFixedWhileBodyScrolls(
+  dialog: Locator,
+  selectors: { footer: string; header: string; scrollRegion: string },
+  label: string,
+) {
+  await waitForDialogLayout(dialog);
+  const before = await captureDialogMetrics(dialog, selectors);
+  const after = await dialog.evaluate((element, targetSelectors) => {
+    const header = element.querySelector<HTMLElement>(targetSelectors.header);
+    const scrollRegion = element.querySelector<HTMLElement>(targetSelectors.scrollRegion);
+    const footer = element.querySelector<HTMLElement>(targetSelectors.footer);
+    if (!header || !scrollRegion || !footer) {
+      throw new Error("Missing dialog chrome or body");
+    }
+
+    scrollRegion.scrollTop = scrollRegion.scrollHeight;
+    const headerRect = header.getBoundingClientRect();
+    const panelRect = element.getBoundingClientRect();
+    const footerRect = footer.getBoundingClientRect();
+    const appRoot = document.querySelector<HTMLElement>("#root");
+    return {
+      appRootScrollTop: appRoot?.scrollTop ?? 0,
+      documentScrollTop: document.scrollingElement?.scrollTop ?? 0,
+      footerTop: Math.round(footerRect.top),
+      headerTop: Math.round(headerRect.top),
+      panelScrollTop: element.scrollTop,
+      panelTop: Math.round(panelRect.top),
+      scrollTop: Math.round(scrollRegion.scrollTop),
+    };
+  }, selectors);
+
+  expect(before.panelDisplay, `${label} panel owns a grid frame`).toBe("grid");
+  expect(["auto", "scroll"], `${label} body is the only scrollable region`).toContain(before.scrollOverflowY);
+  expect(before.scrollBottom, `${label} body ends before the footer row`).toBeLessThanOrEqual(before.footerTop + 1);
+  expect(after.scrollTop, `${label} body owns scrolling`).toBeGreaterThan(0);
+  expect(after.panelScrollTop, `${label} panel itself does not scroll`).toBe(0);
+  expect(after.appRootScrollTop, `${label} page root does not move`).toBe(before.appRootScrollTop);
+  expect(after.documentScrollTop, `${label} document does not move`).toBe(before.documentScrollTop);
+  expect(Math.abs(after.panelTop - before.panelTop), `${label} panel stays fixed while body scrolls`)
+    .toBeLessThanOrEqual(1);
+  expect(Math.abs(after.headerTop - before.headerTop), `${label} header stays fixed while body scrolls`)
+    .toBeLessThanOrEqual(1);
+  expect(Math.abs(after.footerTop - before.footerTop), `${label} footer stays fixed while body scrolls`)
+    .toBeLessThanOrEqual(1);
+}
+
+async function expectSubscriptionDialogAdaptsToKeyboardViewport(
+  page: Page,
+  dialog: Locator,
+  label: string,
+) {
+  await expect(dialog).toHaveClass(/h5-subscription-dialog-panel/);
+  const nameInput = dialog.getByLabel("服务名称", { exact: true });
+  await nameInput.focus();
+  const focusSettledAt = await page.evaluate(() => performance.now());
+  await expect.poll(async () => page.evaluate((startedAt) => performance.now() - startedAt, focusSettledAt))
+    .toBeGreaterThan(VIEWPORT_SYNC_SETTLE_MS);
+
+  await setVisualViewportVars(page, 360, 180);
+  await expect.poll(async () => (await captureDialogMetrics(dialog, {
+    footer: "[data-subscription-dialog-footer]",
+    header: "[data-subscription-dialog-header]",
+    scrollRegion: "[data-subscription-dialog-scroll]",
+  })).panelHeight).toBeLessThanOrEqual(328);
+  const compact = await captureDialogMetrics(dialog, {
+    footer: "[data-subscription-dialog-footer]",
+    header: "[data-subscription-dialog-header]",
+    scrollRegion: "[data-subscription-dialog-scroll]",
+  });
+
+  expect(compact.panelTop, `${label} dialog follows positive visual viewport offset`).toBeGreaterThanOrEqual(180);
+  expect(compact.headerTop, `${label} header stays inside compact visual viewport`).toBeGreaterThanOrEqual(180);
+  expect(compact.footerBottom, `${label} footer stays inside compact visual viewport`).toBeLessThanOrEqual(
+    compact.visualViewportBottom + 1,
+  );
+  expect(compact.scrollHeight, `${label} form keeps the overflow in the scroll region`).toBeGreaterThan(
+    compact.scrollClientHeight,
+  );
+  await expectDialogChromeFixedWhileBodyScrolls(dialog, {
+    footer: "[data-subscription-dialog-footer]",
+    header: "[data-subscription-dialog-header]",
+    scrollRegion: "[data-subscription-dialog-scroll]",
+  }, label);
+
+  await setVisualViewportVars(page, 640);
+  const restored = await captureDialogMetrics(dialog, {
+    footer: "[data-subscription-dialog-footer]",
+    header: "[data-subscription-dialog-header]",
+    scrollRegion: "[data-subscription-dialog-scroll]",
+  });
+  expect(restored.footerBottom, `${label} footer remains visible after keyboard close`).toBeLessThanOrEqual(
+    restored.visualViewportBottom + 1,
+  );
+}
+
+test("mobile currency manager keeps footer visible after keyboard viewport changes", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 640 });
+  await gotoSettingsAfterHydration(page);
+
+  const trigger = page.getByRole("button", { name: /货币管理/ });
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.click();
+
+  const dialog = page.getByRole("dialog", { name: "货币管理" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveClass(/h5-config-manager-dialog-panel/);
+  await expectNoHorizontalOverflow(page, "mobile currency manager dialog");
+
+  const initial = await captureDialogMetrics(dialog, {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  });
+  expect(initial.scrollHeight, "currency list should own the overflow").toBeGreaterThan(initial.scrollClientHeight);
+  expect(initial.footerBottom, "currency footer starts inside the panel").toBeLessThanOrEqual(initial.panelBottom + 1);
+  expect(initial.footerBottom, "currency footer starts inside the viewport").toBeLessThanOrEqual(
+    initial.visualViewportBottom + 1,
+  );
+
+  const search = dialog.getByPlaceholder("搜索货币、代码或符号...");
+  await search.focus();
+  await expect.poll(async () => (await captureDialogMetrics(dialog, {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  })).rootViewportHeight).toBe("640px");
+  const focusSettledAt = await page.evaluate(() => performance.now());
+  await expect.poll(async () => page.evaluate((startedAt) => performance.now() - startedAt, focusSettledAt))
+    .toBeGreaterThan(VIEWPORT_SYNC_SETTLE_MS);
+
+  await setVisualViewportVars(page, 360, 180);
+  await expect.poll(async () => (await captureDialogMetrics(dialog, {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  })).panelHeight).toBeLessThanOrEqual(328);
+  const compact = await captureDialogMetrics(dialog, {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  });
+  expect(compact.panelTop, "currency dialog follows the visual viewport top").toBeGreaterThanOrEqual(180);
+  expect(compact.headerTop, "currency header stays inside compact visual viewport").toBeGreaterThanOrEqual(180);
+  expect(compact.footerHeight, "currency footer keeps its own row").toBeGreaterThan(24);
+  expect(compact.footerBottom, "currency footer stays visible in compact viewport").toBeLessThanOrEqual(
+    compact.visualViewportBottom + 1,
+  );
+  await expectDialogChromeFixedWhileBodyScrolls(dialog, {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  }, "currency manager");
+
+  await search.fill("USD");
+  await expect(dialog.getByText("USD", { exact: true })).toBeVisible();
+  await search.blur();
+
+  await expect.poll(async () => (await captureDialogMetrics(dialog, {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  })).rootViewportHeight).toBe("640px");
+  const restored = await captureDialogMetrics(dialog, {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  });
+  expect(restored.footerBottom, "currency footer remains visible after keyboard close").toBeLessThanOrEqual(
+    restored.panelBottom + 1,
+  );
+  expect(restored.footerBottom, "currency footer remains inside the viewport after keyboard close").toBeLessThanOrEqual(
+    restored.visualViewportBottom + 1,
+  );
+});
+
+test("compact wide currency manager keeps header and footer fixed with only the list scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 796, height: 1448 });
+  await gotoSettingsAfterHydration(page);
+
+  const trigger = page.getByRole("button", { name: /货币管理/ });
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.click();
+
+  const dialog = page.getByRole("dialog", { name: "货币管理" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveClass(/h5-config-manager-dialog-panel/);
+
+  const selectors = {
+    footer: "[data-config-manager-footer]",
+    header: "[data-config-manager-header]",
+    scrollRegion: "[data-config-manager-scroll]",
+  };
+  const metrics = await captureDialogMetrics(dialog, selectors);
+  expect(metrics.footerBottom, "wide compact currency footer stays inside the panel").toBeLessThanOrEqual(
+    metrics.panelBottom + 1,
+  );
+  expect(metrics.scrollHeight, "wide compact currency list owns overflow").toBeGreaterThan(metrics.scrollClientHeight);
+
+  await expectDialogChromeFixedWhileBodyScrolls(dialog, selectors, "wide compact currency manager");
+});
+
+test("mobile subscription create and edit dialogs keep footer inside the visual viewport", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 640 });
+  await page.goto("/subscriptions");
+
+  const createDialog = await openAddSubscriptionDialog(page);
+  await expectSubscriptionDialogAdaptsToKeyboardViewport(page, createDialog, "create subscription");
+  await createDialog.getByRole("button", { name: "取消" }).click();
+  await expect(createDialog).toBeHidden();
+
+  const subscriptionName = uniqueE2EName(testInfo, "Viewport Edit");
+  await createSubscription(page, {
+    name: subscriptionName,
+    price: "19.99",
+  });
+
+  const editDialog = await openSubscriptionEditDialog(page, subscriptionName);
+  await expectSubscriptionDialogAdaptsToKeyboardViewport(page, editDialog, "edit subscription");
+});

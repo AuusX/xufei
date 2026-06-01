@@ -1,0 +1,36 @@
+import { apiFetch } from "@/lib/api-client";
+import {
+  notificationHistoryResponseSchema,
+  notificationRunResponseSchema,
+  notificationsTestResponseSchema,
+  type NotificationHistoryResponse,
+  type NotificationHistoryStatusFilter,
+} from "@/lib/api/schemas/notifications";
+import type { AppSettings, NotificationChannel } from "@/types/subscription";
+
+export const notificationService = {
+  async history(status: NotificationHistoryStatusFilter, limit: number, offset: number, signal?: AbortSignal): Promise<NotificationHistoryResponse> {
+    const params = new URLSearchParams({
+      status,
+      limit: String(limit),
+      offset: String(offset),
+    });
+    return await apiFetch(`/api/app/notifications/history?${params.toString()}`, notificationHistoryResponseSchema, signal ? { signal } : undefined);
+  },
+
+  async test(channel: NotificationChannel, settings: AppSettings): Promise<void> {
+    // 测试发送使用未保存的表单设置，服务端只临时合并，不污染持久 settings。
+    await apiFetch("/api/app/notifications/test", notificationsTestResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ channel, settings }),
+    });
+  },
+
+  async run(force = false, settings?: Partial<AppSettings>) {
+    // force 用于手动“立即运行”；cron 路径仍按到期内容决定 sent/skipped。
+    return await apiFetch("/api/app/notifications/run", notificationRunResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ force, ...(settings ? { settings } : {}) }),
+    });
+  },
+};

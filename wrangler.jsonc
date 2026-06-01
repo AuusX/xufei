@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "xufei",
+  "main": "packages/cloudflare/src/index.ts",
+  "compatibility_date": "2026-05-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./packages/client/dist",
+    "not_found_handling": "single-page-application",
+    // 静态资源先走 Workers Assets；产品 API 和 Wrangler scheduled 测试入口必须优先交给 Worker。
+    "run_worker_first": ["/api/*", "/__scheduled"]
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "renewlet",
+      "database_id": "85a8640a-f685-4ad1-bcc5-453ee5ea5938",
+      "migrations_dir": "packages/cloudflare/migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ASSETS_BUCKET",
+      "bucket_name": "xufei","preview_bucket_name": "xufei"
+    }
+  ],
+  "vars": {
+    "SETUP_ENABLED": "true"
+  }
+}

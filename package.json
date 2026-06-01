@@ -1,0 +1,74 @@
+{
+  "name": "xufei",
+  "private": true,
+  "license": "MIT",
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "D1 database for app data and notification jobs."
+      },
+      "ASSETS_BUCKET": {
+        "description": "Private R2 bucket for uploaded logos and icons."
+      },
+      "SETUP_ENABLED": {
+        "description": "Worker variable for /setup."
+      }
+    }
+  },
+  "scripts": {
+    "dev": "pnpm --filter @renewlet/client dev",
+    "build": "node scripts/build.mjs",
+    "build:docker": "pnpm run build:client && pnpm run sync:static && pnpm run build:server",
+    "build:client": "pnpm --filter @renewlet/client build",
+    "build:cloudflare": "VITE_RENEWLET_RUNTIME=cloudflare pnpm --filter @renewlet/client build",
+    "build:server": "pnpm --dir packages/server build",
+    "sync:static": "mkdir -p packages/server/internal/static/public && find packages/server/internal/static/public -mindepth 1 ! -name .gitkeep -delete && cp -R packages/client/dist/. packages/server/internal/static/public/",
+    "sync:media-resolver-config": "node scripts/sync-media-resolver-config.mjs",
+    "check:media-resolver-config": "node scripts/sync-media-resolver-config.mjs --check",
+    "start": "pnpm --dir packages/server start",
+    "deploy": "pnpm cloudflare:migrations:apply && wrangler deploy",
+    "check:deploy": "node scripts/check-deploy-config.mjs",
+    "release": "node scripts/release.mjs",
+    "check:cloudflare": "pnpm check:media-resolver-config && pnpm --filter @renewlet/shared typecheck && pnpm --filter @renewlet/cloudflare typecheck && VITE_RENEWLET_RUNTIME=cloudflare pnpm --filter @renewlet/client typecheck && pnpm --filter @renewlet/client typecheck:all",
+    "check:file-lines": "node scripts/check-file-lines.mjs",
+    "cloudflare:config:ci": "node scripts/generate-cloudflare-wrangler-config.mjs",
+    "dev:cloudflare": "pnpm build:cloudflare && wrangler dev",
+    "cloudflare:migrations:apply": "wrangler d1 migrations apply DB --remote",
+    "deploy:cloudflare": "pnpm build:cloudflare && pnpm deploy",
+    "lint": "pnpm --filter @renewlet/client lint",
+    "test": "pnpm --filter @renewlet/client test && pnpm --dir packages/server test",
+    "test:run": "pnpm --filter @renewlet/client test:run && pnpm --dir packages/server test",
+    "test:e2e": "pnpm typecheck:e2e && playwright test",
+    "test:e2e:cloudflare": "node scripts/run-cloudflare-check.mjs",
+    "test:e2e:cloudflare:headed": "node scripts/run-cloudflare-check.mjs --headed",
+    "test:e2e:cloudflare:ui": "node scripts/run-cloudflare-check.mjs --ui",
+    "test:e2e:headed": "pnpm typecheck:e2e && playwright test --headed",
+    "test:e2e:ui": "pnpm typecheck:e2e && playwright test --ui",
+    "test:e2e:debug": "pnpm typecheck:e2e && playwright test --debug",
+    "test:e2e:report": "playwright show-report",
+    "test:e2e:cloudflare:report": "playwright show-report playwright-report/cloudflare-check",
+    "test:all": "pnpm check:file-lines && pnpm check:deploy && pnpm --filter @renewlet/client test:run && pnpm typecheck && pnpm --dir packages/server test && pnpm test:e2e",
+    "typecheck": "pnpm --filter @renewlet/client typecheck && pnpm --filter @renewlet/client typecheck:all && pnpm typecheck:e2e",
+    "typecheck:e2e": "tsc --noEmit --project tsconfig.playwright.json",
+    "update:built-in-icons-index": "node scripts/update-built-in-icons-index.mjs"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@parcel/watcher",
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260520.1",
+    "@lingui/format-po": "6.1.0",
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^25.8.0",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.93.0"
+  }
+}

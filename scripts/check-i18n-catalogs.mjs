@@ -1,0 +1,247 @@
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { formatter } from "@lingui/format-po";
+
+const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const clientDir = path.join(rootDir, "packages/client");
+const clientRequire = createRequire(path.join(clientDir, "package.json"));
+const { getConfig } = await import(clientRequire.resolve("@lingui/conf"));
+const { getCatalogs } = await import(clientRequire.resolve("@lingui/cli/api"));
+
+const catalogDir = path.join(clientDir, "src/i18n/catalogs");
+const descriptorDir = path.join(clientDir, "src/i18n/descriptors");
+const catalogKeysPath = path.join(clientDir, "src/i18n/catalog-keys.ts");
+const distAssetsDir = path.join(clientDir, "dist/assets");
+const sourceRoot = path.join(clientDir, "src");
+const locales = ["zh-CN", "en-US"];
+const sourceLocale = locales[0];
+const domains = [
+  "common",
+  "legal",
+  "custom-config",
+  "subscription",
+  "auth",
+  "settings",
+  "notification",
+  "labels",
+  "admin",
+  "error",
+];
+const poFormatter = formatter({ origins: false });
+const forbiddenProductionRawMessages = [
+  "共 {count} 个订阅",
+  "实时汇率换算 ({currency})",
+  "默认值从设置中获取（提前 {days} 天）",
+  "{year}年{month}月{day}日",
+];
+
+function readCatalogFile(locale, domain) {
+  const filePath = path.join(catalogDir, locale, `${domain}.po`);
+  const source = fs.readFileSync(filePath, "utf8");
+  const parsed = poFormatter.parse(source, {
+    locale,
+    sourceLocale,
+    filename: filePath,
+  });
+  return Object.fromEntries(
+    Object.entries(parsed)
+      .filter(([, entry]) => !entry.obsolete)
+      .map(([key, entry]) => [key, entry.translation ?? entry.message ?? ""]),
+  );
+}
+
+function readCatalog(locale) {
+  return Object.assign({}, ...domains.map((domain) => readCatalogFile(locale, domain)));
+}
+
+function placeholders(message) {
+  const names = new Set();
+  for (const match of message.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)(?:[,\}])/g)) {
+    names.add(match[1]);
+  }
+  return [...names].sort();
+}
+
+function readGeneratedMessageKeys() {
+  const source = fs.readFileSync(catalogKeysPath, "utf8");
+  return [...source.matchAll(/^\s*"([^"]+)",$/gm)].map((match) => match[1]).sort();
+}
+
+function walkFiles(dir, files = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === "dist") continue;
+      walkFiles(fullPath, files);
+    } else if (/\.(ts|tsx)$/.test(entry.name)) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+function walkAllFiles(dir, files = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkAllFiles(fullPath, files);
+    } else {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+function lineNumberForOffset(source, offset) {
+  return source.slice(0, offset).split("\n").length;
+}
+
+function literalText(literal) {
+  return literal
+    .slice(1, -1)
+    .replace(/\$\{[^}]*\}/g, "")
+    .trim();
+}
+
+function hasDisplayText(literal) {
+  return /[\p{L}\p{N}]/u.test(literalText(literal));
+}
+
+function relativePath(filePath) {
+  return path.relative(rootDir, filePath);
+}
+
+function compareMessageMap(failures, label, expected, actual) {
+  const expectedKeys = Object.keys(expected).sort();
+  const actualKeys = Object.keys(actual).sort();
+  const expectedKeySet = new Set(expectedKeys);
+  const actualKeySet = new Set(actualKeys);
+  for (const key of expectedKeys) {
+    if (!actualKeySet.has(key)) failures.push(`${label} is missing key ${key}`);
+  }
+  for (const key of actualKeys) {
+    if (!expectedKeySet.has(key)) failures.push(`${label} has extra key ${key}`);
+  }
+  for (const key of expectedKeys) {
+    if (!(key in actual)) continue;
+    if (expected[key] !== actual[key]) {
+      failures.push(`${label} source message mismatch for ${key}: expected ${JSON.stringify(expected[key])}, got ${JSON.stringify(actual[key])}`);
+    }
+  }
+}
+
+async function extractDescriptorCatalogs() {
+  const config = getConfig({ cwd: clientDir, configPath: path.join(clientDir, "lingui.config.ts") });
+  const catalogs = await getCatalogs(config);
+  const extracted = {};
+  for (const catalog of catalogs) {
+    const messages = await catalog.collect();
+    if (!messages) {
+      throw new Error(`Lingui failed to extract descriptor catalog ${catalog.name ?? catalog.path}`);
+    }
+    extracted[catalog.name ?? path.basename(catalog.path)] = Object.fromEntries(
+      Object.entries(messages).map(([key, entry]) => [key, entry.message ?? key]),
+    );
+  }
+  return extracted;
+}
+
+const failures = [];
+const catalogs = Object.fromEntries(locales.map((locale) => [locale, readCatalog(locale)]));
+const base = catalogs[sourceLocale];
+const baseKeys = Object.keys(base).sort();
+const extractedCatalogs = await extractDescriptorCatalogs();
+const extracted = Object.assign({}, ...domains.map((domain) => extractedCatalogs[domain] ?? {}));
+
+// descriptor 是人工维护入口，zh-CN PO 必须由 Lingui extract 同步出来，不能手动漂移。
+compareMessageMap(failures, "descriptor source", extracted, base);
+
+for (const domain of domains) {
+  if (!extractedCatalogs[domain]) {
+    failures.push(`missing descriptor catalog for domain ${domain}`);
+  }
+}
+for (const domain of Object.keys(extractedCatalogs)) {
+  if (!domains.includes(domain)) {
+    failures.push(`unexpected descriptor catalog domain ${domain}`);
+  }
+}
+
+for (const locale of locales.slice(1)) {
+  const current = catalogs[locale];
+  const currentKeys = new Set(Object.keys(current));
+  const baseKeySet = new Set(baseKeys);
+  for (const key of baseKeys) {
+    if (!currentKeys.has(key)) failures.push(`${locale} is missing key ${key}`);
+  }
+  for (const key of currentKeys) {
+    if (!baseKeySet.has(key)) failures.push(`${locale} has extra key ${key}`);
+  }
+  for (const key of baseKeys) {
+    if (!(key in current)) continue;
+    const expected = placeholders(base[key]).join(",");
+    const actual = placeholders(current[key]).join(",");
+    if (expected !== actual) {
+      failures.push(`${locale} placeholder mismatch for ${key}: expected [${expected}], got [${actual}]`);
+    }
+    if (!current[key]) {
+      failures.push(`${locale} has empty translation for ${key}`);
+    }
+  }
+}
+
+const generatedKeys = readGeneratedMessageKeys();
+if (generatedKeys.join("\n") !== baseKeys.join("\n")) {
+  failures.push("src/i18n/catalog-keys.ts is out of sync with the source locale catalog. Run `pnpm --filter @renewlet/client i18n:extract`.");
+}
+
+const sourceFiles = walkFiles(sourceRoot);
+const staticLabelPattern = /\blabels\(\s*(["'])([^"']*)\1\s*,\s*(["'])([^"']*)\3\s*\)/g;
+const localeBranchPattern = /\b(?:locale|localeState\.locale|getApiLocale\(\))\s*={2,3}\s*["'](?:zh-CN|en-US)["']\s*\?\s*(`(?:[^`\\]|\\[\s\S])*`|"[^"\n]*"|'[^'\n]*')\s*:\s*(`(?:[^`\\]|\\[\s\S])*`|"[^"\n]*"|'[^'\n]*')/g;
+const linguiMacroImportPattern = /from\s+["']@lingui\/(?:core|react)\/macro["']/;
+for (const filePath of sourceFiles) {
+  const source = fs.readFileSync(filePath, "utf8");
+  const isDescriptor = filePath.startsWith(`${descriptorDir}${path.sep}`);
+  if (linguiMacroImportPattern.test(source) && !isDescriptor) {
+    failures.push(`${relativePath(filePath)} imports a Lingui macro outside src/i18n/descriptors. Keep product-owned source messages in domain descriptors.`);
+  }
+  for (const match of source.matchAll(staticLabelPattern)) {
+    const zhCN = match[2] ?? "";
+    const enUS = match[4] ?? "";
+    if (!zhCN && !enUS) continue;
+    failures.push(`${relativePath(filePath)}:${lineNumberForOffset(source, match.index ?? 0)} uses static labels("${zhCN}", "${enUS}"). Product-owned labels must come from the Lingui catalog.`);
+  }
+  if (/\.(test|spec)\.(ts|tsx)$/.test(filePath)) continue;
+  for (const match of source.matchAll(localeBranchPattern)) {
+    const first = match[1] ?? "";
+    const second = match[2] ?? "";
+    if (!hasDisplayText(first) && !hasDisplayText(second)) continue;
+    failures.push(`${relativePath(filePath)}:${lineNumberForOffset(source, match.index ?? 0)} uses a locale branch with inline display text. Move product-owned text to the Lingui catalog.`);
+  }
+}
+
+for (const filePath of walkAllFiles(catalogDir)) {
+  if (/\.ts$/.test(filePath)) {
+    failures.push(`${relativePath(filePath)} is a raw TS catalog. Use src/i18n/descriptors/*.ts plus Lingui PO catalogs instead.`);
+  }
+}
+
+if (fs.existsSync(distAssetsDir)) {
+  for (const filePath of walkAllFiles(distAssetsDir).filter((filePath) => filePath.endsWith(".js"))) {
+    const source = fs.readFileSync(filePath, "utf8");
+    for (const rawMessage of forbiddenProductionRawMessages) {
+      if (source.includes(rawMessage)) {
+        failures.push(`${relativePath(filePath)} still contains uncompiled ICU message "${rawMessage}"`);
+      }
+    }
+  }
+}
+
+if (failures.length > 0) {
+  console.error(failures.join("\n"));
+  process.exit(1);
+}
+
+console.log(`i18n catalogs OK (${baseKeys.length} keys, ${locales.length} locales, ${domains.length} descriptor domains).`);

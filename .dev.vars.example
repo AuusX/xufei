@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local wrangler dev. Never commit real secrets.
+#
+# Cloudflare uses D1 for structured data and R2 for private uploads.
+# Deployment-level SMTP is intentionally unsupported; configure email
+# notifications from the Renewlet Settings page after signing in.

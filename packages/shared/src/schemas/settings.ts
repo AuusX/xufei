@@ -1,0 +1,127 @@
+import { z } from "zod";
+import {
+  BUILT_IN_ICON_PROVIDERS,
+  hasEnabledBuiltInIconSource,
+  type BuiltInIconSourceSettings,
+  type BuiltInIconSourceSettingsPatch,
+} from "../built-in-icons";
+import {
+  NOTIFICATION_CHANNELS,
+  MAX_REMINDER_DAYS,
+  SUPPORTED_LOCALES,
+  THEME_MODES,
+  THEME_VARIANTS,
+  isValidLocalTime,
+  isValidTimeZone,
+  normalizeExchangeRateProvider,
+  type LocalTime,
+} from "../runtime";
+import { exchangeRateProviderSchema } from "./exchange-rates";
+
+const hhmmSchema = z.string().refine(isValidLocalTime, "时间格式必须为 HH:mm").transform((value) => value as LocalTime);
+
+const optionalHttpsUrlSchema = z.string().trim().max(2048).refine((value) => {
+  if (!value) return true;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}, "必须为空或 https:// URL");
+
+// 端口只做跨运行面的通用合法性校验；Cloudflare 的 25 限制在 Worker 发送边界处理。
+const optionalSmtpPortSchema = z.string().trim().max(5).refine((value) => {
+  if (!value) return true;
+  const port = Number.parseInt(value, 10);
+  return Number.isInteger(port) && port > 0 && port <= 65_535 && String(port) === value;
+}, "SMTP 端口无效");
+
+const timezoneSchema = z.string().trim().min(1).max(80).refine(isValidTimeZone, "时区无效");
+const globalReminderDaysSchema = z.number().int().nonnegative().max(MAX_REMINDER_DAYS);
+
+const builtInIconSourceSettingSchema = z.object({
+  enabled: z.boolean(),
+  variantsEnabled: z.boolean(),
+}).strict();
+const builtInIconSourceSettingPatchSchema = builtInIconSourceSettingSchema.partial().strict();
+
+export const builtInIconProviderSchema = z.enum(BUILT_IN_ICON_PROVIDERS);
+
+export const builtInIconSourcesSchema = z.object({
+  thesvg: builtInIconSourceSettingSchema,
+  selfhst: builtInIconSourceSettingSchema,
+  dashboardIcons: builtInIconSourceSettingSchema,
+}).strict().refine(
+  (value) => hasEnabledBuiltInIconSource(value satisfies BuiltInIconSourceSettings),
+  "至少启用一个内置图标来源",
+);
+
+const appSettingsShape = {
+  adminUsername: z.string().trim().min(1).max(80),
+  themeMode: z.enum(THEME_MODES),
+  themeVariant: z.enum(THEME_VARIANTS),
+  themeCustomColor: z.object({
+    h: z.number().min(0).max(360),
+    s: z.number().min(0).max(100),
+    l: z.number().min(0).max(100),
+  }),
+  locale: z.enum(SUPPORTED_LOCALES),
+  showExpired: z.boolean(),
+  defaultCurrency: z.string().trim().regex(/^[A-Z]{3}$/),
+  exchangeRateProvider: z.preprocess(normalizeExchangeRateProvider, exchangeRateProviderSchema),
+  builtInIconSources: builtInIconSourcesSchema,
+  monthlyBudget: z.number().finite().nonnegative().max(1_000_000_000),
+  timezone: timezoneSchema,
+  notificationTimeLocal: hhmmSchema,
+  notificationReminderDays: globalReminderDaysSchema,
+  enabledChannels: z.array(z.enum(NOTIFICATION_CHANNELS)),
+  testPhone: z.string().trim().max(80),
+  telegramBotToken: z.string().trim().max(256),
+  telegramChatId: z.string().trim().max(128),
+  notifyxApiKey: z.string().trim().max(256),
+  // 所有用户可配置回调地址都收敛到 https，避免通知渠道成为明文或内网探测入口。
+  webhookUrl: optionalHttpsUrlSchema,
+  webhookMethod: z.enum(["GET", "POST"]),
+  webhookHeaders: z.string().max(20_000),
+  webhookPayload: z.string().max(100_000),
+  wechatWebhookUrl: optionalHttpsUrlSchema,
+  wechatMessageType: z.enum(["text", "markdown"]),
+  wechatAddModeTag: z.boolean(),
+  wechatAtPhones: z.string().trim().max(1000),
+  wechatAtAll: z.boolean(),
+  smtpHost: z.string().trim().max(255),
+  smtpPort: optionalSmtpPortSchema,
+  smtpSecure: z.boolean(),
+  smtpUser: z.string().trim().max(256),
+  smtpPassword: z.string().trim().max(512),
+  smtpFrom: z.string().trim().max(320),
+  smtpReplyTo: z.string().trim().max(320),
+  notifyMultipleAddresses: z.boolean(),
+  // 多收件人用逗号分隔，和设置页文本框一致；这里是最终格式边界。
+  recipientEmail: z.string().trim().max(2000).refine((value) => {
+    if (!value) return true;
+    return value.split(",").map((item) => item.trim()).filter(Boolean).every((item) => z.email().safeParse(item).success);
+  }, "收件人邮箱格式无效"),
+  barkServerUrl: optionalHttpsUrlSchema,
+  barkDeviceKey: z.string().trim().max(256),
+  barkSilentPush: z.boolean(),
+};
+
+const builtInIconSourcesPatchSchema = z.object({
+  thesvg: builtInIconSourceSettingPatchSchema,
+  selfhst: builtInIconSourceSettingPatchSchema,
+  dashboardIcons: builtInIconSourceSettingPatchSchema,
+}).partial().strict();
+export type ApiBuiltInIconSourceSettingsPatch = BuiltInIconSourceSettingsPatch;
+
+export const appSettingsSchema = z.object(appSettingsShape).strict();
+
+export const settingsResponseSchema = z.object({
+  settings: appSettingsSchema,
+}).strict();
+
+export const settingsUpdateBodySchema = z.object({
+  ...appSettingsShape,
+  builtInIconSources: builtInIconSourcesPatchSchema,
+}).partial().strict();
+export type ApiAppSettings = z.infer<typeof appSettingsSchema>;

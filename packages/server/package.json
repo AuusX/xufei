@@ -1,0 +1,11 @@
+{
+  "name": "@renewlet/server",
+  "private": true,
+  "license": "MIT",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o dist/renewlet ./cmd/renewlet",
+    "start": "go run ./cmd/renewlet serve --http=0.0.0.0:3000 --dir=./pb_data --encryptionEnv=PB_ENCRYPTION_KEY",
+    "test": "go test ./..."
+  }
+}

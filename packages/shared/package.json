@@ -1,0 +1,38 @@
+{
+  "name": "@renewlet/shared",
+  "private": true,
+  "license": "MIT",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./schemas/account": "./src/schemas/account.ts",
+    "./schemas/admin": "./src/schemas/admin.ts",
+    "./schemas/app": "./src/schemas/app.ts",
+    "./schemas/auth": "./src/schemas/auth.ts",
+    "./schemas/common": "./src/schemas/common.ts",
+    "./schemas/custom-config": "./src/schemas/custom-config.ts",
+    "./schemas/exchange-rates": "./src/schemas/exchange-rates.ts",
+    "./schemas/import-export": "./src/schemas/import-export.ts",
+    "./schemas/media": "./src/schemas/media.ts",
+    "./schemas/notifications": "./src/schemas/notifications.ts",
+    "./schemas/settings": "./src/schemas/settings.ts",
+    "./schemas/subscriptions": "./src/schemas/subscriptions.ts",
+    "./schemas/uploads": "./src/schemas/uploads.ts",
+    "./built-in-icons": "./src/built-in-icons.ts",
+    "./favicon-domains": "./src/favicon-domains.ts",
+    "./media-resolver": "./src/media-resolver.ts",
+    "./media-resolver-config": "./src/media-resolver-config.ts",
+    "./media-resolver-fixtures": "./src/media-resolver-fixtures.ts",
+    "./settings-defaults": "./src/settings-defaults.ts",
+    "./runtime": "./src/runtime.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit --project tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}
