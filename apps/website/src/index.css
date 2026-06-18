@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+/* 官网自托管 Inter 分片；每个 @font-face 限定 unicode-range，避免首屏为少量拉丁文案下载整套字体。 */
 @font-face {
   font-family: "Inter";
   font-style: normal;
@@ -173,6 +174,7 @@
   }
 }
 
+/* 这些动画类复刻 Radix data-state 语义；部署弹窗和官网按钮共享，不能被 Tailwind 扫描误判成未使用。 */
 .animate-starlight-right {
   animation: starlight-right 3.5s linear infinite;
 }

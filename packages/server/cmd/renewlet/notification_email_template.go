@@ -282,6 +282,9 @@ func buildEmailTemplateGroups(items []notificationContentItem, locale appLocale,
 
 func emailSummaryRows(itemCount int, groups []emailTemplateGroup, copy emailCatalog) []emailTemplateSummaryRow {
 	if len(groups) == 0 {
+		if itemCount == 0 {
+			return nil
+		}
 		return []emailTemplateSummaryRow{{
 			Label: copy.ReminderItems,
 			Value: fmt.Sprint(itemCount),
@@ -336,15 +339,15 @@ func emailThemeFromSettings(settings appSettings) emailTheme {
 	return emailTheme{
 		Primary:      primary,
 		PrimaryText:  contrastTextForHSL(h, s, l),
-		PrimarySoft:  hslToHex(h, math.Min(s, 70), 94),
-		Background:   "#F4F7F6",
+		PrimarySoft:  hslToHex(h, math.Min(s, 50), 95),
+		Background:   "#F9FAFB",
 		Surface:      "#FFFFFF",
-		SurfaceMuted: "#F8FAF9",
-		Border:       "#DDE6E2",
-		Text:         "#17211F",
-		Muted:        "#64748B",
-		Warning:      "#D97706",
-		Danger:       "#DC2626",
+		SurfaceMuted: "#F3F5F7",
+		Border:       "#E3E7ED",
+		Text:         "#171C26",
+		Muted:        "#6C7993",
+		Warning:      "#F59F0A",
+		Danger:       "#DC2828",
 		Success:      primary,
 	}
 }

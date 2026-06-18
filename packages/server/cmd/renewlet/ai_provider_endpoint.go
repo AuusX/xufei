@@ -1,5 +1,9 @@
 package main
 
+// ai_provider_endpoint.go 收敛 AI provider 的 base URL、鉴权头和模型列表端点。
+//
+// 前端、Go SDK client、Cloudflare Worker 共享同一 provider 语义；这里不能让用户传入的历史 protocol 字段
+// 改变 canonical transport，否则 Docker 与 Worker 会请求不同第三方接口。
 import (
 	"net/http"
 	"net/url"
@@ -107,6 +111,7 @@ func aiProviderAuthHeaders(transportProtocol string, apiKey string) http.Header 
 }
 
 func normalizeAIProviderBaseURL(transportProtocol string, baseURL string) string {
+	// base URL 规范化必须按 canonical transport 分派；OpenAI-compatible 固定复用 OpenAI Chat 路径规则。
 	switch transportProtocol {
 	case aiProtocolAnthropicMessages:
 		return normalizeVersionedAIProviderBaseURL(baseURL, "v1", []string{"/messages", "/models"})

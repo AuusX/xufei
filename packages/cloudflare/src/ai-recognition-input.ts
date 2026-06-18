@@ -1,3 +1,8 @@
+/**
+ * AI 识别图片输入白名单。
+ *
+ * Worker 无法依赖浏览器传来的 File.type；先按声明类型判断，再用文件头兜底，避免伪造 MIME 进入第三方 provider。
+ */
 import { HttpError } from "./http";
 import { serverText, type AppLocale } from "./server-i18n";
 
@@ -12,6 +17,7 @@ export function normalizeAIImageType(type: string, data: Uint8Array, locale: App
 }
 
 function detectAIImageType(data: Uint8Array): string | null {
+  // 只识别三种模型侧支持且前端允许上传的格式；SVG/GIF 等可显示图片不适合直接送入识别模型。
   if (data.length >= 4 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "image/png";
   if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
   if (

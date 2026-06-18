@@ -1,6 +1,6 @@
 package main
 
-// 本文件测试静态资源 CSP 和代理协议识别，保护 Docker/反代部署下的前端安全头与外部 URL 判断。
+// 静态入口测试保护反代协议识别和 CSP img-src 分流；Docker/反代部署下 HTTP 与 HTTPS 的 Logo 加载策略不能混用。
 
 import (
 	"net/http"
@@ -45,5 +45,43 @@ func TestExternalRequestProtoReadsForwardedBeforeXForwardedProto(t *testing.T) {
 
 	if got := externalRequestProto(request); got != "https" {
 		t.Fatalf("externalRequestProto() = %q, want https", got)
+	}
+	if got := externalRequestOrigin(request).Host; got != "renewlet.example" {
+		t.Fatalf("externalRequestOrigin().Host = %q, want renewlet.example", got)
+	}
+}
+
+func TestExternalRequestURLUsesForwardedHostForShareLinks(t *testing.T) {
+	request, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:3000/api/app/public-status-page", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Forwarded-Proto", "http")
+	request.Header.Set("X-Forwarded-Host", "192.168.50.160:5173")
+
+	if got := publicStatusPageURL(request, "public-token"); got != "http://192.168.50.160:5173/status/public-token" {
+		t.Fatalf("publicStatusPageURL() = %q", got)
+	}
+	if got := calendarFeedURL(request, "calendar-token"); got != "http://192.168.50.160:5173/calendar/renewals.ics?token=calendar-token" {
+		t.Fatalf("calendarFeedURL() = %q", got)
+	}
+}
+
+func TestExternalRequestOriginFallsBackWhenForwardedHostIsInvalid(t *testing.T) {
+	request, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:3000/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("X-Forwarded-Proto", "https")
+	request.Header.Set("X-Forwarded-Host", "bad host")
+
+	origin := externalRequestOrigin(request)
+	if origin.Scheme != "https" || origin.Host != "127.0.0.1:3000" {
+		t.Fatalf("externalRequestOrigin() = %s://%s, want https://127.0.0.1:3000", origin.Scheme, origin.Host)
+	}
+
+	request.Header.Set("X-Forwarded-Host", "renewlet.example:bad")
+	if got := externalRequestHost(request); got != "127.0.0.1:3000" {
+		t.Fatalf("externalRequestHost() = %q, want request host fallback", got)
 	}
 }

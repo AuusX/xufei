@@ -19,9 +19,10 @@ export function useStatisticsModel(
   convert: (amount: number, from: string, to: string) => number,
   timeZone: string,
   locale: Locale,
+  costBasis: "total" | "personal" = "total",
 ) {
   return useMemo(
-    () => buildStatisticsModel({ subscriptions, config, monthlyBudget, defaultCurrency, convert, timeZone, locale }),
-    [config, convert, defaultCurrency, locale, monthlyBudget, subscriptions, timeZone],
+    () => buildStatisticsModel({ subscriptions, config, monthlyBudget, defaultCurrency, convert, timeZone, locale, costBasis }),
+    [config, convert, costBasis, defaultCurrency, locale, monthlyBudget, subscriptions, timeZone],
   );
 }

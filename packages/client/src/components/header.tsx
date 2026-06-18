@@ -69,7 +69,7 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
   const { t } = useI18n();
   const { data: sessionData } = authClient.useSession();
   const [systemDialogOpen, setSystemDialogOpen] = useState(false);
-  const isAdmin = sessionData?.user.role === "admin";
+  const isAuthenticated = Boolean(sessionData?.user);
 
   /**
    * Header 是全局快捷开关，只写本机偏好；账户级外观草稿必须从 Settings 页外观控件产生。
@@ -116,7 +116,7 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
               >
                 <h1 className="truncate text-xl font-extrabold tracking-tight text-foreground">Renewlet</h1>
               </Link>
-              {isAdmin ? (
+              {isAuthenticated ? (
                 <SystemUpdateDialog
                   open={systemDialogOpen}
                   onOpenChange={setSystemDialogOpen}

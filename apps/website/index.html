@@ -11,10 +11,10 @@
     />
     <meta name="robots" content="index, follow" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="canonical" href="https://zhiyingzzhou.github.io/renewlet/" />
-    <link rel="alternate" hreflang="zh-CN" href="https://zhiyingzzhou.github.io/renewlet/" />
-    <link rel="alternate" hreflang="en" href="https://zhiyingzzhou.github.io/renewlet/en/" />
-    <link rel="alternate" hreflang="x-default" href="https://zhiyingzzhou.github.io/renewlet/" />
+    <link rel="canonical" href="%RENEWLET_WEBSITE_URL%" />
+    <link rel="alternate" hreflang="zh-CN" href="%RENEWLET_WEBSITE_URL%" />
+    <link rel="alternate" hreflang="en" href="%RENEWLET_WEBSITE_EN_URL%" />
+    <link rel="alternate" hreflang="x-default" href="%RENEWLET_WEBSITE_URL%" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Renewlet" />
     <meta property="og:locale" content="zh_CN" />
@@ -24,8 +24,8 @@
       property="og:description"
       content="记录订阅、续费日、预算、通知和日历。适合 VPS、NAS、homelab 和 Cloudflare Workers 长期运行。"
     />
-    <meta property="og:url" content="https://zhiyingzzhou.github.io/renewlet/" />
-    <meta property="og:image" content="https://zhiyingzzhou.github.io/renewlet/assets/renewlet/images/dashboard-zh.png" />
+    <meta property="og:url" content="%RENEWLET_WEBSITE_URL%" />
+    <meta property="og:image" content="%RENEWLET_WEBSITE_DASHBOARD_ZH_URL%" />
     <meta property="og:image:alt" content="Renewlet 中文仪表盘，展示月度支出、近期订阅和支出分布" />
     <meta property="og:image:width" content="1400" />
     <meta property="og:image:height" content="900" />
@@ -35,38 +35,39 @@
       name="twitter:description"
       content="记录订阅、续费日、预算、通知和日历。适合 VPS、NAS、homelab 和 Cloudflare Workers 长期运行。"
     />
-    <meta name="twitter:image" content="https://zhiyingzzhou.github.io/renewlet/assets/renewlet/images/dashboard-zh.png" />
+    <meta name="twitter:image" content="%RENEWLET_WEBSITE_DASHBOARD_ZH_URL%" />
     <meta name="twitter:image:alt" content="Renewlet 中文仪表盘，展示月度支出、近期订阅和支出分布" />
+    <meta name="google-site-verification" content="WgrW4W8BO1Jit1Jk7K2i0vBah4ej7v8o5bf8iNNpKvE" />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@graph": [
           {
             "@type": "Organization",
-            "@id": "https://zhiyingzzhou.github.io/renewlet/#organization",
+            "@id": "%RENEWLET_WEBSITE_URL%#organization",
             "name": "Renewlet",
-            "url": "https://zhiyingzzhou.github.io/renewlet/",
-            "logo": "https://zhiyingzzhou.github.io/renewlet/assets/renewlet/logo.svg",
+            "url": "%RENEWLET_WEBSITE_URL%",
+            "logo": "%RENEWLET_WEBSITE_LOGO_URL%",
             "sameAs": ["https://github.com/zhiyingzzhou/renewlet"]
           },
           {
             "@type": "WebSite",
-            "@id": "https://zhiyingzzhou.github.io/renewlet/#website",
+            "@id": "%RENEWLET_WEBSITE_URL%#website",
             "name": "Renewlet",
-            "url": "https://zhiyingzzhou.github.io/renewlet/",
+            "url": "%RENEWLET_WEBSITE_URL%",
             "inLanguage": ["zh-CN", "en"],
             "publisher": {
-              "@id": "https://zhiyingzzhou.github.io/renewlet/#organization"
+              "@id": "%RENEWLET_WEBSITE_URL%#organization"
             }
           },
           {
             "@type": "SoftwareApplication",
-            "@id": "https://zhiyingzzhou.github.io/renewlet/#software",
+            "@id": "%RENEWLET_WEBSITE_URL%#software",
             "name": "Renewlet",
             "applicationCategory": "FinanceApplication",
             "operatingSystem": "Docker, Cloudflare Workers",
             "softwareVersion": "0.1.0",
-            "url": "https://zhiyingzzhou.github.io/renewlet/",
+            "url": "%RENEWLET_WEBSITE_URL%",
             "codeRepository": "https://github.com/zhiyingzzhou/renewlet",
             "license": "https://github.com/zhiyingzzhou/renewlet/blob/main/LICENSE",
             "description": "Renewlet 是一个自托管订阅账本，用于管理订阅、续费日、预算、通知和日历。"
@@ -78,6 +79,7 @@
   </head>
   <body>
     <div id="root"></div>
+    <script defer src="https://umami.olyq.org/script.js" data-website-id="0da844f3-a2aa-419d-934a-dce961733c41"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

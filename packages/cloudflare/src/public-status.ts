@@ -1,3 +1,8 @@
+/**
+ * 公开状态页 Worker handler 管理低权限 bearer token 和公开 allowlist 投影。
+ *
+ * 登录态 API 只回显可复制 URL；公开 API 不读 session，必须同时保护 token、owner、价格开关和 R2 私有资产引用。
+ */
 import {
   publicStatusPageCreateRequestSchema,
   publicStatusPageCreateResponseSchema,
@@ -14,6 +19,7 @@ import { requireAuth } from "./auth";
 import { HttpError, json, readJson, requestLocale } from "./http";
 import { serverText, type AppLocale } from "./server-i18n";
 import { calendarFeedBuiltInCategoryLabelKey } from "./calendar-feed-built-in-labels";
+import { requestOrigin } from "./request-origin";
 import type { AssetRow, Env, PublicStatusPageRow, SubscriptionRow } from "./types";
 
 const PUBLIC_STATUS_LIMIT = 500;
@@ -52,6 +58,7 @@ export async function updatePublicStatusPage(request: Request, env: Env): Promis
   const body = await readJson(request, publicStatusPageUpdateRequestSchema, locale);
   const existing = await getPublicStatusPage(env, auth.user.id);
   if (!existing) throw new HttpError(404, serverText(locale, "common.notFound"), "NOT_FOUND");
+  // PATCH 只改金额开关；token 与 pageUrl 不接受客户端提交，避免设置页草稿把 bearer secret 持久化。
   const timestamp = nowIso();
   const row: PublicStatusPageRow = {
     ...existing,
@@ -66,6 +73,7 @@ export async function updatePublicStatusPage(request: Request, env: Env): Promis
 
 export async function deletePublicStatusPage(request: Request, env: Env): Promise<Response> {
   const auth = await requireAuth(request, env);
+  // 撤销只删除公开页 token，不改订阅 publicHidden；重新开启时用户原先的可见性选择仍然有效。
   await env.DB.prepare("DELETE FROM public_status_pages WHERE user_id = ?").bind(auth.user.id).run();
   return json(publicStatusPageDeleteResponseSchema.parse({ ok: true }));
 }
@@ -123,6 +131,7 @@ async function ensurePublicStatusPage(env: Env, userId: string): Promise<PublicS
   const existing = await getPublicStatusPage(env, userId);
   if (existing) return existing;
   const timestamp = nowIso();
+  // token 由 Worker 生成并仅作为完整 URL 回显；D1 保存可撤销 token，不能塞进 settings_json/export。
   const row: PublicStatusPageRow = {
     id: newId("pub"),
     user_id: userId,
@@ -149,6 +158,7 @@ async function getPublicStatusPage(env: Env, userId: string): Promise<PublicStat
 
 async function getPublicStatusPageByToken(env: Env, token: string): Promise<PublicStatusPageRow | null> {
   if (!publicStatusTokenPattern.test(token)) return null;
+  // 公开 API 不区分无效、撤销和猜测 token；调用方统一走 404，避免 token 探测信号。
   return await env.DB.prepare(`
     SELECT id, user_id, token, show_prices, created_at, updated_at
     FROM public_status_pages
@@ -245,10 +255,7 @@ function todayDateOnly(timezone: string): string {
 function publicStatusLogoUrl(request: Request, token: string, logo: string): string {
   const match = privateAssetLogoPattern.exec(logo);
   if (!match) return logo;
-  const url = new URL(request.url);
-  url.pathname = `/api/public/status/${encodeURIComponent(token)}/assets/${encodeURIComponent(match[1]!)}`;
-  url.search = "";
-  return url.toString();
+  return `${requestOrigin(request)}/api/public/status/${encodeURIComponent(token)}/assets/${encodeURIComponent(match[1]!)}`;
 }
 
 async function publicStatusAssetIsReferenced(env: Env, userId: string, assetId: string): Promise<boolean> {
@@ -298,8 +305,7 @@ function publicStatusPageStatus(row: PublicStatusPageRow | null, request: Reques
 }
 
 function publicStatusPageUrl(request: Request, token: string): string {
-  const url = new URL(request.url);
-  return `${url.origin}/status/${encodeURIComponent(token)}`;
+  return `${requestOrigin(request)}/status/${encodeURIComponent(token)}`;
 }
 
 function publicStatusHeaders(): Headers {

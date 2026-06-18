@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { buildRenewalCalendarEvent, buildRenewalCalendarIcs, type RenewalCalendarEvent } from "@renewlet/shared/ics";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { buildRenewalCalendarEvent, type RenewalCalendarEvent } from "@renewlet/shared/calendar-events";
 import { google, office365, outlook, yahoo, type CalendarEvent } from "calendar-link";
 import { CalendarDays, CalendarPlus, Clipboard, Download, ExternalLink, Loader2, RefreshCw, X } from "lucide-react";
 import { Drawer } from "vaul";
@@ -25,7 +25,9 @@ import { useI18n } from "@/i18n/I18nProvider";
 import { addDateOnly } from "@/lib/time/date-only";
 import { formatBillingCycleLabel } from "@/lib/subscription-billing";
 import { buildAndroidCalendarIntentUrl, isAndroidChromeUserAgent, openValidatedWebcalUrl } from "@/shared/browser/calendar-links";
+import { copyTextToClipboard, type ClipboardCopyTarget } from "@/shared/browser/clipboard";
 import { downloadFile } from "@/shared/browser/download-file";
+import { calendarFeedService } from "@/services/calendar-feed-service";
 import {
   DEFAULT_NOTIFICATION_REMINDER_DAYS,
   DISABLED_REMINDER_DAYS,
@@ -62,10 +64,11 @@ interface AddToCalendarContentProps {
   eventTypeValue: string;
   feedUrl: string | null;
   feedUrlLabel: string;
+  isDownloading: boolean;
   isSubscribing: boolean;
   links: CalendarProviderLink[];
   notice: string;
-  onCopyFeedUrl: () => void;
+  onCopyFeedUrl: (target?: ClipboardCopyTarget | null) => void;
   onDownload: () => void;
   onRegenerate: () => void;
   onSubscribe: () => void;
@@ -104,6 +107,7 @@ function ResolvedAddToCalendarDialog({ open, onOpenChange, subscription }: Resol
   const deleteSubscriptionFeed = useDeleteSubscriptionCalendarFeed();
   const [feedUrl, setFeedUrl] = useState<string | null>(null);
   const [confirmRegenerateOpen, setConfirmRegenerateOpen] = useState(false);
+  const [isDownloadingCalendar, setIsDownloadingCalendar] = useState(false);
   const [isOpeningSystemCalendar, setIsOpeningSystemCalendar] = useState(false);
   const visibleFeedUrl = feedUrl ?? subscriptionFeedStatus.data?.feedUrl ?? null;
   useEffect(() => {
@@ -181,11 +185,6 @@ function ResolvedAddToCalendarDialog({ open, onOpenChange, subscription }: Resol
     { href: yahoo(calendarEvent), label: t("subscription.addToCalendarYahoo") },
   ], [calendarEvent, t]);
 
-  const ics = useMemo(() => buildRenewalCalendarIcs({
-    name: t("subscription.addToCalendarCalendarName", { name: subscription.name }),
-    generatedAt: new Date(),
-    events: [renewalEvent],
-  }), [renewalEvent, subscription.name, t]);
   const isAndroidChrome = isAndroidChromeUserAgent();
   const androidSystemCalendarHref = useMemo(() => buildAndroidCalendarIntentUrl({
     title: subscription.name,
@@ -251,25 +250,30 @@ function ResolvedAddToCalendarDialog({ open, onOpenChange, subscription }: Resol
     }
   }, [createSubscriptionFeed, deleteSubscriptionFeed, subscription.id, t]);
 
-  const handleCopyFeedUrl = useCallback(async () => {
+  const handleCopyFeedUrl = useCallback(async (target?: ClipboardCopyTarget | null) => {
     if (!visibleFeedUrl) return;
-    try {
-      await navigator.clipboard.writeText(visibleFeedUrl);
+    const copyResult = await copyTextToClipboard(visibleFeedUrl, { target });
+    if (copyResult.ok) {
       toast.success(t("subscription.addToCalendarFeedUrlCopied"));
-    } catch {
-      toast.error(t("subscription.addToCalendarFeedUrlCopyFailed"));
+      return;
     }
+    toast.error(t("subscription.addToCalendarFeedUrlCopyFailed"), {
+      description: t("subscription.addToCalendarFeedUrlCopyFailedDescription"),
+    });
   }, [visibleFeedUrl, t]);
 
-  const handleDownload = useCallback(() => {
+  const handleDownload = useCallback(async () => {
+    setIsDownloadingCalendar(true);
     try {
-      // 下载 ICS 是一次性事件文件，不依赖公开 feed token，适合不支持订阅 URL 的日历客户端。
-      downloadFile(new Blob([ics], { type: "text/calendar;charset=utf-8" }), `renewlet-${safeCalendarFilename(subscription.id)}.ics`);
+      const ics = await calendarFeedService.downloadSubscriptionIcs(subscription.id);
+      downloadFile(ics, `renewlet-${safeCalendarFilename(subscription.id)}.ics`);
       toast.success(t("subscription.addToCalendarDownloaded"));
     } catch {
       toast.error(t("subscription.addToCalendarDownloadFailed"));
+    } finally {
+      setIsDownloadingCalendar(false);
     }
-  }, [ics, subscription.id, t]);
+  }, [subscription.id, t]);
 
   const title = isExpiryEvent ? t("subscription.addToCalendarExpiryTitle") : t("subscription.addToCalendarTitle");
   const description = isExpiryEvent
@@ -287,6 +291,7 @@ function ResolvedAddToCalendarDialog({ open, onOpenChange, subscription }: Resol
       eventTypeValue={isExpiryEvent ? t("subscription.addToCalendarExpiryFeed") : t("subscription.addToCalendarSubscriptionFeed")}
       feedUrl={visibleFeedUrl}
       feedUrlLabel={t("subscription.addToCalendarFeedUrl")}
+      isDownloading={isDownloadingCalendar}
       isSubscribing={isOpeningSystemCalendar || createSubscriptionFeed.isPending || deleteSubscriptionFeed.isPending || subscriptionFeedStatus.isLoading}
       links={links}
       notice={isExpiryEvent ? t("subscription.addToCalendarExpiryEventNotice") : t("subscription.addToCalendarSingleEventNotice")}
@@ -381,6 +386,7 @@ function AddToCalendarContent({
   eventTypeValue,
   feedUrl,
   feedUrlLabel,
+  isDownloading,
   isSubscribing,
   links,
   notice,
@@ -395,6 +401,7 @@ function AddToCalendarContent({
   syncStatusLabel,
   syncStatusValue,
 }: AddToCalendarContentProps) {
+  const feedUrlInputRef = useRef<HTMLInputElement>(null);
   return (
     <div className="grid gap-5">
       <dl className="grid divide-y divide-border rounded-md border border-border bg-background/50 text-sm">
@@ -410,8 +417,16 @@ function AddToCalendarContent({
         </Button>
         {feedUrl ? (
           <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-            <Input value={feedUrl} readOnly className="border-border bg-secondary font-mono text-xs" aria-label={feedUrlLabel} />
-            <Button type="button" variant="outline" size="sm" className="justify-center border-border" onClick={onCopyFeedUrl}>
+            <Input ref={feedUrlInputRef} value={feedUrl} readOnly className="border-border bg-secondary font-mono text-xs" aria-label={feedUrlLabel} />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="justify-center border-border"
+              onClick={() => {
+                onCopyFeedUrl(feedUrlInputRef.current);
+              }}
+            >
               <Clipboard className="h-4 w-4" />
               {copyFeedUrlLabel}
             </Button>
@@ -432,8 +447,8 @@ function AddToCalendarContent({
               </a>
             </Button>
           ) : null}
-          <Button type="button" variant="outline" size="sm" className="justify-center border-border" onClick={onDownload}>
-            <Download className="h-4 w-4" />
+          <Button type="button" variant="outline" size="sm" className="justify-center border-border" onClick={onDownload} disabled={isDownloading}>
+            {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             {downloadLabel}
           </Button>
         </div>

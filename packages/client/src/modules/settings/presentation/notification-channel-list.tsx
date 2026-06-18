@@ -44,6 +44,7 @@ function NotificationChannelRow({
   settings,
   selected,
   enabled,
+  disabled,
   onSelect,
   onToggle,
 }: {
@@ -51,6 +52,7 @@ function NotificationChannelRow({
   settings: AppSettings;
   selected: boolean;
   enabled: boolean;
+  disabled: boolean;
   onSelect: (channel: NotificationChannel) => void;
   onToggle: (channel: NotificationChannel) => void;
 }) {
@@ -70,6 +72,7 @@ function NotificationChannelRow({
           id={checkboxId}
           checked={enabled}
           aria-label={`${enabled ? t("common.disable") : t("common.enable")} ${channelLabel}`}
+          disabled={disabled}
           onCheckedChange={() => onToggle(channel)}
         />
       </div>
@@ -108,11 +111,13 @@ export function NotificationChannelList({
   activeChannel,
   onSelect,
   onToggle,
+  disabled = false,
 }: {
   settings: AppSettings;
   activeChannel: NotificationChannel;
   onSelect: (channel: NotificationChannel) => void;
   onToggle: (channel: NotificationChannel) => void;
+  disabled?: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -126,6 +131,7 @@ export function NotificationChannelList({
             settings={settings}
             selected={activeChannel === channel}
             enabled={settings.enabledChannels.includes(channel)}
+            disabled={disabled}
             onSelect={onSelect}
             onToggle={onToggle}
           />

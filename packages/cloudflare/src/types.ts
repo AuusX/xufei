@@ -10,6 +10,7 @@ import type { CustomCycleUnit } from "@renewlet/shared/runtime";
  */
 export interface Env {
   DB: D1Database;
+  ASSETS: Fetcher;
   ASSETS_BUCKET: R2Bucket;
   SETUP_ENABLED?: string;
   SESSION_TTL_DAYS?: string;
@@ -83,7 +84,18 @@ export interface SubscriptionRow {
   repeat_reminder_enabled: number;
   repeat_reminder_interval: string;
   repeat_reminder_window: string;
+  cost_sharing_json?: string;
   extra_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 每用户调度 gate；Cron 先读这里，空状态下不再触碰 subscriptions 候选查询。 */
+export interface SubscriptionSchedulerStateRow {
+  user_id: string;
+  auto_renew_count: number;
+  repeat_reminder_count: number;
+  last_auto_renew_local_date: string;
   created_at: string;
   updated_at: string;
 }
@@ -134,6 +146,41 @@ export interface PublicStatusPageRow {
   user_id: string;
   token: string;
   show_prices: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 云同步与备份目标；credential_json 是 provider 级 write-only secret，出站只能暴露 credentialSet。 */
+export interface CloudBackupTargetRow {
+  user_id: string;
+  provider: "webdav" | "s3";
+  config_json: string;
+  credential_json: string;
+  schedule_enabled: number;
+  schedule_frequency: "daily" | "weekly";
+  schedule_time: string;
+  schedule_weekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+  retention: number;
+  last_backup_at: string | null;
+  last_status: "idle" | "success" | "failed";
+  last_error: string | null;
+  locked_until: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 全局内置图标索引 metadata；search/detail gzip 分离，普通搜索不读取完整冷字段索引。 */
+export interface MediaIconIndexRow {
+  key: "active";
+  hash: string | null;
+  search_r2_key: string | null;
+  detail_r2_key: string | null;
+  icon_count: number;
+  provider_counts_json: string;
+  provider_status_json: string;
+  checked_at: string | null;
+  index_updated_at: string | null;
+  locked_until: string | null;
   created_at: string;
   updated_at: string;
 }

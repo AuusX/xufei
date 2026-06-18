@@ -1,33 +1,36 @@
 /**
- * 查询当前部署是否还需要初始化管理员。
+ * 查询当前部署的认证前应用能力。
  *
  * 失败时按“无需展示初始化入口”处理，避免登录页出现误导性的首次部署提示。
  *
  * 架构位置：
- * - 登录页和 setup 页通过该 Hook 决定是否展示初始化流程。
+ * - 登录页、setup 页和 Settings demo 置灰都通过该 Hook 读取 app status。
  * - 这是认证前接口，不能依赖 PocketBase 会话状态。
  *
- * 注意： 保守隐藏 setup 入口是安全优先选择；真正的初始化允许性仍由后端校验。
+ * 注意：前端能力状态只是体验层，真正的初始化、密钥保存和外发限制仍由后端校验。
  */
 import { useEffect, useState } from "react";
-import { setupStatusResponseSchema } from "@/lib/api/schemas/app";
+import { appStatusResponseSchema } from "@/lib/api/schemas/app";
 
 type SetupStatus = {
   setupRequired: boolean;
   setupEnabled: boolean;
+  demoMode: boolean;
   isLoading: boolean;
 };
 
 const hiddenSetupStatus: SetupStatus = {
   setupRequired: false,
   setupEnabled: true,
+  demoMode: false,
   isLoading: false,
 };
 
-function normalizeSetupStatus(data: { setupRequired: boolean; setupEnabled: boolean }): Omit<SetupStatus, "isLoading"> {
+function normalizeSetupStatus(data: { setupRequired: boolean; setupEnabled: boolean; demoMode: boolean }): Omit<SetupStatus, "isLoading"> {
   return {
     setupRequired: data.setupRequired,
     setupEnabled: data.setupEnabled,
+    demoMode: data.demoMode,
   };
 }
 
@@ -43,7 +46,7 @@ export function useSetupStatus(): SetupStatus {
 
     async function loadStatus() {
       try {
-        const response = await fetch("/api/app/setup", {
+        const response = await fetch("/api/app/status", {
           credentials: "include",
           cache: "no-store",
           signal: controller.signal,
@@ -54,9 +57,9 @@ export function useSetupStatus(): SetupStatus {
         }
 
         const payload: unknown = await response.json();
-        const parsed = setupStatusResponseSchema.safeParse(payload);
+        const parsed = appStatusResponseSchema.safeParse(payload);
         if (!parsed.success) {
-          // 初始化状态影响入口可见性；响应不符合契约时按关闭处理，避免误引导用户进入初始化。
+          // app status 影响认证前入口和 demo 置灰；响应不符合契约时按保守能力处理，避免误引导用户。
           if (!cancelled) setStatus(hiddenSetupStatus);
           return;
         }

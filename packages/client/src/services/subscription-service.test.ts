@@ -1,6 +1,24 @@
 // 订阅 service 测试保护 PocketBase/Worker 响应进入前端 domain 前的运行时归一化边界。
-import { describe, expect, it } from "vitest";
-import { fromApiSubscription } from "./subscription-service";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fromApiSubscription, subscriptionService, toSubscriptionWritePayload } from "./subscription-service";
+
+const mocks = vi.hoisted(() => ({
+  apiFetch: vi.fn(),
+  getCurrentUserId: vi.fn(() => "user_1"),
+}));
+
+vi.mock("@/lib/api-client", () => ({
+  apiFetch: mocks.apiFetch,
+}));
+
+vi.mock("@/lib/pocketbase", () => ({
+  pb: {
+    lang: "zh-CN",
+    beforeSend: undefined,
+  },
+  getCurrentUserId: mocks.getCurrentUserId,
+  getAuthHeader: vi.fn(() => ({})),
+}));
 
 const legacyPocketBaseRow = {
   collectionId: "subscriptions",
@@ -32,6 +50,33 @@ const legacyPocketBaseRow = {
   created: "2026-06-04 23:43:33.958Z",
   updated: "2026-06-04 23:43:33.958Z",
 };
+
+const apiSubscription = {
+  id: "sub_api",
+  name: "API Subscription",
+  price: 12,
+  currency: "USD",
+  billingCycle: "monthly",
+  category: "productivity",
+  status: "active",
+  pinned: false,
+  publicHidden: false,
+  startDate: "2026-01-01",
+  nextBillingDate: "2026-02-01",
+  autoRenew: false,
+  autoCalculateNextBillingDate: true,
+  tags: ["api"],
+  reminderDays: 3,
+  repeatReminderEnabled: false,
+  repeatReminderInterval: "1h",
+  repeatReminderWindow: "72h",
+  extra: {},
+} as const;
+
+beforeEach(() => {
+  mocks.apiFetch.mockReset();
+  mocks.getCurrentUserId.mockReturnValue("user_1");
+});
 
 describe("subscription service normalization", () => {
   it("ignores legacy custom fields on fixed PocketBase cycles", () => {
@@ -79,5 +124,102 @@ describe("subscription service normalization", () => {
       customDays: 3,
       customCycleUnit: "year",
     });
+  });
+
+  it("normalizes cost sharing participation at the service boundary", () => {
+    const subscription = fromApiSubscription({
+      ...apiSubscription,
+      price: 100,
+      costSharing: {
+        enabled: true,
+        payerMemberId: "me",
+        selfMemberId: "me",
+        splitMode: "custom",
+        members: [
+          { id: "me", name: "Me", included: true, customAmount: 40 },
+          { id: "partner", name: "Partner", included: false, customAmount: 60 },
+        ],
+      },
+    });
+    const payload = toSubscriptionWritePayload(subscription);
+
+    expect(subscription.costSharing?.members.map((member) => member.included)).toEqual([true, true]);
+    expect(payload.costSharing).toEqual(subscription.costSharing);
+    expect(toSubscriptionWritePayload(fromApiSubscription(apiSubscription)).costSharing).toBeNull();
+  });
+});
+
+describe("subscription service API calls", () => {
+  it("lists subscriptions through the Renewlet product API", async () => {
+    mocks.apiFetch.mockResolvedValue({
+      subscriptions: [apiSubscription],
+      nextCursor: "next",
+      total: 1,
+    });
+
+    const page = await subscriptionService.listPage("cursor", 25);
+
+    expect(mocks.apiFetch).toHaveBeenCalledWith("/api/app/subscriptions?limit=25&cursor=cursor", expect.anything());
+    expect(page.subscriptions).toHaveLength(1);
+    expect(page.nextCursor).toBe("next");
+  });
+
+  it("stops aggregate listing when the backend repeats a subscription cursor", async () => {
+    const firstPageUrl = "/api/app/subscriptions?limit=50";
+    const repeatedCursorUrl = "/api/app/subscriptions?limit=50&cursor=repeat";
+    mocks.apiFetch.mockImplementation(async (input: string) => {
+      if (input === firstPageUrl) {
+        return {
+          subscriptions: [apiSubscription],
+          nextCursor: "repeat",
+          total: 2,
+        };
+      }
+      if (input === repeatedCursorUrl) {
+        return {
+          subscriptions: [{ ...apiSubscription, id: "sub_api_2", name: "Second API Subscription" }],
+          nextCursor: "repeat",
+          total: 2,
+        };
+      }
+      throw new Error(`UNEXPECTED_SUBSCRIPTION_LIST_REQUEST:${input}`);
+    });
+
+    try {
+      await subscriptionService.list();
+      throw new Error("Expected repeated cursor guard to reject");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("SUBSCRIPTION_CURSOR_REPEATED");
+    }
+
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(2);
+    expect(mocks.apiFetch.mock.calls[0]?.[0]).toBe(firstPageUrl);
+    expect(mocks.apiFetch.mock.calls[1]?.[0]).toBe(repeatedCursorUrl);
+  });
+
+  it("creates and updates subscriptions through /api/app/subscriptions", async () => {
+    mocks.apiFetch.mockResolvedValue({ subscription: apiSubscription });
+    const subscription = fromApiSubscription(apiSubscription);
+
+    await subscriptionService.create(subscription);
+    await subscriptionService.update(subscription);
+
+    expect(mocks.apiFetch.mock.calls[0]?.[0]).toBe("/api/app/subscriptions");
+    expect(mocks.apiFetch.mock.calls[0]?.[2]).toMatchObject({ method: "POST" });
+    expect(mocks.apiFetch.mock.calls[1]?.[0]).toBe("/api/app/subscriptions/sub_api");
+    expect(mocks.apiFetch.mock.calls[1]?.[2]).toMatchObject({ method: "PATCH" });
+  });
+
+  it("renews with an explicit empty JSON object and deletes through the product API", async () => {
+    mocks.apiFetch.mockResolvedValueOnce({ subscription: apiSubscription }).mockResolvedValueOnce({ ok: true });
+
+    await subscriptionService.renew("sub_api");
+    await subscriptionService.delete("sub_api");
+
+    expect(mocks.apiFetch.mock.calls[0]?.[0]).toBe("/api/app/subscriptions/sub_api/renew");
+    expect(mocks.apiFetch.mock.calls[0]?.[2]).toMatchObject({ method: "POST", body: "{}" });
+    expect(mocks.apiFetch.mock.calls[1]?.[0]).toBe("/api/app/subscriptions/sub_api");
+    expect(mocks.apiFetch.mock.calls[1]?.[2]).toMatchObject({ method: "DELETE" });
   });
 });

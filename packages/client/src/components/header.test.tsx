@@ -91,6 +91,7 @@ vi.mock("@/i18n/I18nProvider", () => ({
         "system.updateFailedTitle": "更新失败",
         "system.updateNow": "立即更新",
         "system.updateTitle": "系统更新",
+        "system.updateUnavailableTitle": "页面内更新不可用",
         "system.updating": "更新中...",
         "system.viewChangelog": "查看更新日志",
       };
@@ -202,13 +203,36 @@ describe("Header system version entry", () => {
     expect(screen.getByText("当前版本")).toBeInTheDocument();
   });
 
-  it("hides the version badge from non-admin users", () => {
+  it("shows the version badge for non-admin users without update actions", async () => {
     mocks.useSession.mockReturnValue(adminSession("user"));
+    mocks.useSystemVersion.mockReturnValue({
+      data: versionFixture({ updateSupported: false, unsupportedReason: "需要管理员权限" }),
+      isPending: false,
+      isError: false,
+      isFetching: false,
+      refetch: vi.fn(),
+    });
+    const user = userEvent.setup();
+
+    renderHeader();
+
+    const updateButton = screen.getByRole("button", { name: "打开系统更新" });
+    expect(updateButton).toBeInTheDocument();
+
+    await user.click(updateButton);
+
+    expect(screen.getByText("当前版本")).toBeInTheDocument();
+    expect(screen.getByText("需要管理员权限")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "立即更新" })).not.toBeInTheDocument();
+  });
+
+  it("waits for a signed-in session before showing the version badge", () => {
+    mocks.useSession.mockReturnValue({ data: undefined, isPending: true });
 
     renderHeader();
 
     expect(screen.queryByRole("button", { name: "打开系统更新" })).not.toBeInTheDocument();
-    expect(screen.queryByText("订阅管理助手")).not.toBeInTheDocument();
+    expect(mocks.useSystemVersion).not.toHaveBeenCalled();
   });
 
   it("keeps the header theme toggle as a local-only preference", async () => {

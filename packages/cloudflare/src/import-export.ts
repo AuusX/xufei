@@ -17,6 +17,7 @@ import { requestLocale, json, readJsonWithLimit, HttpError, type AppLocale } fro
 import { serverText } from "./server-i18n";
 import { requireAuth } from "./auth";
 import { normalizeSubscriptionBodyForStorage, subscriptionRowValues, toSubscriptionRow, type SubscriptionBody } from "./subscriptions";
+import { refreshSubscriptionSchedulerState } from "./subscription-scheduler-state";
 import type { Env, SubscriptionRow } from "./types";
 
 const INSERT_SUBSCRIPTION_SQL = `
@@ -24,8 +25,8 @@ const INSERT_SUBSCRIPTION_SQL = `
     id, user_id, name, logo, price, currency, billing_cycle, custom_days, custom_cycle_unit, one_time_term_count, one_time_term_unit,
     category, status, pinned, public_hidden, payment_method,
     start_date, next_billing_date, auto_renew, auto_calculate_next_billing_date, trial_end_date, website, notes, tags_json,
-    reminder_days, repeat_reminder_enabled, repeat_reminder_interval, repeat_reminder_window, extra_json, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    reminder_days, repeat_reminder_enabled, repeat_reminder_interval, repeat_reminder_window, cost_sharing_json, extra_json, created_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const UPDATE_SUBSCRIPTION_SQL = `
@@ -34,7 +35,7 @@ const UPDATE_SUBSCRIPTION_SQL = `
     one_time_term_count = ?, one_time_term_unit = ?, category = ?, status = ?,
     pinned = ?, public_hidden = ?, payment_method = ?, start_date = ?, next_billing_date = ?, auto_renew = ?, auto_calculate_next_billing_date = ?,
     trial_end_date = ?, website = ?, notes = ?, tags_json = ?, reminder_days = ?, repeat_reminder_enabled = ?,
-    repeat_reminder_interval = ?, repeat_reminder_window = ?, extra_json = ?, updated_at = ?
+    repeat_reminder_interval = ?, repeat_reminder_window = ?, cost_sharing_json = ?, extra_json = ?, updated_at = ?
   WHERE user_id = ? AND id = ?
 `;
 
@@ -70,6 +71,7 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
   const timestamp = nowIso();
   const statements: D1PreparedStatement[] = [];
   const existingMatches = buildExistingImportMatches(existing);
+  let wroteSubscriptions = false;
   for (const item of preview.items) {
     if (item.action !== "create" && item.action !== "replace") continue;
     const source = preview.normalizedByIndex.get(item.index);
@@ -84,6 +86,7 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
       timestamp,
     );
     if (existingRow) {
+      wroteSubscriptions = true;
       statements.push(env.DB.prepare(UPDATE_SUBSCRIPTION_SQL).bind(
         row.name,
         row.logo,
@@ -111,12 +114,14 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
         row.repeat_reminder_enabled,
         row.repeat_reminder_interval,
         row.repeat_reminder_window,
+        row.cost_sharing_json,
         row.extra_json,
         timestamp,
         auth.user.id,
         existingRow.id,
       ));
     } else {
+      wroteSubscriptions = true;
       statements.push(env.DB.prepare(INSERT_SUBSCRIPTION_SQL).bind(...subscriptionRowValues(row)));
     }
   }
@@ -124,6 +129,7 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
   if (body.payload.settings) {
     const current = await getSettings(env, auth.user.id);
     const next = mergeSettingsPatch(current, body.payload.settings);
+    // settings merge 先套默认值和清洗规则，再写 JSON；导入文件不能绕过设置页契约塞入未知字段。
     statements.push(env.DB.prepare(`
       INSERT INTO settings (user_id, settings_json, created_at, updated_at)
       VALUES (?, ?, ?, ?)
@@ -132,6 +138,7 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
   }
   if (body.payload.customConfig) {
     const nextConfig = customConfigSchema.parse(body.payload.customConfig);
+    // custom config 是 shared schema 事实源；Worker 不在 D1 层复制字段级兼容逻辑。
     statements.push(env.DB.prepare(`
       INSERT INTO custom_configs (user_id, config_json, created_at, updated_at)
       VALUES (?, ?, ?, ?)
@@ -142,6 +149,9 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
   if (statements.length > 0) {
     // D1 batch 在同一事务里执行；导入要么整体写入，要么让调用方看到明确失败。
     await env.DB.batch(statements);
+  }
+  if (wroteSubscriptions) {
+    await refreshSubscriptionSchedulerState(env, auth.user.id, { resetAutoRenewCheck: true });
   }
   return json(importApplyResponseSchema.parse({ ok: true, ...publicPreview(preview) }));
 }

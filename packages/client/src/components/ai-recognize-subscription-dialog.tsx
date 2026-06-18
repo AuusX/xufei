@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, FileSearch } from "lucide-react";
+// AI 识别弹窗负责把流式事件收敛为导入草稿；只有 final 事件能进入 preview/apply 链路。
 import { AIDraftReviewPanel } from "@/components/ai-recognition/ai-draft-review-panel";
+import { AIErrorDetailsDialog } from "@/components/ai-recognition/ai-error-details-dialog";
 import {
   AIRecognitionCompactStepper,
   AIRecognitionFooterActions,
@@ -11,6 +13,18 @@ import {
 } from "@/components/ai-recognition/ai-recognition-dialog-layout";
 import { AIRecognitionInputTabs } from "@/components/ai-recognition/ai-recognition-input-tabs";
 import { AIRecognitionStreamPanel } from "@/components/ai-recognition/ai-recognition-stream-panel";
+import {
+  appendLimitedText,
+  createObjectUrl,
+  hasBlockingAIImportWarnings,
+  isAbortedApiError,
+  nextDraftId,
+  nextImageId,
+  recognitionElapsedSeconds,
+  revokeImageItem,
+  revokeImageItems,
+  thinkingOptionIdOrNull,
+} from "@/components/ai-recognition/ai-recognition-dialog-utils";
 import type { AIDraftListItem, AIRecognitionImageItem, AIRecognitionInputMode } from "@/components/ai-recognition/ai-recognition-dialog-types";
 import Link from "@/components/router-link";
 import { Button } from "@/components/ui/button";
@@ -18,6 +32,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ImportPreviewPanel } from "@/components/import-preview-panel";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useI18n } from "@/i18n/I18nProvider";
+import { createAIErrorDetails, type AIErrorDetails } from "@/lib/ai-error-details";
 import { getDisplayErrorMessage } from "@/lib/display-error";
 import { todayDateOnlyInTimeZone } from "@/lib/time/date-only";
 import {
@@ -40,7 +55,6 @@ import {
 import { getAIRecognitionSettingsBlocker } from "@/modules/ai-recognition/domain/settings-readiness";
 import { buildPreparedImportFromAIDrafts } from "@/modules/ai-recognition/domain/ai-recognition-import";
 import { getAIDraftBlockingIssues } from "@/modules/ai-recognition/domain/ai-draft-preflight";
-import { IMPORT_MESSAGE_CODES } from "@/modules/import-export/domain/import-export-model";
 import { useImportPreviewApply } from "@/modules/import-export/application/use-import-preview-apply";
 import { aiRecognitionService } from "@/services/ai-recognition-service";
 
@@ -57,14 +71,6 @@ type AIRecognitionStreamStatus = "running" | "complete" | "error" | "stopped";
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const AI_RECOGNITION_TEXT_PREVIEW_MAX_CHARS = 360;
 const AI_RECOGNITION_REASONING_PREVIEW_MAX_CHARS = 1600;
-const AI_BLOCKING_IMPORT_WARNING_CODES = new Set<string>([
-  IMPORT_MESSAGE_CODES.aiBillingCycleDefaulted,
-  IMPORT_MESSAGE_CODES.aiCurrencyDefaulted,
-  IMPORT_MESSAGE_CODES.aiCustomCycleDefaulted,
-  IMPORT_MESSAGE_CODES.aiDateDefaulted,
-  IMPORT_MESSAGE_CODES.aiPriceDefaulted,
-]);
-
 export function AIRecognizeSubscriptionDialog({
   open,
   onOpenChange,
@@ -101,6 +107,8 @@ export function AIRecognizeSubscriptionDialog({
   const [streamReasoningText, setStreamReasoningText] = useState("");
   const [streamElapsedSeconds, setStreamElapsedSeconds] = useState<number | null>(null);
   const [draftGenerationElapsedSeconds, setDraftGenerationElapsedSeconds] = useState<number | null>(null);
+  const [aiErrorDetails, setAIErrorDetails] = useState<AIErrorDetails | null>(null);
+  const [aiErrorDetailsOpen, setAIErrorDetailsOpen] = useState(false);
   const today = todayDateOnlyInTimeZone(new Date(), settings.timezone);
   const aiSettings = settings.aiRecognition;
   const settingsBlocker = getAIRecognitionSettingsBlocker(aiSettings);
@@ -206,6 +214,8 @@ export function AIRecognizeSubscriptionDialog({
     setDraftsStale(false);
     resetStreamState();
     setDraftGenerationElapsedSeconds(null);
+    setAIErrorDetails(null);
+    setAIErrorDetailsOpen(false);
     setError(null);
     resetImportPreview();
   }
@@ -307,6 +317,8 @@ export function AIRecognizeSubscriptionDialog({
     recognitionAbortRef.current = controller;
     setRecognizing(true);
     setError(null);
+    setAIErrorDetails(null);
+    setAIErrorDetailsOpen(false);
     setRecognitionWarnings([]);
     resetStreamState();
     startRecognitionElapsed();
@@ -345,8 +357,10 @@ export function AIRecognizeSubscriptionDialog({
       const aborted = isAbortedApiError(err);
       setStreamStatus(aborted ? "stopped" : "error");
       if (aborted) return;
-      const displayError = getDisplayErrorMessage(err, t("aiRecognition.recognizeFailedDescription"));
-      setError(displayError);
+      const details = createAIErrorDetails(err, t("aiRecognition.recognizeFailedDescription"));
+      setAIErrorDetails(details);
+      setAIErrorDetailsOpen(true);
+      setError(null);
       setStreamStatus("error");
     } finally {
       if (recognitionRunRef.current === runId) {
@@ -495,10 +509,11 @@ export function AIRecognizeSubscriptionDialog({
       textPreview={streamTextPreview}
       reasoningText={streamReasoningText}
       elapsedSeconds={streamElapsedSeconds}
-      errorMessage={streamStatus === "error" ? error : null}
+      hasErrorDetails={streamStatus === "error" && Boolean(aiErrorDetails)}
       actionsDisabled={recognizing}
       mobile={isMobile}
       onDismiss={dismissStreamOverlay}
+      onOpenErrorDetails={() => setAIErrorDetailsOpen(true)}
     />
   ) : null;
 
@@ -513,6 +528,21 @@ export function AIRecognizeSubscriptionDialog({
           : cn("overflow-y-auto", isMobile ? "space-y-3" : "space-y-4"),
       )}
     >
+          {aiErrorDetails && !streamStatus ? (
+            <div className={cn("flex", isMobile ? "justify-stretch" : "justify-end")}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className={cn("border-border", isMobile && "w-full")}
+                onClick={() => setAIErrorDetailsOpen(true)}
+              >
+                <AlertTriangle className="h-4 w-4" />
+                {t("aiRecognition.errorDetailsOpenLast")}
+              </Button>
+            </div>
+          ) : null}
+
           {settingsBlocker ? (
             <div className="flex flex-col gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-foreground sm:flex-row sm:items-center sm:justify-between">
               <div className="flex min-w-0 gap-2">
@@ -669,131 +699,84 @@ export function AIRecognizeSubscriptionDialog({
   );
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        layout="frame"
-        closeLabel={t("common.close")}
-        className={cn(
-          "overflow-hidden border-border bg-card p-0",
-          isMobile
-            ? "h5-ai-recognition-workbench-frame"
-            : cn(
-              "h5-import-dialog-panel sm:max-w-6xl",
-              workflowExpanded ? "h5-dialog-frame" : "h5-ai-recognition-input-dialog-frame",
-            ),
-        )}
-        onOpenAutoFocus={(event) => {
-          event.preventDefault();
-          // H5 首屏需要先露出输入模式和上传入口；自动聚焦会立刻弹键盘并挤掉工作区。
-          if (isMobile) return;
-          textInputRef.current?.focus();
-        }}
-      >
-        <DialogHeader
+    <>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent
+          layout="frame"
+          closeLabel={t("common.close")}
           className={cn(
-            "shrink-0 border-b border-border bg-card pr-12",
-            isMobile ? "px-4 py-3 text-left" : "px-4 py-4 sm:px-6 sm:pr-14",
+            "overflow-hidden border-border bg-card p-0",
+            isMobile
+              ? "h5-ai-recognition-workbench-frame"
+              : cn(
+                "h5-import-dialog-panel sm:max-w-6xl",
+                workflowExpanded ? "h5-dialog-frame" : "h5-ai-recognition-input-dialog-frame",
+              ),
           )}
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            // H5 首屏需要先露出输入模式和上传入口；自动聚焦会立刻弹键盘并挤掉工作区。
+            if (isMobile) return;
+            textInputRef.current?.focus();
+          }}
         >
-          {isMobile ? (
-            <>
-              <DialogTitle className="text-base leading-6">{t("aiRecognition.dialogTitle")}</DialogTitle>
-              <DialogDescription className="sr-only">{t("aiRecognition.dialogDescription")}</DialogDescription>
-            </>
-          ) : (
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-              <div className="flex min-w-0 items-start gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-secondary/50 text-muted-foreground">
-                  <FileSearch className="h-4 w-4" />
+          <DialogHeader
+            className={cn(
+              "shrink-0 border-b border-border bg-card pr-12",
+              isMobile ? "px-4 py-3 text-left" : "px-4 py-4 sm:px-6 sm:pr-14",
+            )}
+          >
+            {isMobile ? (
+              <>
+                <DialogTitle className="text-base leading-6">{t("aiRecognition.dialogTitle")}</DialogTitle>
+                <DialogDescription className="sr-only">{t("aiRecognition.dialogDescription")}</DialogDescription>
+              </>
+            ) : (
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-secondary/50 text-muted-foreground">
+                    <FileSearch className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 text-left">
+                    <DialogTitle className="text-lg">{t("aiRecognition.dialogTitle")}</DialogTitle>
+                    <DialogDescription className="mt-1 max-w-3xl text-left leading-5">{t("aiRecognition.dialogDescription")}</DialogDescription>
+                  </div>
                 </div>
-                <div className="min-w-0 text-left">
-                  <DialogTitle className="text-lg">{t("aiRecognition.dialogTitle")}</DialogTitle>
-                  <DialogDescription className="mt-1 max-w-3xl text-left leading-5">{t("aiRecognition.dialogDescription")}</DialogDescription>
-                </div>
+                <AIRecognitionStepper
+                  steps={steps}
+                  ariaLabel={t("aiRecognition.dialogTitle")}
+                />
               </div>
-              <AIRecognitionStepper
-                steps={steps}
-                ariaLabel={t("aiRecognition.dialogTitle")}
-              />
-            </div>
-          )}
-        </DialogHeader>
+            )}
+          </DialogHeader>
 
-        {isMobile ? (
-          <AIRecognitionCompactStepper
-            steps={steps}
-            activeIndex={mobileActiveStepIndex}
-            ariaLabel={t("aiRecognition.dialogTitle")}
-          />
-        ) : null}
-
-        <div data-testid="ai-recognition-dialog-workspace" className="relative min-h-0 flex-1 overflow-hidden">
-          {body}
-          {streamPanel ? (
-            <div
-              data-testid="ai-recognition-stream-overlay"
-              className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-card/75 px-3 py-4 backdrop-blur-[2px] sm:px-6"
-            >
-              {streamPanel}
-            </div>
+          {isMobile ? (
+            <AIRecognitionCompactStepper
+              steps={steps}
+              activeIndex={mobileActiveStepIndex}
+              ariaLabel={t("aiRecognition.dialogTitle")}
+            />
           ) : null}
-        </div>
-        {isMobile ? mobileFooter : desktopFooter}
-      </DialogContent>
-    </Dialog>
+
+          <div data-testid="ai-recognition-dialog-workspace" className="relative min-h-0 flex-1 overflow-hidden">
+            {body}
+            {streamPanel ? (
+              <div
+                data-testid="ai-recognition-stream-overlay"
+                className="absolute inset-0 z-20 flex items-center justify-center overflow-y-auto bg-card/75 px-3 py-4 backdrop-blur-[2px] sm:px-6"
+              >
+                {streamPanel}
+              </div>
+            ) : null}
+          </div>
+          {isMobile ? mobileFooter : desktopFooter}
+        </DialogContent>
+      </Dialog>
+      <AIErrorDetailsDialog
+        open={aiErrorDetailsOpen}
+        details={aiErrorDetails}
+        onOpenChange={setAIErrorDetailsOpen}
+      />
+    </>
   );
-}
-
-function thinkingOptionIdOrNull(control: AiThinkingControl | null): string | null {
-  return control ? thinkingOptionId(control) : null;
-}
-
-function nextImageId(ref: { current: number }): string {
-  ref.current += 1;
-  return `ai-image-${ref.current}`;
-}
-
-function nextDraftId(ref: { current: number }): string {
-  ref.current += 1;
-  return `ai-draft-${ref.current}`;
-}
-
-function createObjectUrl(file: File): string | null {
-  if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
-  return URL.createObjectURL(file);
-}
-
-function revokeImageItem(image: AIRecognitionImageItem) {
-  if (image.thumbnailUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
-    URL.revokeObjectURL(image.thumbnailUrl);
-  }
-}
-
-function revokeImageItems(images: readonly AIRecognitionImageItem[]) {
-  for (const image of images) revokeImageItem(image);
-}
-
-function appendLimitedText(current: string, delta: string, maxChars: number): string {
-  const next = `${current}${delta}`;
-  const chars = [...next];
-  if (chars.length <= maxChars) return next;
-  return `...${chars.slice(chars.length - maxChars).join("")}`;
-}
-function recognitionElapsedSeconds(startedAt: number): number {
-  return Math.max(1, Math.ceil((performance.now() - startedAt) / 1000));
-}
-
-function isAbortedApiError(error: unknown): boolean {
-  return Boolean(
-    error
-    && typeof error === "object"
-    && "code" in error
-    && (error as { code?: unknown }).code === "aborted",
-  );
-}
-
-function hasBlockingAIImportWarnings(warnings: readonly string[]): boolean {
-  return warnings.some((warning) => (
-    warning.split("|").some((part) => AI_BLOCKING_IMPORT_WARNING_CODES.has(part))
-  ));
 }

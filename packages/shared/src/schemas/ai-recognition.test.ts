@@ -1,3 +1,4 @@
+// AI 识别 schema 测试保护生成态、最终态、SSE 态三层契约，避免 Docker/Worker/前端导入边界混用。
 import { describe, expect, it } from "vitest";
 import {
   isAIProviderBaseUrlRequired,
@@ -7,15 +8,18 @@ import { aiRecognitionPromptSpec } from "../ai-recognition-prompt";
 import {
   AI_RECOGNITION_MAX_IMAGES,
   aiGeneratedRecognizeObjectSchema,
+  aiModelListErrorDetailsSchema,
   aiModelListRequestSchema,
   aiModelListResponseSchema,
   aiRecognitionDiagnosticsSchema,
+  aiRecognitionErrorDetailsSchema,
   aiRecognitionSettingsSchema,
   aiRecognitionStreamEventSchema,
   aiRecognizeResponseSchema,
 } from "./ai-recognition";
 
 function generatedDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  // generated fixture 故意模拟模型原始对象，而不是最终导入草稿；nullable 和 notes 决策在这里被重点覆盖。
   return {
     name: "youtube",
     price: 15,
@@ -122,6 +126,7 @@ describe("AI recognition prompt contract", () => {
 
 describe("AI recognition diagnostics schema", () => {
   it("allows five image metadata entries and rejects more", () => {
+    // diagnostics 只记录图片元数据，不回传 base64；数量上限同时保护 Worker 内存和脱敏响应大小。
     const diagnostics = {
       schemaVersion: "1",
       promptVersion: "test",
@@ -161,8 +166,29 @@ describe("AI recognition diagnostics schema", () => {
   });
 });
 
+describe("AI provider error response schema", () => {
+  it("keeps raw provider response text for model list failures", () => {
+    const rawBody = "  {\"error\":\"invalid sk-test-secret\"}\n";
+    expect(aiModelListErrorDetailsSchema.parse({
+      rawResponseText: rawBody,
+    }).rawResponseText).toBe(rawBody);
+
+    expect(aiModelListErrorDetailsSchema.safeParse({
+      reason: "http_401",
+      providerMessage: "legacy provider message",
+    }).success).toBe(false);
+  });
+
+  it("allows AI recognition errors to expose only raw response text", () => {
+    expect(aiRecognitionErrorDetailsSchema.safeParse({
+      rawResponseText: "{\"error\":\"invalid model\"}",
+    }).success).toBe(true);
+  });
+});
+
 describe("AI recognition final response schema", () => {
   it("rejects generated-only nullable website objects after normalization boundary", () => {
+    // 生成态允许模型表达“不确定”，最终 API 必须在进入导入预览前完成归一化。
     const diagnostics = {
       schemaVersion: "1",
       promptVersion: "test",
@@ -204,6 +230,7 @@ describe("AI recognition final response schema", () => {
 
 describe("AI recognition stream event schema", () => {
   it("accepts progress, partial, text, reasoning and final stream events", () => {
+    // final 事件是唯一可进入导入草稿的事实源，其它事件只服务 UI 进度和排障提示。
     const diagnostics = {
       schemaVersion: "1",
       promptVersion: "test",

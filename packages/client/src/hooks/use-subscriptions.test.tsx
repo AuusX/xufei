@@ -1,4 +1,4 @@
-// subscriptions hook 测试保护 PocketBase 列表契约、CRUD 写入 payload 和 query invalidation 范围。
+// subscriptions hook 测试保护产品 API 分页契约、CRUD 写入 payload 和 query invalidation 范围。
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
@@ -42,31 +42,25 @@ type SubscriptionWritePayload = {
   repeatReminderEnabled: boolean;
   repeatReminderInterval: RepeatReminderInterval;
   repeatReminderWindow: RepeatReminderWindow;
-};
-
-type CreateSubscriptionPayload = SubscriptionWritePayload & { user: string };
-type CreateSubscriptionMock = (payload: CreateSubscriptionPayload) => Promise<ApiSubscription>;
-type UpdateSubscriptionMock = (id: string, payload: SubscriptionWritePayload) => Promise<ApiSubscription>;
-type GetListMock = (page: number, perPage: number, options: { filter: string; sort: string }) => Promise<{ items: ApiSubscription[]; totalItems: number; totalPages: number }>;
-type SubscriptionCollectionMock = {
-  create: CreateSubscriptionMock;
-  update: UpdateSubscriptionMock;
-  getList: GetListMock;
+  extra: Record<string, unknown>;
 };
 
 const mocks = vi.hoisted(() => ({
-  collection: vi.fn<(name: "subscriptions") => SubscriptionCollectionMock>(),
-  create: vi.fn<CreateSubscriptionMock>(),
-  update: vi.fn<UpdateSubscriptionMock>(),
-  getList: vi.fn<GetListMock>(),
+  apiFetch: vi.fn(),
   getCurrentUserId: vi.fn<() => string | null>(),
+}));
+
+vi.mock("@/lib/api-client", () => ({
+  apiFetch: mocks.apiFetch,
 }));
 
 vi.mock("@/lib/pocketbase", () => ({
   pb: {
-    collection: mocks.collection,
+    lang: "zh-CN",
+    beforeSend: undefined,
   },
   getCurrentUserId: mocks.getCurrentUserId,
+  getAuthHeader: vi.fn(() => ({})),
 }));
 
 function createWrapper() {
@@ -111,6 +105,7 @@ function apiSubscriptionFromPayload(id: string, payload: SubscriptionWritePayloa
     repeatReminderEnabled: payload.repeatReminderEnabled,
     repeatReminderInterval: payload.repeatReminderInterval,
     repeatReminderWindow: payload.repeatReminderWindow,
+    extra: payload.extra,
   };
 }
 
@@ -142,6 +137,7 @@ function apiSubscriptionFromDraft(id: string, draft: RecurringSubscriptionDraft)
     repeatReminderEnabled: draft.repeatReminderEnabled,
     repeatReminderInterval: draft.repeatReminderInterval,
     repeatReminderWindow: draft.repeatReminderWindow,
+    extra: draft.extra ?? {},
   });
 }
 
@@ -171,28 +167,32 @@ function subscriptionDraft(overrides: Partial<RecurringSubscriptionDraft> = {}):
     repeatReminderEnabled: false,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
+    extra: {},
     ...overrides,
   };
 }
 
+function parseRequestBody(callIndex: number): SubscriptionWritePayload {
+  const init = mocks.apiFetch.mock.calls[callIndex]?.[2] as RequestInit | undefined;
+  return JSON.parse(String(init?.body)) as SubscriptionWritePayload;
+}
+
 describe("use-subscriptions mutations", () => {
   beforeEach(() => {
-    mocks.collection.mockReset();
-    mocks.create.mockReset();
-    mocks.update.mockReset();
-    mocks.getList.mockReset();
+    mocks.apiFetch.mockReset();
     mocks.getCurrentUserId.mockReset();
     mocks.getCurrentUserId.mockReturnValue("user-1");
-    mocks.collection.mockReturnValue({
-      create: mocks.create,
-      update: mocks.update,
-      getList: mocks.getList,
+    mocks.apiFetch.mockImplementation(async (url: string, _schema: unknown, init?: RequestInit) => {
+      const id = url.includes("/sub-1") ? "sub-1" : "sub-1";
+      if (!init?.body) {
+        return { subscription: apiSubscriptionFromDraft(id, subscriptionDraft()) };
+      }
+      const payload = JSON.parse(String(init.body)) as SubscriptionWritePayload;
+      return { subscription: apiSubscriptionFromPayload(id, payload) };
     });
-    mocks.create.mockImplementation(async (payload) => apiSubscriptionFromPayload("sub-1", payload));
-    mocks.update.mockImplementation(async (_id, payload) => apiSubscriptionFromPayload("sub-1", payload));
   });
 
-  it("keeps tags as an empty array when creating a subscription through PocketBase SDK", async () => {
+  it("keeps tags as an empty array when creating a subscription through the product API", async () => {
     const { result } = renderHook(() => useCreateSubscription(), { wrapper: createWrapper() });
     const draft = subscriptionDraft({ tags: [] });
 
@@ -200,19 +200,20 @@ describe("use-subscriptions mutations", () => {
       await result.current.mutateAsync(draft);
     });
 
-    expect(mocks.collection).toHaveBeenCalledWith("subscriptions");
-    expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.apiFetch.mock.calls[0]?.[0]).toBe("/api/app/subscriptions");
+    expect(mocks.apiFetch.mock.calls[0]?.[2]).toMatchObject({ method: "POST" });
+    expect(parseRequestBody(0)).toMatchObject({
       name: "Aws",
       tags: [],
       repeatReminderEnabled: false,
       repeatReminderInterval: "1h",
       repeatReminderWindow: "72h",
       autoRenew: false,
-      user: "user-1",
-    }));
+    });
+    expect(parseRequestBody(0)).not.toHaveProperty("user");
   });
 
-  it("keeps tags as an empty array when updating a subscription through PocketBase SDK", async () => {
+  it("keeps tags as an empty array when updating a subscription through the product API", async () => {
     const { result } = renderHook(() => useUpdateSubscription(), { wrapper: createWrapper() });
     const subscription: Subscription = { id: "sub-1", ...subscriptionDraft({ tags: [] }) };
 
@@ -220,53 +221,43 @@ describe("use-subscriptions mutations", () => {
       await result.current.mutateAsync(subscription);
     });
 
-    expect(mocks.collection).toHaveBeenCalledWith("subscriptions");
-    expect(mocks.update).toHaveBeenCalledWith("sub-1", expect.objectContaining({
+    expect(mocks.apiFetch.mock.calls[0]?.[0]).toBe("/api/app/subscriptions/sub-1");
+    expect(mocks.apiFetch.mock.calls[0]?.[2]).toMatchObject({ method: "PATCH" });
+    expect(parseRequestBody(0)).toMatchObject({
       name: "Aws",
       tags: [],
       repeatReminderEnabled: false,
       repeatReminderInterval: "1h",
       repeatReminderWindow: "72h",
-    }));
+    });
   });
 });
 
 describe("use-subscriptions pagination", () => {
   beforeEach(() => {
-    mocks.collection.mockReset();
-    mocks.create.mockReset();
-    mocks.update.mockReset();
-    mocks.getList.mockReset();
+    mocks.apiFetch.mockReset();
     mocks.getCurrentUserId.mockReset();
     mocks.getCurrentUserId.mockReturnValue("user-1");
-    mocks.collection.mockReturnValue({
-      create: mocks.create,
-      update: mocks.update,
-      getList: mocks.getList,
-    });
   });
 
   it("loads a single page through the page hook", async () => {
     const first = apiSubscriptionFromDraft("sub-1", subscriptionDraft({ name: "First" }));
-    mocks.getList.mockResolvedValue({ items: [first], totalItems: 2, totalPages: 2 });
+    mocks.apiFetch.mockResolvedValue({ subscriptions: [first], nextCursor: "cursor-2", total: 2 });
 
     const { result } = renderHook(() => useSubscriptionsPage(null, 1), { wrapper: createWrapper() });
 
     await waitFor(() => expect(result.current.data?.subscriptions).toHaveLength(1));
-    expect(mocks.getList).toHaveBeenCalledWith(1, 1, expect.objectContaining({
-      filter: `user = "user-1"`,
-      sort: "-created",
-    }));
-    expect(result.current.data?.nextCursor).toBe("2");
+    expect(mocks.apiFetch).toHaveBeenCalledWith("/api/app/subscriptions?limit=1", expect.anything());
+    expect(result.current.data?.nextCursor).toBe("cursor-2");
   });
 
   it("merges loaded infinite pages without sharing the aggregate query cache shape", async () => {
     const first = apiSubscriptionFromDraft("sub-1", subscriptionDraft({ name: "First" }));
     const second = apiSubscriptionFromDraft("sub-2", subscriptionDraft({ name: "Second" }));
-    mocks.getList
-      .mockResolvedValueOnce({ items: [first], totalItems: 2, totalPages: 2 })
-      .mockResolvedValueOnce({ items: [second], totalItems: 2, totalPages: 2 })
-      .mockResolvedValueOnce({ items: [first, second], totalItems: 2, totalPages: 1 });
+    mocks.apiFetch
+      .mockResolvedValueOnce({ subscriptions: [first], nextCursor: "cursor-2", total: 2 })
+      .mockResolvedValueOnce({ subscriptions: [second], nextCursor: null, total: 2 })
+      .mockResolvedValueOnce({ subscriptions: [first, second], nextCursor: null, total: 2 });
 
     const wrapper = createWrapper();
     const infinite = renderHook(() => useInfiniteSubscriptions(), { wrapper });
@@ -284,15 +275,19 @@ describe("use-subscriptions pagination", () => {
 
   it("caps aggregate subscription loading at five thousand records", async () => {
     const pageItems = Array.from({ length: 50 }, (_, index) => apiSubscriptionFromDraft(`sub-${index}`, subscriptionDraft({ name: `Sub ${index}` })));
-    mocks.getList.mockImplementation(async (page) => ({
-      items: pageItems.map((item, index) => ({ ...item, id: `sub-${page}-${index}` })),
-      totalItems: 6000,
-      totalPages: 120,
-    }));
+    mocks.apiFetch.mockImplementation(async (_url: string) => {
+      const callNumber = mocks.apiFetch.mock.calls.length;
+      const page = callNumber;
+      return {
+        subscriptions: pageItems.map((item, index) => ({ ...item, id: `sub-${page}-${index}` })),
+        nextCursor: page < 120 ? `cursor-${page + 1}` : null,
+        total: 6000,
+      };
+    });
 
     const { result } = renderHook(() => useSubscriptions(), { wrapper: createWrapper() });
 
     await waitFor(() => expect(result.current.data).toHaveLength(5000));
-    expect(mocks.getList).toHaveBeenCalledTimes(100);
+    expect(mocks.apiFetch).toHaveBeenCalledTimes(100);
   });
 });

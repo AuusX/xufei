@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   handleTogglePublicHiddenSubscription: vi.fn(),
   handleSaveSubscription: vi.fn(),
   ratesLoading: false,
+  upcomingRenewalsCalls: [] as Array<{ count: number; timeZone: string; notificationReminderDays: number }>,
   useSettings: vi.fn(),
   useSubscriptions: vi.fn(),
 }));
@@ -85,9 +86,18 @@ vi.mock("@/components/spending-chart", () => ({
 }));
 
 vi.mock("@/components/upcoming-renewals", () => ({
-  UpcomingRenewals: ({ subscriptions }: { subscriptions: Subscription[] }) => (
-    <div data-testid="upcoming-renewals">{subscriptions.length}</div>
-  ),
+  UpcomingRenewals: ({
+    subscriptions,
+    timeZone,
+    notificationReminderDays,
+  }: {
+    subscriptions: Subscription[];
+    timeZone: string;
+    notificationReminderDays: number;
+  }) => {
+    mocks.upcomingRenewalsCalls.push({ count: subscriptions.length, timeZone, notificationReminderDays });
+    return <div data-testid="upcoming-renewals">{subscriptions.length}</div>;
+  },
 }));
 
 vi.mock("@/components/edit-subscription-dialog", () => ({
@@ -184,6 +194,7 @@ function mockResolvedDashboardData() {
 describe("Dashboard page loading state", () => {
   beforeEach(() => {
     mocks.ratesLoading = false;
+    mocks.upcomingRenewalsCalls = [];
     mockResolvedDashboardData();
   });
 
@@ -196,6 +207,11 @@ describe("Dashboard page loading state", () => {
     expect(screen.getByText("近期订阅")).toBeInTheDocument();
     expect(screen.getByText("Codex Pro")).toBeInTheDocument();
     expect(screen.getByTestId("subscription-card-reminder")).toHaveTextContent("5");
+    expect(mocks.upcomingRenewalsCalls[mocks.upcomingRenewalsCalls.length - 1]).toEqual({
+      count: 1,
+      timeZone: "Asia/Shanghai",
+      notificationReminderDays: 5,
+    });
     expect(screen.getByTestId("spending-chart")).toHaveTextContent("1:CNY:Asia/Shanghai:exchange-api");
     expect(screen.getByText("汇率加载中...")).toBeInTheDocument();
   });

@@ -13,8 +13,8 @@ const mocks = vi.hoisted(() => ({
     statuses: [{ id: "active", value: "active", labels: { "zh-CN": "活跃", "en-US": "Active" } }],
     paymentMethods: [{ id: "alipay", value: "alipay", labels: { "zh-CN": "支付宝", "en-US": "Alipay" } }],
     currencies: [
-      { id: "CNY", value: "CNY", labels: { "zh-CN": "人民币 (¥)", "en-US": "Chinese yuan (¥)" }, enabled: true },
-      { id: "USD", value: "USD", labels: { "zh-CN": "美元 ($)", "en-US": "US dollar ($)" }, enabled: true },
+      { id: "CNY", value: "CNY", labels: { "zh-CN": "¥ 人民币 (CNY)", "en-US": "¥ Chinese Yuan (CNY)" }, enabled: true },
+      { id: "USD", value: "USD", labels: { "zh-CN": "$ 美元 (USD)", "en-US": "$ US Dollar (USD)" }, enabled: true },
     ],
   },
 }));
@@ -163,11 +163,11 @@ describe("SubscriptionDialog reminders", () => {
     await user.click(screen.getByRole("combobox", { name: "扣费周期" }));
     await user.click(await screen.findByRole("option", { name: "一次性购买" }));
 
-    expect(screen.getByRole("button", { name: "买断/长期有效" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "长期有效" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByRole("switch", { name: "到期提醒" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "到期提醒" })).not.toBeInTheDocument();
     expect(screen.getByText("不提醒")).toBeInTheDocument();
-    expect(screen.getByText("买断/长期有效没有到期日，不会发送到期提醒。")).toBeInTheDocument();
+    expect(screen.getByText("长期有效没有到期日，不会发送到期提醒。")).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("服务名称"), "Lifetime App");
     await user.type(screen.getByLabelText("价格"), "199");
@@ -250,7 +250,7 @@ describe("SubscriptionDialog reminders", () => {
 
     await user.click(screen.getByRole("combobox", { name: "扣费周期" }));
     await user.click(await screen.findByRole("option", { name: "一次性购买" }));
-    await user.click(screen.getByRole("button", { name: "买断/长期有效" }));
+    await user.click(screen.getByRole("button", { name: "长期有效" }));
 
     const purchaseDateButton = screen.getByRole("button", { name: /购买日期.*选择日期/ });
     const buyoutHelp = screen.getByText("只保存购买日期，不进入续费或到期日历。");
@@ -259,7 +259,7 @@ describe("SubscriptionDialog reminders", () => {
     expect(screen.queryByLabelText("自动计算到期日")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /到期日期/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "到期提醒" })).not.toBeInTheDocument();
-    expect(screen.getByText("买断/长期有效没有到期日，不会发送到期提醒。")).toBeInTheDocument();
+    expect(screen.getByText("长期有效没有到期日，不会发送到期提醒。")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "添加订阅" }));
 

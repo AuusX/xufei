@@ -31,7 +31,7 @@ describe("buildNotificationEmail", () => {
     expect(email.html).toContain('<table role="presentation"');
     expect(email.html).toContain('width="600"');
     expect(email.html).toContain('<html lang="zh-CN">');
-    expect(email.html).toContain("今日提醒");
+    expect(email.html).toContain("<title>Renewlet 订阅提醒</title>");
     expect(email.html).toContain("即将续费");
     expect(email.html).toContain("即将到期");
     expect(email.html).toContain("到期日期");
@@ -39,8 +39,43 @@ describe("buildNotificationEmail", () => {
     expect(email.html).toContain("已过期");
     expect(email.html).toContain("18 CNY");
     expect(email.html).toContain('href="https://renewlet.example/app/subscriptions"');
+    expect(email.html).toContain('class="email-container email-card email-ledger"');
+    expect(email.html).toContain("class=\"email-ledger-summary email-rule\"");
+    expect(email.html).toContain("class=\"email-panel email-ledger-table\"");
+    expect(email.html).toContain('colspan="2"');
+    expect(email.html).toContain("#F9FAFB");
+    expect(email.html).toContain("#FFFFFF");
+    expect(email.html).toContain("#E3E7ED");
+    expect(email.html).toContain("#171C26");
+    expect(email.html).toContain("#6C7993");
+    expect(email.html).toContain("#0C0E12");
+    expect(email.html).toContain("#13161B");
+    expect(email.html).toContain("#23272E");
+    expect(email.html).toContain("#1F2229");
+    expect(email.html).toContain("#F0F2F5");
+    expect(email.html).toContain("#9AA6B8");
+    expect(email.html).toContain("border-radius:12px");
+    expect(email.html).toContain("border-left:2px solid");
+    expect(email.html).toContain("line-height:38px");
+    expect(email.html).not.toContain("今日提醒");
+    expect(email.html).not.toContain("<h1");
+    expect(email.html).not.toContain("font-size:18px; font-weight:700; line-height:24px");
+    expect(email.html).not.toContain("class=\"email-panel email-ledger-section\"");
     expect(email.html).not.toContain("display:flex");
+    expect(email.html).not.toContain("display: flex");
     expect(email.html).not.toContain("display:grid");
+    expect(email.html).not.toContain("display: grid");
+    expect(email.html).not.toContain("class=\"email-chip\"");
+    expect(email.html).not.toContain('bgcolor="#111720"');
+    expect(email.html).not.toContain("background-color:#111720");
+    expect(email.html).not.toContain("width:36px; height:36px; border-radius:10px");
+    expect(email.html).not.toContain('<td height="4" style="height:4px; font-size:0; line-height:0; background-color:');
+    expect(email.html).not.toContain('font-size:14px; font-weight:800; line-height:28px;">R</td>');
+    expect(email.html).not.toContain("font-size:20px; font-weight:700; line-height:26px");
+    expect(email.html).not.toContain("font-weight:800");
+    expect(email.html).not.toContain("<img");
+    expect(email.html).not.toContain("<svg");
+    expect(email.html).not.toContain("background-image");
   });
 
   it("renders en-US test notifications and settings CTA", () => {
@@ -53,11 +88,15 @@ describe("buildNotificationEmail", () => {
     }, { appUrl: "https://renewlet.example" });
 
     expect(email.html).toContain('<html lang="en-US">');
-    expect(email.html).toContain("Channel check");
+    expect(email.html).toContain("<title>Renewlet test notification</title>");
     expect(email.html).toContain("Message");
     expect(email.html).toContain("If you received this message");
     expect(email.html).toContain("Generated at");
     expect(email.html).toContain('href="https://renewlet.example/settings"');
+    expect(email.html).not.toContain("Channel check");
+    expect(email.html).not.toContain("<h1");
+    expect(email.html).not.toContain("Reminder items");
+    expect(email.html).not.toContain("class=\"email-ledger-summary email-rule\"");
   });
 
   it("escapes user content and omits item logo urls", () => {
@@ -84,14 +123,17 @@ describe("buildNotificationEmail", () => {
     const email = buildNotificationEmail(settings({
       themeVariant: "custom",
       themeCustomColor: { h: 210, s: 90, l: 45 },
-    }), testMessage());
+    }), testMessage(), { appUrl: "https://renewlet.example" });
 
     expect(email.html).toContain("#0B73DA");
     expect(email.html).toContain("@media (prefers-color-scheme: dark)");
+    expect(email.html).toContain("#13161B");
+    expect(email.html).toContain("#23272E");
     expect(email.html).not.toContain("ZgotmplZ");
   });
 
   it("falls back to compact content when html would exceed the clipping guard", () => {
+    // Worker 和 Go 共用同一体积预算；超长账单列表必须走 compact fallback，避免邮件客户端裁剪关键内容。
     const items = Array.from({ length: 800 }, (_, index) => item("renewal", `Very Long Subscription Name ${index}`, 18, "CNY", "2026-05-17", 3));
     const email = buildNotificationEmail(settings(), {
       title: "Renewlet 订阅提醒",

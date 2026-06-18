@@ -8,6 +8,11 @@ import {
 
 const publicStatusTokenSchema = z.string().trim().regex(/^[A-Za-z0-9_-]{43}$/);
 
+/**
+ * 登录态公开页管理响应。
+ *
+ * pageUrl 可展示给用户复制，但 token 不写入 settings/export；撤销后旧 URL 应立即失效。
+ */
 export const publicStatusPageSchema = z.object({
   enabled: z.boolean(),
   createdAt: z.string().optional(),
@@ -49,6 +54,11 @@ const publicStatusLogoSchema = z.string().trim().max(4096).refine((value) => {
   }
 }, "Invalid public logo URL");
 
+/**
+ * 公开订阅投影的 allowlist。
+ *
+ * 这里故意不包含 notes、website、tags、paymentMethod、extra 和私有 owner 字段；价格字段也必须受 showPrices 控制。
+ */
 const publicStatusSubscriptionSchema = z.object({
   name: z.string().trim().min(1).max(120),
   logo: publicStatusLogoSchema.optional(),
@@ -86,6 +96,7 @@ export const publicStatusResponseSchema = z.object({
   }).strict(),
   subscriptions: z.array(publicStatusSubscriptionSchema).max(500),
 }).strict().superRefine((value, context) => {
+  // showPrices 是公开页隐私开关，金额相关字段必须整组出现或整组隐藏，避免半公开响应被前端误展示。
   if (value.page.showPrices && !value.page.currency) {
     context.addIssue({
       code: "custom",

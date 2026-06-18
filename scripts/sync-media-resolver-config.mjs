@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 
+/**
+ * 媒体解析配置同步器。
+ *
+ * 触发时机：维护 shared media resolver 配置后运行；`--check` 用于 CI/Cloudflare 检查确认生成物未漂移。
+ * 输入：`packages/shared/data/media-resolver-config.json`；副作用：无参数会重写 Go embedded static 副本。
+ *
+ * 契约：Docker 后端、Worker 和前端必须共用同一 provider 排序、候选预算和降词规则。
+ */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// 媒体解析配置同步器：把 shared JSON 复制到 Go embedded static，让 Docker 后端和 Worker/前端共用同一来源。
-// `--check` 用于 CI 守卫；无参数会重写 packages/server/internal/static/data/media-resolver-config.json。
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 const sourcePath = path.join(repoRoot, "packages/shared/data/media-resolver-config.json");

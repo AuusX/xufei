@@ -112,13 +112,24 @@ const exportAssetSchema = z.object({
 }).strict();
 export type RenewletExportAsset = z.infer<typeof exportAssetSchema>;
 
+const exportAssetLogoPathSchema = z
+  .string()
+  .trim()
+  .max(2048)
+  .refine((value) => /^assets\/[^/][A-Za-z0-9._/-]*$/.test(value) && !value.includes(".."), "Invalid export asset path");
+
+const renewletExportSubscriptionSchema = apiSubscriptionSchema.safeExtend({
+  // 普通订阅 API 不接受 ZIP 内路径；export v1 只在备份包内允许 assets/...，导入时会先上传再改写成私有资产代理 URL。
+  logo: apiSubscriptionSchema.shape.logo.or(exportAssetLogoPathSchema).optional(),
+}).strict();
+
 export const renewletExportV1Schema = z.object({
   kind: z.literal("renewlet-export"),
   schemaVersion: z.literal(1),
   exportedAt: z.string(),
   data: z.object({
     // Export v1 保存 API 订阅形状而不是 UI 草稿形状，保证 Docker 与 Cloudflare 导出的数据可以互导。
-    subscriptions: z.array(apiSubscriptionSchema),
+    subscriptions: z.array(renewletExportSubscriptionSchema),
     settings: settingsUpdateBodySchema.optional(),
     customConfig: customConfigSchema.optional(),
     assets: z.array(exportAssetSchema).optional(),

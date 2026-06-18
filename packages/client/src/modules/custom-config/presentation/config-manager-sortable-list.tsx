@@ -106,7 +106,7 @@ export const ConfigManagerSortableList = memo(function ConfigManagerSortableList
   );
 
   return (
-    <>
+    <div data-config-manager-list="" className="flex min-w-0 flex-col gap-2">
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -149,7 +149,6 @@ export const ConfigManagerSortableList = memo(function ConfigManagerSortableList
         </SortableContext>
       </DndContext>
 
-
       {isAdding && !toggleMode && (
         <AddConfigItemForm
           showColor={showColor}
@@ -175,6 +174,6 @@ export const ConfigManagerSortableList = memo(function ConfigManagerSortableList
           {emptyMessage ?? t("customConfig.empty")}
         </div>
       )}
-    </>
+    </div>
   );
 });

@@ -9,6 +9,7 @@
 import type {
   BillingCycle,
   Category,
+  CostSharing,
   CustomCycleUnit,
   PaymentMethod,
   RepeatReminderInterval,
@@ -62,6 +63,7 @@ export type SubscriptionFormState = {
   repeatReminderEnabled: boolean;
   repeatReminderInterval: RepeatReminderInterval;
   repeatReminderWindow: RepeatReminderWindow;
+  costSharing: CostSharing | undefined;
   website: string;
   notes: string;
   tags: string[];
@@ -95,6 +97,7 @@ export function createSubscriptionFormState(
     repeatReminderEnabled: false,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
+    costSharing: undefined,
     website: "",
     notes: "",
     tags: [],

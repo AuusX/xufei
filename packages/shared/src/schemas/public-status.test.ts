@@ -1,3 +1,4 @@
+// 公开状态 schema 测试保护隐私 allowlist 和 showPrices 金额投影，避免公开 API 半暴露账单字段。
 import { describe, expect, it } from "vitest";
 import {
   publicStatusPageCreateResponseSchema,
@@ -27,6 +28,7 @@ describe("public status schemas", () => {
   });
 
   it("requires price and currency to be exposed together", () => {
+    // showPrices 是公开账单字段唯一开关；schema 让金额、币种和周期同进同出，避免半公开账单信息。
     expect(publicStatusResponseSchema.safeParse({
       page: {
         title: "Renewlet",

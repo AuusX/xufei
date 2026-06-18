@@ -21,6 +21,7 @@ const aiMocks = vi.hoisted(() => ({
   outputObject: vi.fn((options: unknown) => options),
   wrapLanguageModel: vi.fn(({ model }: { model: unknown }) => model),
   isNoObjectGeneratedError: vi.fn((error: unknown) => Boolean(error && typeof error === "object" && "__noObjectGenerated" in error)),
+  isAPICallError: vi.fn((error: unknown) => Boolean(error && typeof error === "object" && "__apiCallError" in error)),
 }));
 
 vi.mock("./auth", () => ({
@@ -43,6 +44,9 @@ vi.mock("ai", () => ({
   wrapLanguageModel: aiMocks.wrapLanguageModel,
   NoObjectGeneratedError: {
     isInstance: aiMocks.isNoObjectGeneratedError,
+  },
+  APICallError: {
+    isInstance: aiMocks.isAPICallError,
   },
 }));
 
@@ -80,7 +84,7 @@ const authUser = {
 };
 
 function envFixture(): Env {
-  return { DB: {} as D1Database, ASSETS_BUCKET: {} as R2Bucket };
+  return { DB: {} as D1Database, ASSETS: {} as Fetcher, ASSETS_BUCKET: {} as R2Bucket };
 }
 
 function requestForText(text: string): Request {
@@ -115,6 +119,7 @@ function requestForTextWithThinking(text: string, thinkingControl: string): Requ
 function requestForImages(count: number): Request {
   const form = new FormData();
   for (let index = 0; index < count; index += 1) {
+    // fixture 用最小 PNG 头触发 Worker 的文件头嗅探；不能只信 Blob.type。
     form.append("images[]", new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" }), `image-${index + 1}.png`);
   }
   return new Request("https://renewlet.test/api/app/ai/subscriptions/recognize", {
@@ -161,6 +166,7 @@ describe("Cloudflare AI recognition", () => {
     aiMocks.outputObject.mockClear();
     aiMocks.wrapLanguageModel.mockClear();
     aiMocks.isNoObjectGeneratedError.mockClear();
+    aiMocks.isAPICallError.mockClear();
     authMocks.requireAuth.mockResolvedValue({ user: authUser, session: { id: "ses" }, token: "test" });
     dbMocks.getSettings.mockResolvedValue({
       aiRecognition: {
@@ -357,6 +363,31 @@ describe("Cloudflare AI recognition", () => {
     }));
     expect(aiMocks.generateObject).not.toHaveBeenCalled();
     expect(aiMocks.wrapLanguageModel).not.toHaveBeenCalled();
+  });
+
+  it("returns raw provider response details when connection test fails", async () => {
+    aiMocks.generateText.mockRejectedValue(Object.assign(new Error("invalid key sk-test-secret"), {
+      __apiCallError: true,
+      statusCode: 401,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: "{\"code\":\"INVALID_API_KEY\",\"message\":\"bad sk-test-secret\"}",
+    }));
+
+    await expect(testAIRecognitionConnection(testConnectionRequestFor({
+      providerType: "openai",
+      transportProtocol: "openai-chat",
+      model: "gpt-5.1",
+      modelInputMode: "select",
+      baseUrl: "",
+      apiKey: "sk-test",
+      defaultThinkingControl: null,
+    }), envFixture())).rejects.toMatchObject({
+      status: 400,
+      code: "AI_RECOGNITION_TEST_FAILED",
+      details: {
+        rawResponseText: "{\"code\":\"INVALID_API_KEY\",\"message\":\"bad [redacted]\"}",
+      },
+    });
   });
 
   it("canonicalizes mismatched compatible protocol to OpenAI chat runtime", async () => {
@@ -662,18 +693,24 @@ describe("Cloudflare AI recognition", () => {
       code: "AI_RECOGNITION_SCHEMA_MISMATCH",
       message: "AI 返回内容无法整理成订阅草稿，请换用更强的模型或补充更明确的价格、周期和名称。",
       details: {
-        reason: "schema_mismatch",
-        providerMessage: expect.stringContaining("No object generated"),
-        diagnostics: {
-          output: {
-            rawModelText: {
-              value: expect.stringContaining("[redacted]"),
-            },
-          },
-          response: {
-            finishReason: "stop",
-          },
-        },
+        rawResponseText: expect.stringContaining("No object generated"),
+      },
+    });
+  });
+
+  it("returns raw provider response details when non-stream recognition provider call fails", async () => {
+    aiMocks.generateObject.mockRejectedValue(Object.assign(new Error("provider rejected sk-test-secret"), {
+      __apiCallError: true,
+      statusCode: 403,
+      responseHeaders: { "content-type": "application/json" },
+      responseBody: "{\"error\":\"forbidden sk-test-secret\"}",
+    }));
+
+    await expect(recognizeSubscriptions(requestForText("dmit 15元 1个月"), envFixture())).rejects.toMatchObject({
+      status: 400,
+      code: "AI_RECOGNITION_FAILED",
+      details: {
+        rawResponseText: "{\"error\":\"forbidden [redacted]\"}",
       },
     });
   });

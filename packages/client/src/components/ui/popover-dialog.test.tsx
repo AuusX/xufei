@@ -28,6 +28,8 @@ describe("Popover inside Dialog", () => {
     await waitFor(() => {
       expect(dialogContent).toContainElement(popoverContent);
     });
+    const portalHost = popoverContent.closest("[data-mobile-overlay-portal]");
+    expect(portalHost).toHaveClass("contents");
     expect(dialogContent.querySelector("[data-mobile-overlay-backdrop]")).not.toBeNull();
     expect(popoverContent).toHaveClass("h5-mobile-sheet-content");
   });

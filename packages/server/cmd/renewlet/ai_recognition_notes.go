@@ -1,5 +1,9 @@
 package main
 
+// ai_recognition_notes.go 清洗 AI 识别草稿中的长期备注。
+//
+// 业务边界：AI 输出的 notes 会在导入确认后进入订阅长期记录，因此这里只允许保留服务/网站简介，
+// 识别过程、低置信提醒、营销套话和“方便记录到 Renewlet”这类产品内视角都必须被剔除。
 import (
 	"net/url"
 	"strings"
@@ -89,6 +93,7 @@ var aiRecognitionNoteMarketingFragments = []string{
 	"all-in-one",
 }
 
+// missingDescribableAINoteNames 找出需要 repair 的可描述订阅，限制数量是为了让单次 repair prompt 可控。
 func missingDescribableAINoteNames(subscriptions []aiRecognizedSubscriptionDraft) []string {
 	names := []string{}
 	for _, draft := range subscriptions {
@@ -106,6 +111,7 @@ func isDescribableForAINotes(draft aiRecognizedSubscriptionDraft) bool {
 	return draft.Website != nil || draft.Category != nil || len(draft.Tags) > 0 || draft.Confidence == "high"
 }
 
+// fillMissingAINotesWithDynamicFallback 是 repair 失败后的兜底，不引入本地品牌表，只用本轮动态字段生成短备注。
 func fillMissingAINotesWithDynamicFallback(response aiRecognizeResponse, locale appLocale, configContext aiRecognitionConfigContext) aiRecognizeResponse {
 	for index := range response.Subscriptions {
 		draft := &response.Subscriptions[index]
@@ -161,6 +167,7 @@ func dynamicAINoteLabels(draft aiRecognizedSubscriptionDraft, configContext aiRe
 	for _, tag := range draft.Tags {
 		add(tag)
 	}
+	// 标签优先于分类，因为标签来自用户既有组织习惯；分类只作为更弱的动态上下文补充。
 	if draft.Category != nil {
 		if option := findAIRecognitionConfigOption(configContext.Categories, *draft.Category); option != nil {
 			add(option.Label)

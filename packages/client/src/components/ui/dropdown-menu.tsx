@@ -14,6 +14,7 @@ import {
   getMobileSheetClassName,
   handleMobileOverlayOutsideEvent,
   MobileOverlayBackdrop,
+  MobileOverlayPortalHost,
   resolveMobileSheetDetent,
   shouldSuppressMobileOverlayTriggerEvent,
   useControllableOpen,
@@ -166,7 +167,7 @@ const DropdownMenuContent = React.forwardRef<
 
   return (
     <DropdownMenuPrimitive.Portal container={dialogPortalContainer ?? undefined}>
-      <div data-mobile-overlay-portal="">
+      <MobileOverlayPortalHost>
         {open ? <MobileOverlayBackdrop onDismiss={closeCurrentMenu} /> : null}
         <DropdownMenuPrimitive.Content
           ref={ref}
@@ -194,7 +195,7 @@ const DropdownMenuContent = React.forwardRef<
         >
           {children}
         </DropdownMenuPrimitive.Content>
-      </div>
+      </MobileOverlayPortalHost>
     </DropdownMenuPrimitive.Portal>
   );
 });

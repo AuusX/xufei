@@ -2,8 +2,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, ApiError } from "@/lib/api-client";
 import AdminUsersPage from "./index";
 
 type Deferred<T> = {
@@ -132,12 +133,32 @@ function user(overrides: Partial<AdminUserFixture> = {}): AdminUserFixture {
   };
 }
 
-function renderAdminUsersPage() {
-  return render(
-    <TooltipProvider delayDuration={0}>
-      <AdminUsersPage />
-    </TooltipProvider>,
+function AdminUsersTestTree() {
+  return (
+    <MemoryRouter initialEntries={["/admin/users"]}>
+      <Routes>
+        <Route
+          path="/admin/users"
+          element={(
+            <TooltipProvider delayDuration={0}>
+              <AdminUsersPage />
+            </TooltipProvider>
+          )}
+        />
+        <Route path="/settings" element={<div data-testid="settings-page" />} />
+      </Routes>
+      <RouteProbe />
+    </MemoryRouter>
   );
+}
+
+function renderAdminUsersPage() {
+  return render(<AdminUsersTestTree />);
+}
+
+function RouteProbe() {
+  const location = useLocation();
+  return <div data-testid="route-path">{location.pathname}</div>;
 }
 
 describe("AdminUsersPage", () => {
@@ -187,15 +208,20 @@ describe("AdminUsersPage", () => {
     expect(apiFetch).toHaveBeenCalledTimes(1);
 
     mocks.useI18n.mockReturnValue({ t: makeT("[new] ") });
-    rerender(
-      <TooltipProvider delayDuration={0}>
-        <AdminUsersPage />
-      </TooltipProvider>,
-    );
+    rerender(<AdminUsersTestTree />);
 
     expect(screen.getByText("王五")).toBeInTheDocument();
     expect(screen.queryByText("[new] Loading...")).not.toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("redirects without a load failure toast when the admin API rejects the current session", async () => {
+    mocks.apiFetch.mockRejectedValue(new ApiError("需要管理员权限", 403, { message: "需要管理员权限" }));
+
+    renderAdminUsersPage();
+
+    await waitFor(() => expect(screen.getByTestId("route-path")).toHaveTextContent("/settings"));
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("keeps the existing list visible while a refresh request is pending", async () => {

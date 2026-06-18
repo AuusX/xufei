@@ -1,5 +1,7 @@
 package main
 
+// AI 模型列表测试保护 Go 代理对 OpenAI/Gemini/Anthropic 三类响应的归一化、超时和原始错误回显契约。
+// 这些断言要和 Cloudflare Worker 的模型列表测试保持语义一致，避免两端设置页候选行为漂移。
 import (
 	"context"
 	"errors"
@@ -131,8 +133,9 @@ func TestAIModelListCompatibleWithoutAPIKey(t *testing.T) {
 	}
 }
 
-func TestAIModelListProviderErrorRedactsSecrets(t *testing.T) {
+func TestAIModelListProviderErrorReturnsRawProviderResponse(t *testing.T) {
 	server := withAIModelListTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`invalid sk-test-secret`))
 	})
@@ -146,8 +149,101 @@ func TestAIModelListProviderErrorRedactsSecrets(t *testing.T) {
 	if !errors.As(err, &httpErr) {
 		t.Fatalf("expected aiModelListHTTPError, got %#v", err)
 	}
-	if httpErr.message == nil || !strings.Contains(*httpErr.message, "[redacted]") || strings.Contains(*httpErr.message, "sk-test-secret") {
-		t.Fatalf("provider message was not redacted: %#v", httpErr.message)
+	if httpErr.status != http.StatusUnauthorized || httpErr.reason != "http_401" {
+		t.Fatalf("provider 401 should pass through with reason http_401, got status=%d reason=%q", httpErr.status, httpErr.reason)
+	}
+	if httpErr.message == nil || *httpErr.message != "invalid [redacted]" {
+		t.Fatalf("provider message should keep redacted raw body: %#v", httpErr.message)
+	}
+	if httpErr.providerResponse == nil || httpErr.providerResponse.Body == nil || *httpErr.providerResponse.Body != "invalid [redacted]" {
+		t.Fatalf("provider response body should keep redacted raw body: %#v", httpErr.providerResponse)
+	}
+	if httpErr.providerResponse.Status == nil || *httpErr.providerResponse.Status != http.StatusUnauthorized {
+		t.Fatalf("provider status not captured: %#v", httpErr.providerResponse)
+	}
+	if httpErr.providerResponse.StatusText == nil || *httpErr.providerResponse.StatusText != "Unauthorized" {
+		t.Fatalf("provider status text not captured: %#v", httpErr.providerResponse)
+	}
+	if got := httpErr.providerResponse.Headers["Content-Type"]; !strings.Contains(got, "text/plain") {
+		t.Fatalf("provider response headers not captured: %#v", httpErr.providerResponse.Headers)
+	}
+}
+
+func TestAIModelListProviderStatusPassthrough(t *testing.T) {
+	cases := []struct {
+		name           string
+		providerStatus int
+		wantReason     string
+		wantStatus     int
+	}{
+		{name: "forbidden provider credentials", providerStatus: http.StatusForbidden, wantReason: "http_403", wantStatus: http.StatusForbidden},
+		{name: "missing provider endpoint", providerStatus: http.StatusNotFound, wantReason: "http_404", wantStatus: http.StatusNotFound},
+		{name: "provider validation error", providerStatus: http.StatusUnprocessableEntity, wantReason: "http_422", wantStatus: http.StatusUnprocessableEntity},
+		{name: "provider rate limit", providerStatus: http.StatusTooManyRequests, wantReason: "http_429", wantStatus: http.StatusTooManyRequests},
+		{name: "provider server error", providerStatus: http.StatusServiceUnavailable, wantReason: "http_503", wantStatus: http.StatusServiceUnavailable},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := withAIModelListTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.providerStatus)
+				_, _ = w.Write([]byte(`provider failed`))
+			})
+
+			_, err := listAIModels(context.Background(), aiModelListRequest{
+				ProviderType: aiProviderTypeOpenAI,
+				BaseURL:      server.URL + "/v1",
+				APIKey:       "sk-test-secret",
+			}, localeZhCN)
+			var httpErr *aiModelListHTTPError
+			if !errors.As(err, &httpErr) {
+				t.Fatalf("expected aiModelListHTTPError, got %#v", err)
+			}
+			if httpErr.status != tc.wantStatus || httpErr.reason != tc.wantReason {
+				t.Fatalf("unexpected mapped error: status=%d reason=%q", httpErr.status, httpErr.reason)
+			}
+			if httpErr.providerResponse == nil || httpErr.providerResponse.Body == nil || *httpErr.providerResponse.Body != "provider failed" {
+				t.Fatalf("provider response body not captured: %#v", httpErr.providerResponse)
+			}
+		})
+	}
+}
+
+func TestAIModelListInvalidJSONReturnsBadRequest(t *testing.T) {
+	server := withAIModelListTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`not-json`))
+	})
+
+	_, err := listAIModels(context.Background(), aiModelListRequest{
+		ProviderType: aiProviderTypeOpenAI,
+		BaseURL:      server.URL + "/v1",
+		APIKey:       "sk-test-secret",
+	}, localeZhCN)
+	var httpErr *aiModelListHTTPError
+	if !errors.As(err, &httpErr) || httpErr.status != http.StatusBadRequest || httpErr.code != "AI_MODEL_LIST_INVALID_JSON" {
+		t.Fatalf("expected invalid JSON to map to 400, got %#v", err)
+	}
+	if httpErr.providerResponse == nil || httpErr.providerResponse.Body == nil || *httpErr.providerResponse.Body != "not-json" {
+		t.Fatalf("invalid JSON should include raw provider body: %#v", httpErr.providerResponse)
+	}
+}
+
+func TestAIModelListLargeProviderResponseReturnsPayloadTooLarge(t *testing.T) {
+	server := withAIModelListTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", aiModelListResponseBytes+1)))
+	})
+
+	_, err := listAIModels(context.Background(), aiModelListRequest{
+		ProviderType: aiProviderTypeOpenAI,
+		BaseURL:      server.URL + "/v1",
+		APIKey:       "sk-test-secret",
+	}, localeZhCN)
+	var httpErr *aiModelListHTTPError
+	if !errors.As(err, &httpErr) || httpErr.status != http.StatusRequestEntityTooLarge || httpErr.code != "AI_MODEL_LIST_RESPONSE_TOO_LARGE" {
+		t.Fatalf("expected large provider response to return 413, got %#v", err)
+	}
+	if httpErr.providerResponse != nil {
+		t.Fatalf("oversized response must not return partial provider body: %#v", httpErr.providerResponse)
 	}
 }
 
@@ -168,7 +264,7 @@ func TestAIModelListTimeout(t *testing.T) {
 		APIKey:       "sk-test-secret",
 	}, localeZhCN)
 	var httpErr *aiModelListHTTPError
-	if !errors.As(err, &httpErr) || httpErr.code != "AI_MODEL_LIST_TIMEOUT" {
+	if !errors.As(err, &httpErr) || httpErr.status != http.StatusRequestTimeout || httpErr.code != "AI_MODEL_LIST_TIMEOUT" {
 		t.Fatalf("expected timeout error, got %#v", err)
 	}
 }

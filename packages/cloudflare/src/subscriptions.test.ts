@@ -1,9 +1,21 @@
 // Worker 订阅 mapper 测试保护 D1 行契约，避免新增字段在 create/update/import/export 边界漂移。
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { subscriptionNormalizationFixtures } from "@renewlet/shared/contract-fixtures";
 import { toApiSubscription } from "./db";
-import { toSubscriptionRow, type SubscriptionBody } from "./subscriptions";
+import { toSubscriptionRow, updateSubscription, type SubscriptionBody } from "./subscriptions";
+import type { Env, SubscriptionRow } from "./types";
+
+const authMocks = vi.hoisted(() => ({
+  requireAuth: vi.fn(),
+}));
+
+vi.mock("./auth", () => ({
+  requireAuth: authMocks.requireAuth,
+}));
+
+const USER_ID = "usr_subscription_owner";
 
 function subscriptionBody(overrides: Partial<SubscriptionBody> = {}): SubscriptionBody {
   return {
@@ -39,6 +51,28 @@ function subscriptionBody(overrides: Partial<SubscriptionBody> = {}): Subscripti
 }
 
 describe("Cloudflare subscription mapper", () => {
+  beforeEach(() => {
+    authMocks.requireAuth.mockReset();
+    authMocks.requireAuth.mockResolvedValue({
+      user: { id: USER_ID },
+      session: { id: "ses" },
+      token: "test",
+    });
+  });
+
+  it.each(subscriptionNormalizationFixtures)("matches shared normalization fixture $name", (fixture) => {
+    const body = subscriptionBody(fixture.input);
+    const row = toSubscriptionRow("sub_fixture", "usr_fixture", body, "2026-06-05T00:00:00.000Z", "2026-06-05T00:00:00.000Z");
+    const apiSubscription = toApiSubscription(row);
+
+    expect(row.custom_days).toBe(fixture.expected.customDays);
+    expect(row.custom_cycle_unit).toBe(fixture.expected.customCycleUnit);
+    expect(row.one_time_term_count).toBe(fixture.expected.oneTimeTermCount);
+    expect(row.one_time_term_unit).toBe(fixture.expected.oneTimeTermUnit);
+    expect(apiSubscription.autoRenew).toBe(fixture.expected.autoRenew);
+    expect(apiSubscription.autoCalculateNextBillingDate).toBe(fixture.expected.autoCalculateNextBillingDate);
+  });
+
   it("persists and exposes custom cycle units", () => {
     const row = toSubscriptionRow("sub_custom", "usr_custom", subscriptionBody({
       billingCycle: "custom",
@@ -133,6 +167,68 @@ describe("Cloudflare subscription mapper", () => {
     });
   });
 
+  it("round-trips cost sharing through the D1 row mapper", () => {
+    const costSharing = {
+      enabled: true,
+      payerMemberId: "me",
+      selfMemberId: "me",
+      splitMode: "custom" as const,
+      members: [
+        { id: "me", name: "Me", currency: "USD", included: true, customAmount: 40 },
+        { id: "partner", name: "Partner", currency: "USD", included: true, customAmount: 60 },
+      ],
+    };
+    const row = toSubscriptionRow("sub_shared", "usr_custom", subscriptionBody({
+      price: 100,
+      costSharing,
+    }), "2026-06-05T00:00:00.000Z", "2026-06-05T00:00:00.000Z");
+
+    expect(row.cost_sharing_json).toBeDefined();
+    expect(JSON.parse(row.cost_sharing_json ?? "{}")).toEqual(costSharing);
+    expect(toApiSubscription(row)).toMatchObject({ costSharing });
+  });
+
+  it("normalizes dirty tags_json while applying a subscription PATCH", async () => {
+    const existing = {
+      ...toSubscriptionRow("sub_dirty_tags", USER_ID, subscriptionBody({ tags: ["legacy"] }), "2026-06-05T00:00:00.000Z", "2026-06-05T00:00:00.000Z"),
+      tags_json: "{dirty-json",
+    } satisfies SubscriptionRow;
+    let updateValues: unknown[] | null = null;
+    let schedulerRefreshValues: unknown[] | null = null;
+    const env = {
+      DB: {
+        prepare: (sql: string) => ({
+          bind: (...values: unknown[]) => ({
+            first: async <T>() => sql.includes("FROM subscriptions") ? existing as T : null,
+            run: async () => {
+              if (sql.includes("UPDATE subscriptions SET")) {
+                updateValues = values;
+              }
+              if (sql.includes("subscription_scheduler_state")) {
+                schedulerRefreshValues = values;
+              }
+              return { success: true, meta: { changes: 1 }, results: [] } as unknown as D1Result;
+            },
+          }),
+        }),
+      } as unknown as D1Database,
+      ASSETS: {} as Fetcher,
+      ASSETS_BUCKET: {} as R2Bucket,
+    } satisfies Env;
+
+    const response = await updateSubscription(new Request("https://renewlet.test/api/app/subscriptions/sub_dirty_tags", {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: "Bearer test" },
+      body: JSON.stringify({ notes: "updated" }),
+    }), env, "sub_dirty_tags");
+    const body = await response.json() as { subscription: { tags: string[] } };
+
+    expect(response.status).toBe(200);
+    expect(body.subscription.tags).toEqual([]);
+    expect(updateValues?.[21]).toBe("[]");
+    expect(schedulerRefreshValues).toEqual([USER_ID, expect.any(String), expect.any(String), USER_ID]);
+  });
+
   it("clears one-time term fields for recurring subscriptions", () => {
     const row = toSubscriptionRow("sub_monthly", "usr_custom", subscriptionBody({
       billingCycle: "monthly",
@@ -148,18 +244,24 @@ describe("Cloudflare subscription mapper", () => {
     expect(apiSubscription).not.toHaveProperty("oneTimeTermUnit");
   });
 
-  it("adds custom_cycle_unit through the standalone migration only", () => {
+  it("adds subscription columns through standalone migrations only", () => {
+    // D1 migration 必须保持增量拆分；一键部署和本地 migration 都依赖旧库逐步补列，而不是重建初始表。
     const initialMigration = readFileSync(resolve("migrations/0001_initial.sql"), "utf8");
     const customUnitMigration = readFileSync(resolve("migrations/0007_subscription_custom_cycle_unit.sql"), "utf8");
     const oneTimeTermMigration = readFileSync(resolve("migrations/0008_subscription_one_time_term.sql"), "utf8");
     const publicStatusMigration = readFileSync(resolve("migrations/0009_public_status.sql"), "utf8");
     const autoRenewMigration = readFileSync(resolve("migrations/0010_subscription_auto_renew.sql"), "utf8");
+    const logoIndexMigration = readFileSync(resolve("migrations/0014_subscription_logo_index.sql"), "utf8");
+    const notificationIndexesMigration = readFileSync(resolve("migrations/0016_notification_scheduler_indexes.sql"), "utf8");
+    const schedulerStateMigration = readFileSync(resolve("migrations/0017_subscription_scheduler_state.sql"), "utf8");
+    const costSharingMigration = readFileSync(resolve("migrations/0018_subscription_cost_sharing.sql"), "utf8");
 
     expect(initialMigration).not.toContain("custom_cycle_unit");
     expect(initialMigration).not.toContain("one_time_term");
     expect(initialMigration).not.toContain("public_hidden");
     expect(initialMigration).not.toContain("public_status_pages");
     expect(initialMigration).not.toContain("auto_renew");
+    expect(initialMigration).not.toContain("cost_sharing_json");
     expect(customUnitMigration.trim()).toBe("ALTER TABLE subscriptions ADD COLUMN custom_cycle_unit TEXT;");
     expect(oneTimeTermMigration.trim()).toBe([
       "ALTER TABLE subscriptions ADD COLUMN one_time_term_count INTEGER;",
@@ -169,5 +271,23 @@ describe("Cloudflare subscription mapper", () => {
     expect(publicStatusMigration).toContain("CREATE TABLE IF NOT EXISTS public_status_pages");
     expect(autoRenewMigration).toContain("ALTER TABLE subscriptions ADD COLUMN auto_renew INTEGER NOT NULL DEFAULT 0;");
     expect(autoRenewMigration).toContain("UPDATE subscriptions SET auto_renew = 0 WHERE billing_cycle = 'one-time';");
+    expect(logoIndexMigration.trim()).toBe("CREATE INDEX IF NOT EXISTS idx_subscriptions_user_logo ON subscriptions (user_id, logo);");
+    expect(notificationIndexesMigration).toContain("CREATE INDEX IF NOT EXISTS idx_subscriptions_user_auto_renew_due");
+    expect(notificationIndexesMigration).toContain("CREATE INDEX IF NOT EXISTS idx_subscriptions_user_reminder_due");
+    expect(notificationIndexesMigration).toContain("CREATE INDEX IF NOT EXISTS idx_subscriptions_user_trial_reminder");
+    expect(notificationIndexesMigration).toContain("CREATE INDEX IF NOT EXISTS idx_subscriptions_user_repeat_reminder");
+    expect(schedulerStateMigration).toContain("CREATE TABLE IF NOT EXISTS subscription_scheduler_state");
+    expect(schedulerStateMigration).toContain("DROP INDEX IF EXISTS idx_subscriptions_user_auto_renew_due");
+    expect(schedulerStateMigration).toContain("ON subscriptions (user_id, auto_renew, next_billing_date, id)");
+    expect(schedulerStateMigration).toContain("DROP INDEX IF EXISTS idx_subscriptions_user_reminder_due");
+    expect(schedulerStateMigration).toContain("ON subscriptions (user_id, next_billing_date, id)");
+    expect(schedulerStateMigration).toContain("DROP INDEX IF EXISTS idx_subscriptions_user_trial_reminder");
+    expect(schedulerStateMigration).toContain("ON subscriptions (user_id, trial_end_date, id)");
+    expect(schedulerStateMigration).toContain("DROP INDEX IF EXISTS idx_subscriptions_user_repeat_reminder");
+    expect(schedulerStateMigration).toContain("ON subscriptions (user_id, repeat_reminder_enabled, next_billing_date, id)");
+    expect(schedulerStateMigration).toContain("idx_subscriptions_user_repeat_trial_reminder");
+    expect(schedulerStateMigration).not.toContain("_v2");
+    expect(schedulerStateMigration).not.toContain("legacy");
+    expect(costSharingMigration.trim()).toBe("ALTER TABLE subscriptions ADD COLUMN cost_sharing_json TEXT NOT NULL DEFAULT '{}';");
   });
 });

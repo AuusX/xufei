@@ -14,16 +14,18 @@
  * 修改其中任一处都要同步首页统计、SpendingChart 和导出逻辑。
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { Subscription } from '@/types/subscription';
 import { Header } from '@/components/header';
 import { StatisticsPageSkeleton } from '@/components/loading-skeleton';
 import { RechartsFrame } from '@/components/recharts-frame';
+import { StatisticsTrendChart } from '@/components/statistics-trend-chart';
 import { PieChart, Pie, Cell, Tooltip as RechartsTooltip } from 'recharts';
 import { CircleHelp, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useExchangeRates } from '@/hooks/use-exchange-rates';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSubscriptions } from '@/hooks/use-subscriptions';
 import { useSettings } from '@/hooks/use-settings';
@@ -134,9 +136,10 @@ const Statistics = () => {
   const defaultCurrency = settings?.defaultCurrency ?? "CNY";
   const timeZone = settings?.timezone ?? "UTC";
   const { locale, t, formatCurrency, formatDateTime, formatNumber } = useI18n();
+  const [personalCostBasis, setPersonalCostBasis] = useState(false);
   
   const { convert, loading: ratesLoading, refresh: refreshRates, lastUpdated, error: ratesError } = useExchangeRates(settings?.exchangeRateProvider);
-  const stats = useStatisticsModel(subscriptions, config, monthlyBudget, defaultCurrency, convert, timeZone, locale);
+  const stats = useStatisticsModel(subscriptions, config, monthlyBudget, defaultCurrency, convert, timeZone, locale, personalCostBasis ? "personal" : "total");
   const { handleAddSubscription } = useSubscriptionCrud(subscriptions);
   const availableTags = useMemo(() => collectSubscriptionTags(subscriptions), [subscriptions]);
 
@@ -284,7 +287,7 @@ const Statistics = () => {
 
         {/* 总体统计 */}
         <section className="mb-8">
-          <h2 className="text-lg font-semibold text-foreground mb-4">{t("statistics.overview")}</h2>
+          <h2 className="mb-4 text-lg font-semibold text-foreground">{t("statistics.overview")}</h2>
           <div className="grid grid-cols-1 min-[380px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             <StatBox
               value={stats.activeCount}
@@ -341,7 +344,16 @@ const Statistics = () => {
               description={t("statistics.annualSavingsDescription")}
             />
           </div>
+          <label className="mt-4 inline-flex items-center gap-2 text-sm text-muted-foreground">
+            <Switch checked={personalCostBasis} onCheckedChange={setPersonalCostBasis} aria-label={t("statistics.personalCostBasis")} />
+            {t("statistics.personalCostBasis")}
+          </label>
         </section>
+
+        <StatisticsTrendChart
+          data={stats.trendData}
+          defaultCurrency={defaultCurrency}
+        />
 
         {/* 拆分视图 */}
         <section>

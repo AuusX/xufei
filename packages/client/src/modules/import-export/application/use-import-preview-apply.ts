@@ -8,6 +8,7 @@ import {
 import { toast } from "@/hooks/use-toast";
 import { SETTINGS_QUERY_KEY } from "@/hooks/use-settings";
 import { invalidateSubscriptionsQueries } from "@/hooks/use-subscriptions";
+import { invalidateUploadedAssetsQueries } from "@/hooks/use-uploaded-assets";
 import { useI18n } from "@/i18n/I18nProvider";
 import { getDisplayErrorMessage } from "@/lib/display-error";
 import {
@@ -119,20 +120,23 @@ export function useImportPreviewApply({ onApplied }: UseImportPreviewApplyOption
     try {
       const skipIndexList = [...skippedIndexes].sort((a, b) => a - b);
       const effectivePreview = recomputePreviewForConflictMode(preview, conflictMode, skippedIndexes);
-      let resolvedPayload: unknown;
-      try {
-        // 资产上传属于 apply 阶段：预览不产生写入，且 skip 行不会上传 staged/zip Logo。
-        resolvedPayload = await resolveImportAssets(prepared, effectivePreview.items, (done, total) => setAssetProgress({ done, total }));
-      } catch (assetError) {
-        throw new ImportAssetUploadError(assetError);
-      }
-      const payload = parseApplyPayload(resolvedPayload);
+      // 资产上传属于 apply 阶段：预览不产生写入，且 skip 行不会上传 staged/zip Logo。
+      const resolvedAssets = await resolveImportAssets(prepared, effectivePreview.items, (done, total) => setAssetProgress({ done, total }))
+        .catch((assetError: unknown) => {
+          throw new ImportAssetUploadError(assetError);
+        });
+      const payload = parseApplyPayload(resolvedAssets.payload);
       const result = parseApplyResult(await importExportService.applyChunked(payload, conflictMode, skipIndexList, (done, total) => setApplyProgress({ done, total })));
+      // 导入资产上传只影响 logo 分页缓存；按上传结果精确失效，避免无 Logo 导入刷新资产列表。
+      const assetInvalidations = resolvedAssets.uploadedLogoCount > 0
+        ? [invalidateUploadedAssetsQueries(queryClient, "logo")]
+        : [];
       // 导入可能同时写订阅、设置和自定义配置；成功后统一失效，避免页面继续展示导入前缓存。
       await Promise.all([
         invalidateSubscriptionsQueries(queryClient),
         queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: ["custom-config"] }),
+        ...assetInvalidations,
       ]);
       toast({
         title: t("import.successTitle"),

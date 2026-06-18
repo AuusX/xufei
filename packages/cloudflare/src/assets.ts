@@ -1,11 +1,12 @@
 import { uploadKindSchema } from "@renewlet/shared/schemas/media";
-import { getAsset, listAssets, newId, nowIso } from "./db";
-import { HttpError, json, requestLocale } from "./http";
+import { countAssetReferences, deleteAssetMetadata, getAsset, listAssets, newId, nowIso } from "./db";
+import { HttpError, json, ok, requestLocale } from "./http";
 import { serverText } from "./server-i18n";
 import { requireAuth } from "./auth";
 import type { AssetRow, Env } from "./types";
 
 const MAX_ASSET_BYTES = 2 * 1024 * 1024;
+const MAX_ASSET_FORM_BYTES = MAX_ASSET_BYTES + 64 * 1024;
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"]);
 
 /**
@@ -16,6 +17,7 @@ const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "i
 export async function uploadAsset(request: Request, env: Env): Promise<Response> {
   const locale = requestLocale(request);
   const auth = await requireAuth(request, env);
+  assertAssetUploadContentLength(request, locale);
   const form = await request.formData();
   const kind = uploadKindSchema.parse(form.get("kind"));
   const file = form.get("file");
@@ -43,6 +45,17 @@ export async function uploadAsset(request: Request, env: Env): Promise<Response>
   `).bind(id, auth.user.id, kind, key, file.name, contentType, file.size, timestamp, timestamp).run();
 
   return json({ url: `/api/app/assets/${id}` }, { status: 201 });
+}
+
+function assertAssetUploadContentLength(request: Request, locale: ReturnType<typeof requestLocale>): void {
+  const raw = request.headers.get("content-length");
+  if (!raw) return;
+  const contentLength = Number(raw.trim());
+  if (!Number.isFinite(contentLength)) return;
+  // multipart envelope 允许少量表单开销；真正的文件大小仍由 File.size 校验，避免 header 缺失时误拒正常上传。
+  if (contentLength > MAX_ASSET_FORM_BYTES) {
+    throw new HttpError(400, serverText(locale, "asset.invalidImageSize"));
+  }
 }
 
 /**
@@ -90,6 +103,24 @@ export async function listUploadedAssets(request: Request, env: Env): Promise<Re
     page,
     totalPages: Math.ceil(result.total / perPage),
   });
+}
+
+export async function deleteAsset(request: Request, env: Env, id: string): Promise<Response> {
+  const locale = requestLocale(request);
+  const auth = await requireAuth(request, env);
+  const row = await getAsset(env, auth.user.id, id);
+  if (!row) throw new HttpError(404, serverText(locale, "asset.missing"), "NOT_FOUND");
+
+  const usage = await countAssetReferences(env, auth.user.id, id);
+  if (usage.usageCount > 0) {
+    // 订阅 Logo 与支付方式图标都是私有资产持久引用；删除只阻止，不替用户改业务配置。
+    throw new HttpError(409, serverText(locale, "asset.inUse"), "ASSET_IN_USE", usage);
+  }
+
+  // R2 delete 对缺失对象是幂等的；metadata 最后删除，保证失败重试仍能通过 owner 索引定位孤儿对象。
+  await env.ASSETS_BUCKET.delete(row.r2_key);
+  await deleteAssetMetadata(env, auth.user.id, id);
+  return ok();
 }
 
 function toAssetItem(row: AssetRow) {

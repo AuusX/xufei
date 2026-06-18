@@ -138,6 +138,83 @@ describe("subscription API schemas", () => {
     }
   });
 
+  it("accepts equal and matching custom cost sharing payloads", () => {
+    const equalSharing = {
+      enabled: true,
+      payerMemberId: "self",
+      selfMemberId: "self",
+      splitMode: "equal",
+      members: [
+        { id: "self", name: "Me", note: "Paid by me", currency: "CNY", included: true },
+        { id: "partner", name: "Partner", note: "Transfers monthly", currency: "AUD", included: true },
+      ],
+    };
+    const customSharing = {
+      ...equalSharing,
+      splitMode: "custom",
+      members: [
+        { id: "self", name: "Me", included: true, customAmount: 0.33 },
+        { id: "partner", name: "Partner", included: true, customAmount: 0.5 },
+      ],
+    };
+
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: equalSharing,
+    }).success).toBe(true);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: customSharing,
+    }).success).toBe(true);
+    expect(apiSubscriptionSchema.safeParse({
+      ...validSubscriptionResponseBody,
+      costSharing: equalSharing,
+    }).success).toBe(true);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: {
+        ...equalSharing,
+        members: [{ id: "self", name: "Me", currency: "invalid", included: true }],
+      },
+    }).success).toBe(false);
+  });
+
+  it("rejects invalid cost sharing members and custom totals", () => {
+    const baseSharing = {
+      enabled: true,
+      payerMemberId: "self",
+      selfMemberId: "self",
+      splitMode: "equal",
+      members: [
+        { id: "self", name: "Me", included: true },
+        { id: "partner", name: "Partner", included: true },
+      ],
+    };
+
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: { ...baseSharing, selfMemberId: "missing" },
+    }).success).toBe(false);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: {
+        ...baseSharing,
+        members: baseSharing.members.map((member) => ({ ...member, included: false })),
+      },
+    }).success).toBe(false);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: {
+        ...baseSharing,
+        splitMode: "custom",
+        members: [
+          { id: "self", name: "Me", included: true, customAmount: 0.1 },
+          { id: "partner", name: "Partner", included: true, customAmount: 0.1 },
+        ],
+      },
+    }).success).toBe(false);
+  });
+
   it("accepts expired as a first-class subscription status", () => {
     expect(subscriptionCreateBodySchema.safeParse({
       ...validSubscriptionCreateBody,

@@ -47,6 +47,7 @@ async function expectSheetAnimationFromBottom(sheet: Locator, label: string) {
 }
 
 async function waitForSheetAnimation(sheet: Locator) {
+  // H5 sheet 的布局断言必须等 CSS 动画结束；只等 visible 会在 transform 过程中读到过渡态尺寸。
   await sheet.evaluate(async (element) => {
     await Promise.all(element.getAnimations().map((animation) => animation.finished.catch(() => undefined)));
   });

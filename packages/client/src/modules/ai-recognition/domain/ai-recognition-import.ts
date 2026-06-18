@@ -26,6 +26,11 @@ interface AIImportBuildState extends AIImportContext {
   sourceIdCounts: Map<string, number>;
 }
 
+/**
+ * 将 AI 识别草稿转换为标准导入预览 payload。
+ *
+ * AI 结果永不直接写 subscriptions；必须先落到 import preview/apply 链路，复用冲突处理、Logo 上传和服务端校验。
+ */
 export function buildPreparedImportFromAIDrafts(
   drafts: readonly AiRecognizedSubscriptionDraft[],
   context: AIImportContext,
@@ -160,6 +165,7 @@ function findConfigItem(items: readonly ConfigItem[], text: string): ConfigItem 
 }
 
 function configMatchKey(value: string): string {
+  // AI 可能输出中英文、全角标点或用户自定义标签原文；匹配时只压缩“书写差异”，不翻译业务含义。
   return value.normalize("NFKC").trim().toLowerCase().replace(/[\s_\-—–/\\|&+，,、.。:：()（）[\]【】]+/g, "");
 }
 
@@ -178,6 +184,7 @@ function nextAISourceId(draft: AiRecognizedSubscriptionDraft, state: AIImportBui
   }));
   const count = (state.sourceIdCounts.get(hash) ?? 0) + 1;
   state.sourceIdCounts.set(hash, count);
+  // 同一批里模型可能识别出两个近似服务；sourceId 追加序号，保证导入幂等键不互相覆盖。
   return count === 1 ? hash : `${hash}-${count}`;
 }
 

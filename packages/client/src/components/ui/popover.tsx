@@ -14,6 +14,7 @@ import {
   getMobileSheetClassName,
   handleMobileOverlayOutsideEvent,
   MobileOverlayBackdrop,
+  MobileOverlayPortalHost,
   resolveMobileSheetDetent,
   shouldSuppressMobileOverlayTriggerEvent,
   useControllableOpen,
@@ -121,7 +122,7 @@ const PopoverContent = React.forwardRef<
 
   return (
     <PopoverPrimitive.Portal container={container}>
-      <div data-mobile-overlay-portal="">
+      <MobileOverlayPortalHost>
         {open && useMobileSheet ? <MobileOverlayBackdrop onDismiss={closeCurrentPopover} /> : null}
         <PopoverPrimitive.Content
           ref={ref}
@@ -164,7 +165,7 @@ const PopoverContent = React.forwardRef<
           ) : null}
           {children}
         </PopoverPrimitive.Content>
-      </div>
+      </MobileOverlayPortalHost>
     </PopoverPrimitive.Portal>
   );
 });

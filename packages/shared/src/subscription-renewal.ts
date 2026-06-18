@@ -7,8 +7,10 @@ import {
   isValidDateOnly,
 } from "./runtime";
 
+/** 续订模式决定推进阈值：自动维护追到 today，手动续订至少推进一期并严格晚于当前边界。 */
 export type RenewalMode = "auto" | "manual";
 
+/** 续订算法输入是跨 D1、PocketBase 和前端 fixture 的最小字段集，不包含价格、通知或展示字段。 */
 export interface SubscriptionRenewalInput {
   billingCycle: BillingCycle;
   status: SubscriptionStatus;
@@ -20,6 +22,7 @@ export interface SubscriptionRenewalInput {
   customCycleUnit?: CustomCycleUnit | null | undefined;
 }
 
+/** 账单日纯计算入口使用同一字段集，避免表单自动日期与后端续订算法分叉。 */
 export interface AdvanceBillingDateInput {
   billingCycle: BillingCycle;
   startDate: string;
@@ -29,6 +32,7 @@ export interface AdvanceBillingDateInput {
   customCycleUnit?: CustomCycleUnit | null | undefined;
 }
 
+/** 续订结果只返回 date-only 与状态；不会生成付款记录或通知历史。 */
 export interface SubscriptionRenewalResult {
   nextBillingDate: DateOnly;
   status: SubscriptionStatus;
@@ -36,6 +40,11 @@ export interface SubscriptionRenewalResult {
 
 const MAX_ADVANCE_CYCLES = 20_000;
 
+/**
+ * 判断订阅是否可由后台维护任务自动推进。
+ *
+ * 自动续订只处理已经落后于用户本地 today 的 active/trial 周期订阅；缺省 autoRenew 不能被解释成授权。
+ */
 export function isAutoRenewEligible(subscription: SubscriptionRenewalInput, today: string): boolean {
   return (
     subscription.autoRenew &&
@@ -48,6 +57,11 @@ export function isAutoRenewEligible(subscription: SubscriptionRenewalInput, toda
   );
 }
 
+/**
+ * 判断订阅是否可由用户手动续订。
+ *
+ * 手动续订覆盖 expired 记录，但明确排除 autoRenew=true 的订阅，避免用户和维护 cron 同时推进同一账单日。
+ */
 export function isManualRenewEligible(subscription: SubscriptionRenewalInput): boolean {
   return (
     !subscription.autoRenew &&
@@ -58,6 +72,11 @@ export function isManualRenewEligible(subscription: SubscriptionRenewalInput): b
   );
 }
 
+/**
+ * 推进订阅续订状态，是 Docker Go、Cloudflare Worker 和前端测试共用的事实算法。
+ *
+ * `mode=auto` 推进到第一个 `>= today` 的周期日；`mode=manual` 至少推进一期并要求结果严格晚于阈值。
+ */
 export function advanceSubscriptionRenewal(
   subscription: SubscriptionRenewalInput,
   today: string,
@@ -72,6 +91,11 @@ export function advanceSubscriptionRenewal(
   };
 }
 
+/**
+ * 计算下一账单日，不改变状态。
+ *
+ * `autoCalculateNextBillingDate=true` 以 startDate 作周期锚点；否则保留用户手动修正过的 nextBillingDate 锚点。
+ */
 export function advanceBillingDate(
   input: AdvanceBillingDateInput,
   today: string,
@@ -86,6 +110,7 @@ export function advanceBillingDate(
   return firstCycleDateAfter(anchor, input, threshold, strict);
 }
 
+/** 表单自动推算下一账单日的纯函数入口，保持 date-only 输出，不引入浏览器时区。 */
 export function calculateNextBillingDate(
   startDate: string,
   cycle: BillingCycle,
@@ -106,6 +131,11 @@ export function calculateNextBillingDate(
   }, threshold, false);
 }
 
+/**
+ * 将一个 date-only 按账单周期前进 N 期。
+ *
+ * 使用 Temporal 是为了让月末夹取语义稳定，例如 1 月 31 日按月推进到 2 月最后一天。
+ */
 export function addBillingCycles(
   date: string,
   cycle: BillingCycle,
@@ -148,6 +178,7 @@ function firstCycleDateAfter(
     if (strict ? comparison > 0 : comparison >= 0) return candidate;
     cycleCount += 1;
   }
+  // 保护异常自定义周期或脏数据，避免维护任务在单条订阅上无限循环占满 Worker/Go cron。
   throw new Error("SUBSCRIPTION_RENEWAL_ADVANCE_LIMIT_EXCEEDED");
 }
 
@@ -159,6 +190,7 @@ function initialCycleCount(
 ): number {
   const dayStep = exactDayStep(input);
   if (!dayStep) return 1;
+  // 只有“固定天数”周期能直接跳到接近阈值的期数；月份/年份必须逐期推进以保留月末夹取语义。
   const diff = toPlainDate(anchor).until(toPlainDate(threshold), { largestUnit: "day" }).days;
   const adjusted = strict ? diff + 1 : diff;
   return Math.max(1, Math.ceil(adjusted / dayStep));

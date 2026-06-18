@@ -1,3 +1,4 @@
+// AI notes 测试保护“长期备注只保存服务简介”的导入边界，避免模型过程提示被写入订阅记录。
 import { describe, expect, it } from "vitest";
 import { normalizeAIRecognitionUsefulNotes } from "./ai-recognition-notes";
 import { buildAIRecognitionUserPrompt } from "./ai-recognition-prompt";

@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, apiFetchBlob } from "@/lib/api-client";
 import {
   calendarFeedCreateResponseSchema,
   calendarFeedDeleteResponseSchema,
@@ -48,5 +48,9 @@ export const calendarFeedService = {
 
   async deleteSubscription(subscriptionId: string): Promise<void> {
     await apiFetch(`/api/app/subscriptions/${encodeURIComponent(subscriptionId)}/calendar-feed`, calendarFeedDeleteResponseSchema, { method: "DELETE" });
+  },
+
+  async downloadSubscriptionIcs(subscriptionId: string): Promise<Blob> {
+    return await apiFetchBlob(`/api/app/subscriptions/${encodeURIComponent(subscriptionId)}/calendar.ics`);
   },
 };

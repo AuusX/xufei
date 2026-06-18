@@ -1,3 +1,11 @@
+/**
+ * Lingui catalog 同步守卫。
+ *
+ * 触发时机：`pnpm --filter @renewlet/client i18n:check` 和 CI 前端门禁。
+ * 前置依赖：Lingui config、descriptor、`.po` catalog、前端 catalog key 生成物和服务端 i18n 生成物都必须存在。
+ *
+ * 注意：脚本只检查不同步，不主动重写文件；翻译缺失或 key 漂移必须回到 extract/generate 流程修复。
+ */
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -5,8 +13,6 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { formatter } from "@lingui/format-po";
 
-// i18n catalog 守卫：CI 和 `pnpm --filter @renewlet/client i18n:check` 调用。
-// 只检查 Lingui catalog、catalog key 和服务端文案生成物是否同步，不主动改仓库文件。
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const clientDir = path.join(rootDir, "packages/client");
 const clientRequire = createRequire(path.join(clientDir, "package.json"));

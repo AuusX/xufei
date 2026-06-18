@@ -11,10 +11,10 @@
     />
     <meta name="robots" content="index, follow" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="canonical" href="https://zhiyingzzhou.github.io/renewlet/en/" />
-    <link rel="alternate" hreflang="zh-CN" href="https://zhiyingzzhou.github.io/renewlet/" />
-    <link rel="alternate" hreflang="en" href="https://zhiyingzzhou.github.io/renewlet/en/" />
-    <link rel="alternate" hreflang="x-default" href="https://zhiyingzzhou.github.io/renewlet/" />
+    <link rel="canonical" href="%RENEWLET_WEBSITE_EN_URL%" />
+    <link rel="alternate" hreflang="zh-CN" href="%RENEWLET_WEBSITE_URL%" />
+    <link rel="alternate" hreflang="en" href="%RENEWLET_WEBSITE_EN_URL%" />
+    <link rel="alternate" hreflang="x-default" href="%RENEWLET_WEBSITE_URL%" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Renewlet" />
     <meta property="og:locale" content="en_US" />
@@ -24,8 +24,8 @@
       property="og:description"
       content="Track services, renewal dates, budgets, reminders, and calendar feeds. Built for VPS, NAS, homelab, and Cloudflare Workers."
     />
-    <meta property="og:url" content="https://zhiyingzzhou.github.io/renewlet/en/" />
-    <meta property="og:image" content="https://zhiyingzzhou.github.io/renewlet/assets/renewlet/images/dashboard-en.png" />
+    <meta property="og:url" content="%RENEWLET_WEBSITE_EN_URL%" />
+    <meta property="og:image" content="%RENEWLET_WEBSITE_DASHBOARD_EN_URL%" />
     <meta property="og:image:alt" content="Renewlet dashboard showing monthly spend, recent subscriptions, and spending distribution" />
     <meta property="og:image:width" content="1400" />
     <meta property="og:image:height" content="900" />
@@ -35,7 +35,7 @@
       name="twitter:description"
       content="Track services, renewal dates, budgets, reminders, and calendar feeds. Built for VPS, NAS, homelab, and Cloudflare Workers."
     />
-    <meta name="twitter:image" content="https://zhiyingzzhou.github.io/renewlet/assets/renewlet/images/dashboard-en.png" />
+    <meta name="twitter:image" content="%RENEWLET_WEBSITE_DASHBOARD_EN_URL%" />
     <meta name="twitter:image:alt" content="Renewlet dashboard showing monthly spend, recent subscriptions, and spending distribution" />
     <script type="application/ld+json">
       {
@@ -43,30 +43,30 @@
         "@graph": [
           {
             "@type": "Organization",
-            "@id": "https://zhiyingzzhou.github.io/renewlet/#organization",
+            "@id": "%RENEWLET_WEBSITE_URL%#organization",
             "name": "Renewlet",
-            "url": "https://zhiyingzzhou.github.io/renewlet/",
-            "logo": "https://zhiyingzzhou.github.io/renewlet/assets/renewlet/logo.svg",
+            "url": "%RENEWLET_WEBSITE_URL%",
+            "logo": "%RENEWLET_WEBSITE_LOGO_URL%",
             "sameAs": ["https://github.com/zhiyingzzhou/renewlet"]
           },
           {
             "@type": "WebSite",
-            "@id": "https://zhiyingzzhou.github.io/renewlet/#website",
+            "@id": "%RENEWLET_WEBSITE_URL%#website",
             "name": "Renewlet",
-            "url": "https://zhiyingzzhou.github.io/renewlet/",
+            "url": "%RENEWLET_WEBSITE_URL%",
             "inLanguage": ["zh-CN", "en"],
             "publisher": {
-              "@id": "https://zhiyingzzhou.github.io/renewlet/#organization"
+              "@id": "%RENEWLET_WEBSITE_URL%#organization"
             }
           },
           {
             "@type": "SoftwareApplication",
-            "@id": "https://zhiyingzzhou.github.io/renewlet/#software",
+            "@id": "%RENEWLET_WEBSITE_URL%#software",
             "name": "Renewlet",
             "applicationCategory": "FinanceApplication",
             "operatingSystem": "Docker, Cloudflare Workers",
             "softwareVersion": "0.1.0",
-            "url": "https://zhiyingzzhou.github.io/renewlet/en/",
+            "url": "%RENEWLET_WEBSITE_EN_URL%",
             "codeRepository": "https://github.com/zhiyingzzhou/renewlet",
             "license": "https://github.com/zhiyingzzhou/renewlet/blob/main/LICENSE",
             "description": "Renewlet is a self-hosted subscription ledger for services, renewal dates, budgets, notifications, and calendar feeds."

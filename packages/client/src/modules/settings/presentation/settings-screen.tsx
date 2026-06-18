@@ -18,6 +18,7 @@
 import { useEffect, useState } from 'react';
 import { Header } from '@/components/header';
 import { BackToTopFloatButton } from '@/components/back-to-top-float-button';
+import { ImportDataDialog } from '@/components/import-data-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -37,6 +38,7 @@ import { SearchableSelect, type SearchableSelectOption } from '@/components/ui/s
 import { TimePicker } from '@/components/ui/time-picker';
 import { ConfigManagerDialog } from '@/modules/custom-config/presentation/config-manager-dialog';
 import { ThemeSelector } from '@/components/theme-selector';
+import { RawErrorResponseDialog } from '@/components/raw-error-response-dialog';
 import { NotificationHistoryPanel } from './notification-history-panel';
 import { Settings2, FolderKanban, Activity, CreditCard, Coins, Palette } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -53,10 +55,14 @@ import { NotificationChannelConfigPanel } from './notification-channel-config-pa
 import { NotificationChannelList } from './notification-channel-list';
 import { ExchangeRatesSection } from './exchange-rates-section';
 import { BuiltInIconSourcesSection } from './built-in-icon-sources-section';
+import { UploadedIconsSection } from './uploaded-icons-section';
 import { AIRecognitionSettingsSection } from './ai-recognition-settings-section';
 import { CalendarFeedSection } from './calendar-feed-section';
 import { PublicStatusPageSection } from './public-status-page-section';
+import { CloudBackupSection } from './cloud-backup-section';
 import { CheckboxSettingRow, LoadingButtonContent } from './settings-shared-controls';
+import { useCloudBackupController } from '../application/use-cloud-backup-controller';
+import { useUploadedAssetsManager } from '../application/use-uploaded-assets-manager';
 import {
   DesktopSettingsSectionNav,
   MobileSettingsPageHeader,
@@ -68,11 +74,12 @@ import {
 
 /** 设置页 screen：只负责布局与展示，业务状态由 controller 提供。 */
 export function SettingsScreen() {
-  const { t, locale, setLocale, label: localizeLabel, formatDateTime } = useI18n();
+  const { t, locale, setLocale, formatDateTime } = useI18n();
   const {
     settings,
     effectiveThemeMode,
     accountEmail,
+    canManageUsers,
     canAccessPocketBaseAdmin,
     customConfig,
     subscriptionsQuery,
@@ -82,11 +89,13 @@ export function SettingsScreen() {
     ratesLoading,
     lastUpdated,
     ratesError,
+    ratesErrorDetails,
     getCurrencySymbol,
     updateCategories,
     updateStatuses,
     updatePaymentMethods,
     updateSetting,
+    monthlyBudgetInput,
     monthlyBudgetError,
     handleMonthlyBudgetInputChange,
     toggleChannel,
@@ -102,12 +111,17 @@ export function SettingsScreen() {
     handleThemeCustomColorChange,
     testingChannel,
     handleTestConnection,
+    notificationTestErrorDetails,
+    notificationTestErrorDetailsOpen,
+    setNotificationTestErrorDetailsOpen,
     isSavingSettings,
     notificationHistory,
     calendarFeed,
+    builtInIconIndex,
     publicStatusPage,
     password,
     passwordResetEnabled,
+    externalIntegrationsDisabled,
   } = useSettingsFormController();
 
   const {
@@ -129,8 +143,6 @@ export function SettingsScreen() {
     currencyOptions: CURRENCY_OPTIONS,
     includeDisabledCurrent: settings.defaultCurrency,
     locale,
-    formatLabel: (item, option) =>
-      `${getCurrencySymbol(item.value)} ${option ? localizeLabel(option.labels) : localizeLabel(item.labels)}`,
   });
   const effectivePublicStatusCurrency = settings.publicStatusCurrency === "inherit"
     ? settings.defaultCurrency
@@ -149,14 +161,19 @@ export function SettingsScreen() {
       currencyOptions: CURRENCY_OPTIONS,
       ...(explicitPublicStatusCurrency ? { includeDisabledCurrent: explicitPublicStatusCurrency } : {}),
       locale,
-      formatLabel: (item, option) =>
-        `${getCurrencySymbol(item.value)} ${option ? localizeLabel(option.labels) : localizeLabel(item.labels)}`,
     }),
   ];
   const [selectedNotificationChannel, setSelectedNotificationChannel] = useState<NotificationChannel | null>(null);
   const [notificationReminderDaysInput, setNotificationReminderDaysInput] = useState(String(settings.notificationReminderDays));
   const [mobileSectionNavOpen, setMobileSectionNavOpen] = useState(false);
+  const [cloudBackupImportOpen, setCloudBackupImportOpen] = useState(false);
+  const [cloudBackupRestoreFile, setCloudBackupRestoreFile] = useState<File | null>(null);
   const { activeSectionId, handleSectionClick } = useSettingsSectionNavigation();
+  const cloudBackup = useCloudBackupController((file) => {
+    setCloudBackupRestoreFile(file);
+    setCloudBackupImportOpen(true);
+  });
+  const uploadedAssets = useUploadedAssetsManager();
   const activeNotificationChannel = selectedNotificationChannel ?? settings.enabledChannels[0] ?? 'telegram';
   const handleNotificationChannelToggle = (channel: NotificationChannel) => {
     setSelectedNotificationChannel(channel);
@@ -208,6 +225,7 @@ export function SettingsScreen() {
                 id="settings-account"
                 className={SETTINGS_SECTION_SCROLL_CLASS}
                 accountEmail={accountEmail}
+                canManageUsers={canManageUsers}
                 canAccessPocketBaseAdmin={canAccessPocketBaseAdmin}
                 passwordResetEnabled={passwordResetEnabled}
                 passwordDialogOpen={passwordDialogOpen}
@@ -221,6 +239,7 @@ export function SettingsScreen() {
                 setConfirmPassword={setConfirmPassword}
                 isUpdatingPassword={isUpdatingPassword}
                 updatePassword={updatePassword}
+                passwordDisabled={externalIntegrationsDisabled}
               />
 
               {/* 外观设置 */}
@@ -271,6 +290,13 @@ export function SettingsScreen() {
                 className={SETTINGS_SECTION_SCROLL_CLASS}
                 sources={settings.builtInIconSources}
                 onChange={(sources) => updateSetting('builtInIconSources', sources)}
+                iconIndex={builtInIconIndex}
+              />
+
+              <UploadedIconsSection
+                id="settings-uploaded-icons"
+                className={SETTINGS_SECTION_SCROLL_CLASS}
+                controller={uploadedAssets}
               />
 
               <AIRecognitionSettingsSection
@@ -278,6 +304,7 @@ export function SettingsScreen() {
                 className={SETTINGS_SECTION_SCROLL_CLASS}
                 settings={settings.aiRecognition}
                 onChange={(aiRecognition) => updateSetting('aiRecognition', aiRecognition)}
+                disabled={externalIntegrationsDisabled}
               />
 
               {/* 预算设置 */}
@@ -294,7 +321,7 @@ export function SettingsScreen() {
                         allowedDecimalSeparators={[".", "。"]}
                         inputMode="decimal"
                         enterKeyHint="done"
-                        value={settings.monthlyBudget}
+                        value={monthlyBudgetInput}
                         onRawValueChange={handleMonthlyBudgetInputChange}
                         className="w-full border-border bg-secondary min-[380px]:w-[200px]"
                         placeholder="1500"
@@ -333,6 +360,7 @@ export function SettingsScreen() {
                     items={customConfig.categories}
                     onUpdate={updateCategories}
                     showColor={true}
+                    maxItems={200}
                     icon={<FolderKanban className="h-4 w-4" />}
                     getDeleteBlockReason={(item) => {
                       if (customConfig.categories.length <= 1) {
@@ -373,6 +401,7 @@ export function SettingsScreen() {
                     onUpdate={updatePaymentMethods}
                     icon={<CreditCard className="h-4 w-4" />}
                     showIcon={true}
+                    maxItems={200}
                     isItemReadOnly={(item) => isBuiltInPaymentMethodValue(item.value)}
                   />
 
@@ -390,6 +419,13 @@ export function SettingsScreen() {
                 </div>
               </section>
 
+              <CloudBackupSection
+                id="settings-cloud-backup"
+                className={SETTINGS_SECTION_SCROLL_CLASS}
+                controller={cloudBackup}
+                disabled={externalIntegrationsDisabled}
+              />
+
               <ExchangeRatesSection
                 id="settings-exchange"
                 className={SETTINGS_SECTION_SCROLL_CLASS}
@@ -399,6 +435,7 @@ export function SettingsScreen() {
                 activeRateProvider={activeRateProvider}
                 ratesLoading={ratesLoading}
                 ratesError={ratesError}
+                ratesErrorDetails={ratesErrorDetails}
                 lastUpdated={lastUpdated}
                 defaultCurrencyOptions={defaultCurrencyOptions}
                 handleRefreshRates={handleRefreshRates}
@@ -516,6 +553,7 @@ export function SettingsScreen() {
                       activeChannel={activeNotificationChannel}
                       onSelect={setSelectedNotificationChannel}
                       onToggle={handleNotificationChannelToggle}
+                      disabled={externalIntegrationsDisabled}
                     />
                     <NotificationChannelConfigPanel
                       channel={activeNotificationChannel}
@@ -524,6 +562,7 @@ export function SettingsScreen() {
                       updateSetting={updateSetting}
                       testingChannel={testingChannel}
                       onTest={handleTestConnection}
+                      disabled={externalIntegrationsDisabled}
                     />
                   </div>
 
@@ -538,6 +577,7 @@ export function SettingsScreen() {
                       autoComplete="tel"
                       placeholder={t("settings.testPhonePlaceholder")}
                       value={settings.testPhone}
+                      disabled={externalIntegrationsDisabled}
                       onChange={(e) => updateSetting('testPhone', e.target.value)}
                       className="border-border bg-secondary"
                     />
@@ -618,6 +658,24 @@ export function SettingsScreen() {
           </div>
         </div>
       ) : null}
+
+      <ImportDataDialog
+        open={cloudBackupImportOpen}
+        onOpenChange={setCloudBackupImportOpen}
+        settings={settings}
+        config={customConfig}
+        initialFile={cloudBackupRestoreFile}
+        onInitialFileConsumed={() => setCloudBackupRestoreFile(null)}
+      />
+
+      <RawErrorResponseDialog
+        open={notificationTestErrorDetailsOpen}
+        details={notificationTestErrorDetails}
+        onOpenChange={setNotificationTestErrorDetailsOpen}
+        title={t("rawErrorResponse.title")}
+        description={t("rawErrorResponse.description")}
+        testId="notification-test-raw-error-response-dialog"
+      />
     </div>
   );
 }

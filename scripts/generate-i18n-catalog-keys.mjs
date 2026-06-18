@@ -1,10 +1,16 @@
+/**
+ * 前端静态 catalog key 生成器。
+ *
+ * 触发时机：Lingui extract 后手动运行；CI 通过 i18n check 验证生成物未漂移。
+ * 输入：各 domain 的 `.po` catalog；副作用：重写 `packages/client/src/i18n/catalog-keys.ts`。
+ *
+ * 业务意图：非 React 同步逻辑只能消费可枚举 key，避免手写字符串绕过 Lingui catalog。
+ */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatter } from "@lingui/format-po";
 
-// Lingui catalog key 生成器：i18n extract 后运行，输出前端静态翻译 helper 可枚举的 key 类型。
-// 副作用：重写 packages/client/src/i18n/catalog-keys.ts。
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const catalogDir = path.join(rootDir, "packages/client/src/i18n/catalogs");
 const catalogKeysPath = path.join(rootDir, "packages/client/src/i18n/catalog-keys.ts");

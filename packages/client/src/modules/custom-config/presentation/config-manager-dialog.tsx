@@ -240,7 +240,7 @@ export const ConfigManagerDialog = ({
 
         <div
           data-config-manager-scroll=""
-          className="min-h-0 min-w-0 flex-1 grid gap-2 overflow-y-auto py-4 pr-1 sm:pr-2"
+          className="min-h-0 min-w-0 overflow-y-auto py-4 pr-1 sm:pr-2"
         >
           <ConfigManagerSortableList
             items={filteredItems}

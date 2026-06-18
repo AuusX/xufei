@@ -13,6 +13,7 @@
  * 注意： 不要只依赖前端禁用来保护管理员账号；这里的保护是 UX，安全边界仍在 Go route。
  */
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Shield, UserPlus } from "lucide-react";
 import { Header } from "@/components/header";
 import { AdminUsersRowsSkeleton } from "@/components/loading-skeleton";
@@ -53,6 +54,7 @@ function showErrorToast(title: string, error: unknown, fallback: string) {
 
 export default function AdminUsersPage() {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const { data: sessionData } = authClient.useSession();
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
@@ -99,6 +101,11 @@ export default function AdminUsersPage() {
     } catch (error: unknown) {
       // 初次加载会在卸载时 abort；把它静默处理，避免路由切换时出现误报 Toast。
       if (error instanceof ApiError && error.code === "aborted") return;
+      if (error instanceof ApiError && error.status === 403) {
+        // 403 说明后端 requireAdmin 已拒绝当前会话；这里按权限漂移兜底回设置页，不再展示误导性的加载失败。
+        navigate("/settings", { replace: true });
+        return;
+      }
       const currentT = tRef.current;
       showErrorToast(currentT("admin.loadFailed"), error, currentT("admin.loadFailedDescription"));
     } finally {
@@ -110,7 +117,7 @@ export default function AdminUsersPage() {
         }
       }
     }
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     const controller = new AbortController();

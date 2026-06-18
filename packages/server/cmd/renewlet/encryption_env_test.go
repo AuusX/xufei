@@ -1,6 +1,6 @@
 package main
 
-// 本文件测试 PB_ENCRYPTION_KEY 的部署前校验；32 字符约束失败时必须早停，避免运行后才损坏加密字段。
+// PB_ENCRYPTION_KEY 测试保护部署前失败策略；32 字符约束必须在 PocketBase 加密字段被读写前早停。
 
 import (
 	"fmt"

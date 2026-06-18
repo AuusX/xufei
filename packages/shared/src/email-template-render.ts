@@ -23,64 +23,51 @@ export function renderEmailTemplate(data: EmailTemplateData): string {
     table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
     @media screen and (max-width: 620px) {
       .email-container { width: 100% !important; max-width: 100% !important; }
+      .email-outer-pad { padding: 18px 10px !important; }
       .email-px { padding-left: 18px !important; padding-right: 18px !important; }
       .email-stack { display: block !important; width: 100% !important; text-align: left !important; }
-      .email-stack-pad { padding-top: 6px !important; }
-      .email-hide-mobile { display: none !important; }
+      .email-stack-pad { padding-top: 8px !important; padding-right: 0 !important; }
+      .email-amount { text-align: left !important; white-space: normal !important; }
+      .email-brand-note { display: none !important; }
     }
     @media (prefers-color-scheme: dark) {
-      .email-bg { background-color: #111827 !important; }
-      .email-card { background-color: #182230 !important; border-color: #334155 !important; }
-      .email-text { color: #F8FAFC !important; }
-      .email-muted { color: #CBD5E1 !important; }
-      .email-panel { background-color: #1F2937 !important; border-color: #334155 !important; }
-      .email-rule { border-color: #334155 !important; }
+      .email-bg { background-color: #0C0E12 !important; }
+      .email-card { background-color: #13161B !important; border-color: #23272E !important; box-shadow: none !important; }
+      .email-text { color: #F0F2F5 !important; }
+      .email-muted { color: #9AA6B8 !important; }
+      .email-panel { background-color: #1F2229 !important; border-color: #23272E !important; }
+      .email-soft { background-color: #1F2229 !important; border-color: #23272E !important; }
+      .email-rule { border-color: #23272E !important; }
     }
   </style>
 </head>
-<body class="email-bg" style="margin:0; padding:0; background-color:${data.theme.background}; color:${data.theme.text}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<body class="email-bg" style="margin:0; padding:0; background-color:${data.theme.background}; color:${data.theme.text}; font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
   <div style="display:none; font-size:1px; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden; mso-hide:all;">${escapeHtml(data.preheader)}&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;</div>
   <center class="email-bg" style="width:100%; background-color:${data.theme.background};">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse; background-color:${data.theme.background};">
       <tr>
-        <td align="center" style="padding:24px 12px;">
-          <table role="presentation" class="email-container email-card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; border-collapse:separate; border-spacing:0; background-color:${data.theme.surface}; border:1px solid ${data.theme.border}; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(15,23,42,0.08);">
+        <td align="center" class="email-outer-pad" style="padding:26px 12px;">
+          <table role="presentation" class="email-container email-card email-ledger" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; border-collapse:separate; border-spacing:0; background-color:${data.theme.surface}; border:1px solid ${data.theme.border}; border-radius:12px; overflow:hidden; box-shadow:0 1px 3px rgba(23,28,38,0.04);">
             <tr>
-              <td height="4" style="height:4px; font-size:0; line-height:0; background-color:${data.theme.primary};">&nbsp;</td>
-            </tr>
-            <tr>
-              <td class="email-px email-rule" style="padding:18px 28px 16px 28px; border-bottom:1px solid ${data.theme.border};">
+              <td class="email-px email-rule" style="padding:15px 24px; border-bottom:1px solid ${data.theme.border};">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
                   <tr>
-                    <td align="left" valign="middle" style="vertical-align:middle;">
-                      <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
-                        <tr>
-                          <td width="28" height="28" align="center" valign="middle" style="width:28px; height:28px; border-radius:7px; background-color:${data.theme.primarySoft}; color:${data.theme.primary}; font-size:14px; font-weight:800; line-height:28px;">R</td>
-                          <td valign="middle" class="email-text" style="padding-left:10px; color:${data.theme.text}; font-size:16px; font-weight:800; line-height:22px;">Renewlet</td>
-                        </tr>
-                      </table>
-                    </td>
-                    <td align="right" valign="middle" class="email-muted" style="vertical-align:middle; color:${data.theme.muted}; font-size:12px; font-weight:600; line-height:18px;">${escapeHtml(data.copy.brandTagline)}</td>
+                    <td align="left" valign="middle" class="email-text" style="vertical-align:middle; color:${data.theme.text}; font-size:14px; font-weight:700; line-height:20px;">Renewlet</td>
+                    <td align="right" valign="middle" class="email-muted email-brand-note" style="vertical-align:middle; color:${data.theme.muted}; font-size:12px; font-weight:500; line-height:18px;">${escapeHtml(data.copy.brandTagline)}</td>
                   </tr>
                 </table>
               </td>
             </tr>
-            <tr>
-              <td class="email-px" style="padding:22px 28px 8px 28px;">
-                <p style="margin:0 0 7px 0; color:${data.theme.primary}; font-size:13px; font-weight:700; line-height:18px;">${escapeHtml(data.statusLabel)}</p>
-                <h1 class="email-text" style="margin:0; color:${data.theme.text}; font-size:22px; font-weight:800; line-height:29px;">${escapeHtml(data.title)}</h1>
-                ${renderSummaryRows(data)}
-              </td>
-            </tr>
+            ${renderSummaryRows(data)}
             ${groupsOrContent}
             ${cta}
             <tr>
-              <td class="email-px" style="padding:20px 28px 26px 28px;">
+              <td class="email-px" style="padding:17px 24px 20px 24px;">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-rule" style="width:100%; border-collapse:collapse; border-top:1px solid ${data.theme.border};">
                   <tr>
-                    <td class="email-muted" style="padding-top:13px; color:${data.theme.muted}; font-size:12px; line-height:19px;">
-                      <p style="margin:0;"><strong class="email-text" style="color:${data.theme.text}; font-weight:700;">${escapeHtml(data.copy.generatedAt)}</strong> ${escapeHtml(data.timestamp)}</p>
-                      <p style="margin:6px 0 0 0;">${escapeHtml(data.copy.footer)}</p>
+                    <td class="email-muted" style="padding-top:12px; color:${data.theme.muted}; font-size:12px; line-height:19px;">
+                      <p style="margin:0;"><strong class="email-text" style="color:${data.theme.text}; font-weight:600;">${escapeHtml(data.copy.generatedAt)}</strong> ${escapeHtml(data.timestamp)}</p>
+                      <p style="margin:5px 0 0 0;">${escapeHtml(data.copy.footer)}</p>
                     </td>
                   </tr>
                 </table>
@@ -98,50 +85,50 @@ export function renderEmailTemplate(data: EmailTemplateData): string {
 function renderSummaryRows(data: EmailTemplateData): string {
   if (data.summaryRows.length === 0) return "";
   const rows = data.summaryRows
-    .map((row, index) => `${index === 0 ? "" : " &middot; "}${escapeHtml(row.label)}: <strong class="email-text" style="color:${data.theme.text}; font-weight:700;">${escapeHtml(row.value)}</strong>`)
+    .map((row, index) => `${index === 0 ? "" : `<span style="color:${data.theme.border};"> / </span>`}${escapeHtml(row.label)} <strong class="email-text" style="color:${data.theme.text}; font-weight:700;">${escapeHtml(row.value)}</strong>`)
     .join("");
-  return `<p class="email-muted" style="margin:11px 0 0 0; color:${data.theme.muted}; font-size:13px; line-height:20px;">${rows}</p>`;
+  return `<tr>
+              <td class="email-px" style="padding:11px 24px 0 24px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-ledger-summary email-rule" style="width:100%; border-collapse:collapse; border-bottom:1px solid ${data.theme.border};">
+                  <tr>
+                    <td class="email-muted" style="padding:0 0 11px 0; color:${data.theme.muted}; font-size:12px; line-height:18px;">
+                      ${rows}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>`;
 }
 
 function renderGroups(data: EmailTemplateData): string {
-  return data.groups.map((group) => `
-            <tr>
-              <td class="email-px" style="padding:14px 28px 0 28px;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-rule" style="width:100%; border-collapse:collapse; border-top:1px solid ${data.theme.border};">
+  const rows = data.groups.map((group) => `
                   <tr>
-                    <td style="padding:13px 0 7px 0;">
-                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
-                        <tr>
-                          <td align="left" class="email-text" style="color:${data.theme.text}; font-size:14px; font-weight:800; line-height:21px;">${escapeHtml(group.label)}</td>
-                          <td align="right" class="email-muted" style="color:${data.theme.muted}; font-size:12px; font-weight:700; line-height:18px;">${group.count}</td>
-                        </tr>
-                      </table>
-                    </td>
+                    <td colspan="2" align="left" class="email-soft email-rule email-text" style="padding:9px 12px; background-color:${data.theme.surfaceMuted}; border-bottom:1px solid ${data.theme.border}; color:${data.theme.text}; font-size:13px; font-weight:700; line-height:19px;">${escapeHtml(group.label)}</td>
+                    <td align="right" class="email-soft email-rule email-muted" style="padding:9px 12px; background-color:${data.theme.surfaceMuted}; border-bottom:1px solid ${data.theme.border}; color:${data.theme.muted}; font-size:12px; font-weight:600; line-height:18px;">${group.count}</td>
                   </tr>
-                  ${group.items.map((item) => renderGroupItem(data, item)).join("")}
+                  ${group.items.map((item) => renderGroupItem(data, item)).join("")}`).join("");
+  return `
+            <tr>
+              <td class="email-px" style="padding:14px 24px 0 24px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-panel email-ledger-table" style="width:100%; border-collapse:separate; border-spacing:0; background-color:${data.theme.surface}; border:1px solid ${data.theme.border}; border-radius:10px; overflow:hidden;">
+                  ${rows}
                 </table>
               </td>
-            </tr>`).join("");
+            </tr>`;
 }
 
 function renderGroupItem(data: EmailTemplateData, item: EmailTemplateItem): string {
   return `
                   <tr>
-                    <td class="email-rule" style="padding:11px 0; border-top:1px solid ${data.theme.border};">
-                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
-                        <tr>
-                          <td width="45%" valign="top" style="width:45%; vertical-align:top; padding-right:14px;">
-                            <p class="email-text" style="margin:0; color:${data.theme.text}; font-size:15px; font-weight:800; line-height:21px;">${escapeHtml(item.name)}</p>
-                            <p class="email-muted" style="margin:4px 0 0 0; color:${data.theme.muted}; font-size:12px; line-height:18px;">${escapeHtml(item.dateLabel)} &middot; ${escapeHtml(item.targetDate)}</p>
-                          </td>
-                          <td width="30%" valign="top" class="email-stack email-stack-pad" style="width:30%; vertical-align:top; padding-right:12px;">
-                            <p style="margin:0; color:${item.accentText}; font-size:13px; font-weight:700; line-height:19px;">${escapeHtml(item.detail)}</p>
-                          </td>
-                          <td width="25%" align="right" valign="top" class="email-stack email-stack-pad" style="width:25%; vertical-align:top; text-align:right; white-space:nowrap;">
-                            <p class="email-text" style="margin:0; color:${data.theme.text}; font-size:15px; font-weight:800; line-height:21px;">${escapeHtml(item.amount)} ${escapeHtml(item.currency)}</p>
-                          </td>
-                        </tr>
-                      </table>
+                    <td width="48%" valign="top" class="email-stack email-rule" style="width:48%; vertical-align:top; padding:12px 14px 12px 12px; border-bottom:1px solid ${data.theme.border};">
+                      <p class="email-text" style="margin:0; color:${data.theme.text}; font-size:13px; font-weight:600; line-height:19px;">${escapeHtml(item.name)}</p>
+                      <p class="email-muted" style="margin:3px 0 0 0; color:${data.theme.muted}; font-size:12px; line-height:18px;">${escapeHtml(item.dateLabel)} &middot; ${escapeHtml(item.targetDate)}</p>
+                    </td>
+                    <td width="31%" valign="top" class="email-stack email-stack-pad email-rule" style="width:31%; vertical-align:top; padding:12px 12px 12px 0; border-bottom:1px solid ${data.theme.border};">
+                      <p class="email-text" style="margin:0; padding-left:9px; border-left:2px solid ${item.accentText}; color:${data.theme.text}; font-size:12px; font-weight:600; line-height:18px;">${escapeHtml(item.detail)}</p>
+                    </td>
+                    <td width="21%" align="right" valign="top" class="email-stack email-stack-pad email-amount email-rule" style="width:21%; vertical-align:top; padding:12px 12px 12px 0; border-bottom:1px solid ${data.theme.border}; text-align:right; white-space:nowrap;">
+                      <p class="email-text" style="margin:0; color:${data.theme.text}; font-size:13px; font-weight:700; line-height:19px;">${escapeHtml(item.amount)} ${escapeHtml(item.currency)}</p>
                     </td>
                   </tr>`;
 }
@@ -150,12 +137,12 @@ function renderContentPanel(data: EmailTemplateData): string {
   const content = data.contentLines.map(escapeHtml).join("<br>");
   return `
             <tr>
-              <td class="email-px" style="padding:16px 28px 0 28px;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-panel" style="width:100%; border-collapse:separate; border-spacing:0; background-color:${data.theme.surfaceMuted}; border:1px solid ${data.theme.border}; border-radius:8px;">
+              <td class="email-px" style="padding:14px 24px 0 24px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-panel email-soft" style="width:100%; border-collapse:separate; border-spacing:0; background-color:${data.theme.surfaceMuted}; border:1px solid ${data.theme.border}; border-radius:10px;">
                   <tr>
-                    <td style="padding:16px 18px;">
-                      <p class="email-muted" style="margin:0 0 7px 0; color:${data.theme.muted}; font-size:12px; font-weight:700; line-height:18px;">${escapeHtml(data.copy.message)}</p>
-                      <p class="email-text" style="margin:0; color:${data.theme.text}; font-size:15px; line-height:24px;">${content}</p>
+                    <td style="padding:14px 16px;">
+                      <p class="email-muted" style="margin:0 0 6px 0; color:${data.theme.muted}; font-size:12px; font-weight:600; line-height:18px;">${escapeHtml(data.copy.message)}</p>
+                      <p class="email-text" style="margin:0; color:${data.theme.text}; font-size:13px; line-height:21px;">${content}</p>
                     </td>
                   </tr>
                 </table>
@@ -168,11 +155,11 @@ function renderCta(data: EmailTemplateData): string {
   if (!cta) return "";
   return `
             <tr>
-              <td class="email-px" style="padding:20px 28px 0 28px;">
+              <td class="email-px" style="padding:16px 24px 0 24px;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="left" style="border-collapse:separate; border-spacing:0;">
                   <tr>
                     <td align="center" valign="middle" bgcolor="${data.theme.primary}" style="background-color:${data.theme.primary}; border-radius:8px;">
-                      <a href="${escapeAttr(cta.url)}" style="display:inline-block; padding:0 18px; color:${data.theme.primaryText}; font-size:14px; font-weight:800; line-height:44px; text-decoration:none;">${escapeHtml(cta.label)}</a>
+                      <a href="${escapeAttr(cta.url)}" style="display:inline-block; padding:0 15px; color:${data.theme.primaryText}; font-size:13px; font-weight:700; line-height:38px; text-decoration:none;">${escapeHtml(cta.label)}</a>
                     </td>
                   </tr>
                 </table>

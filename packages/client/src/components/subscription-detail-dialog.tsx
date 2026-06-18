@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useCustomConfig } from "@/contexts/CustomConfigContext";
+import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useSettings } from "@/hooks/use-settings";
 import { useI18n } from "@/i18n/I18nProvider";
@@ -28,6 +29,7 @@ import type { DateOnly } from "@/lib/time/date-only";
 import { formatBillingCycleLabel, isOneTimeBuyout, isOneTimeFixedTerm } from "@/lib/subscription-billing";
 import { getEffectiveSubscriptionStatus } from "@/modules/subscriptions/domain/subscription-status";
 import { isManualRenewEligible } from "@renewlet/shared/subscription-renewal";
+import { calculateCostSharingSummary } from "@renewlet/shared/cost-sharing";
 
 const DEFAULT_LOGO_FALLBACK_COLOR = "hsl(var(--primary))";
 
@@ -77,6 +79,7 @@ function SubscriptionDetailContent({
   const { config } = useCustomConfig();
   const { data: settings } = useSettings();
   const { t, locale, label, formatDateOnly, formatCurrency } = useI18n();
+  const { convert } = useExchangeRates(settings?.exchangeRateProvider);
   const category = config.categories.find((item) => item.value === subscription.category);
   const paymentMethod = subscription.paymentMethod
     ? config.paymentMethods.find((item) => item.value === subscription.paymentMethod)
@@ -88,7 +91,10 @@ function SubscriptionDetailContent({
   const isFixedTermOneTime = isOneTimeFixedTerm(subscription);
   const isOneTime = subscription.billingCycle === "one-time";
   const canManualRenew = Boolean(onRenewSubscription) && isManualRenewEligible(subscription);
-  const hasMultipleActions = !isBuyout || canManualRenew || Boolean(onEditSubscription);
+  const costSharingSummary = calculateCostSharingSummary(subscription.costSharing, subscription.price, {
+    baseCurrency: subscription.currency,
+    convert,
+  });
   const renewalLabel = isOneTime
     ? t("subscription.renewal.oneTime")
     : subscription.autoRenew
@@ -143,6 +149,22 @@ function SubscriptionDetailContent({
       </div>
 
       <div className="grid gap-3">
+        {costSharingSummary.enabled ? (
+          <div className="grid gap-2 rounded-lg border border-border bg-secondary/40 p-3">
+            <DetailRow label={t("subscription.field.price")}>
+              <span className="font-semibold">{formatCurrency(costSharingSummary.total, subscription.currency)}</span>
+            </DetailRow>
+            <DetailRow label={t("subscription.costSharing.familyContribution")}>
+              <span className="font-semibold text-warning">{formatCurrency(costSharingSummary.familyContribution, subscription.currency)}</span>
+            </DetailRow>
+            <DetailRow label={t("subscription.costSharing.yourShare")}>
+              <span className="font-semibold text-primary">{formatCurrency(costSharingSummary.yourShare, subscription.currency)}</span>
+            </DetailRow>
+            <DetailRow label={t("subscription.costSharing.recoverableAmount")}>
+              <span className="font-semibold">{formatCurrency(costSharingSummary.recoverableAmount, subscription.currency)}</span>
+            </DetailRow>
+          </div>
+        ) : null}
         <DetailRow label={t("subscription.detail.category")}>
           <span className="break-words">{category ? label(category.labels) : subscription.category}</span>
         </DetailRow>
@@ -209,24 +231,24 @@ function SubscriptionDetailContent({
         ) : null}
       </div>
 
-      <div className={cn("grid gap-2 pt-1", hasMultipleActions && "sm:grid-cols-2")}>
-        <Button variant="outline" className="border-border" onClick={onClose}>
+      <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+        <Button variant="outline" className="w-full justify-center border-border sm:w-auto" onClick={onClose}>
           {t("common.close")}
         </Button>
         {!isBuyout ? (
-          <Button variant="outline" className="border-border" onClick={onAddToCalendar}>
+          <Button variant="outline" className="w-full justify-center border-border sm:w-auto" onClick={onAddToCalendar}>
             <CalendarPlus className="h-4 w-4" />
             {t("subscription.addToCalendar")}
           </Button>
         ) : null}
         {canManualRenew ? (
-          <Button variant="outline" className="border-border" onClick={() => onRenewSubscription?.(subscription.id)}>
+          <Button variant="outline" className="w-full justify-center border-border sm:w-auto" onClick={() => onRenewSubscription?.(subscription.id)}>
             <RotateCw className="h-4 w-4" />
             {t("subscription.renew")}
           </Button>
         ) : null}
         {onEditSubscription ? (
-          <Button className="bg-primary text-primary-foreground hover:bg-primary-glow" onClick={handleEdit}>
+          <Button className="w-full justify-center bg-primary text-primary-foreground hover:bg-primary-glow sm:w-auto" onClick={handleEdit}>
             <Edit2 className="h-4 w-4" />
             {t("common.edit")}
           </Button>

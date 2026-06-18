@@ -1,6 +1,7 @@
 package main
 
-// 本文件测试导入 preview/apply 的严格 JSON、用户隔离、幂等 importKey 和手动 skip 语义。
+// 导入导出测试保护 preview/apply 的事务边界、owner 隔离和跨来源字段归一化。
+// 这里的样例同时约束 AI/Wallos/Renewlet 导入进入 subscriptions 前必须复用同一持久层校验。
 
 import (
 	"encoding/json"

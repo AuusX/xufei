@@ -1,12 +1,13 @@
 import type { ConfigItem } from "@/types/config";
 import type { ExchangeRates } from "@/lib/api/schemas/exchange-rates";
+import { COMMON_CURRENCY_PRIORITY } from "@/lib/currency-data";
 
 const EXCHANGE_RATE_PREVIEW_LIMIT = 8;
 const EXCHANGE_RATE_CNY_REFERENCE_CURRENCY = "CNY";
 
-const EXCHANGE_RATE_PRIMARY_PREVIEW_CURRENCIES = [
-  "USD", "EUR", "GBP", "AUD", "TRY", "NGN", "ARS", "PHP",
-] as const;
+const EXCHANGE_RATE_PRIMARY_PREVIEW_CURRENCIES = COMMON_CURRENCY_PRIORITY.filter(
+  (currency) => currency !== EXCHANGE_RATE_CNY_REFERENCE_CURRENCY,
+);
 
 const EXCHANGE_RATE_FALLBACK_PREVIEW_CURRENCIES = [
   "JPY", "CAD", "CHF", "HKD", "SGD", "NZD", "SEK", "NOK", "DKK",

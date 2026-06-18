@@ -1,5 +1,6 @@
 import { changePasswordBodySchema } from "@renewlet/shared/schemas/account";
 import { loginBodySchema, setupCreateBodySchema, type SessionResponse } from "@renewlet/shared/schemas/auth";
+import { appStatusResponseSchema } from "@renewlet/shared/schemas/app";
 import { adminCreateUserBodySchema, adminPatchUserBodySchema } from "@renewlet/shared/schemas/admin";
 import { bearerToken, HttpError, json, ok, readJson, requestLocale, type AppLocale } from "./http";
 import { serverText } from "./server-i18n";
@@ -20,15 +21,32 @@ import type { AuthContext, Env, SessionAuthRow, UserRow } from "./types";
 const DEFAULT_SESSION_TTL_DAYS = 30;
 
 /**
- * setupStatus 暴露首装入口状态。
+ * appStatus 暴露认证前应用能力状态。
  *
- * Cloudflare 版没有 PocketBase Installer 页面，前端必须通过这个认证前端点判断是否展示初始化流程；
- * 真正的可创建性仍由 createInitialAdmin 再次检查，避免 UI 状态被缓存或竞态误导。
+ * Cloudflare v1 不支持 Docker Demo Mode，但仍必须返回同一契约，避免前端 capability 判断按运行面分叉。
  */
-export async function setupStatus(request: Request, env: Env): Promise<Response> {
-  return json({
+async function buildAppStatus(env: Env) {
+  return appStatusResponseSchema.parse({
     setupRequired: !(await hasEnabledAdmin(env)),
     setupEnabled: setupEnabled(env),
+    demoMode: false,
+  });
+}
+
+export async function appStatus(_request: Request, env: Env): Promise<Response> {
+  return json(await buildAppStatus(env));
+}
+
+/**
+ * setupStatus 暴露旧首装入口状态。
+ *
+ * 新前端读取 appStatus；保留两字段响应，避免外部探针因 demoMode 额外字段解析失败。
+ */
+export async function setupStatus(_request: Request, env: Env): Promise<Response> {
+  const status = await buildAppStatus(env);
+  return json({
+    setupRequired: status.setupRequired,
+    setupEnabled: status.setupEnabled,
   });
 }
 

@@ -1,3 +1,4 @@
+// Worker AI 模型列表测试保护认证代理、provider 形状归一和原始错误回显，避免请求 API key 进入响应 headers。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listAIModels } from "./ai-models";
 import type { Env } from "./types";
@@ -25,7 +26,7 @@ const authUser = {
 };
 
 function envFixture(): Env {
-  return { DB: {} as D1Database, ASSETS_BUCKET: {} as R2Bucket };
+  return { DB: {} as D1Database, ASSETS: {} as Fetcher, ASSETS_BUCKET: {} as R2Bucket };
 }
 
 function requestFor(body: unknown): Request {
@@ -144,8 +145,11 @@ describe("Cloudflare AI model list proxy", () => {
     expect(body.models[0]?.id).toBe("custom-model");
   });
 
-  it("redacts provider errors", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("invalid sk-test-secret", { status: 401 })));
+  it("returns raw provider response body for model list errors", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("invalid sk-test-secret", {
+      status: 401,
+      headers: { "content-type": "text/plain" },
+    })));
 
     await expect(listAIModels(requestFor({
       providerType: "openai",
@@ -155,9 +159,70 @@ describe("Cloudflare AI model list proxy", () => {
       status: 401,
       code: "AI_MODEL_LIST_FAILED",
       details: {
-        reason: "http_401",
-        providerMessage: expect.stringContaining("[redacted]"),
+        rawResponseText: "invalid [redacted]",
       },
+    });
+  });
+
+  it("passes through provider rate limits for display", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("slow down", { status: 429 })));
+
+    await expect(listAIModels(requestFor({
+      providerType: "openai",
+      baseUrl: "",
+      apiKey: "sk-test-secret",
+    }), envFixture())).rejects.toMatchObject({
+      status: 429,
+      code: "AI_MODEL_LIST_FAILED",
+      details: {
+        rawResponseText: "slow down",
+      },
+    });
+  });
+
+  it("passes through provider server errors for display", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("provider down", { status: 503 })));
+
+    await expect(listAIModels(requestFor({
+      providerType: "openai",
+      baseUrl: "",
+      apiKey: "sk-test-secret",
+    }), envFixture())).rejects.toMatchObject({
+      status: 503,
+      code: "AI_MODEL_LIST_FAILED",
+      details: {
+        rawResponseText: "provider down",
+      },
+    });
+  });
+
+  it("returns bad request for invalid provider JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("not-json", { status: 200 })));
+
+    await expect(listAIModels(requestFor({
+      providerType: "openai",
+      baseUrl: "",
+      apiKey: "sk-test-secret",
+    }), envFixture())).rejects.toMatchObject({
+      status: 400,
+      code: "AI_MODEL_LIST_INVALID_JSON",
+      details: {
+        rawResponseText: "not-json",
+      },
+    });
+  });
+
+  it("returns payload too large for oversized provider responses", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("x".repeat((1 << 20) + 1), { status: 200 })));
+
+    await expect(listAIModels(requestFor({
+      providerType: "openai",
+      baseUrl: "",
+      apiKey: "sk-test-secret",
+    }), envFixture())).rejects.toMatchObject({
+      status: 413,
+      code: "AI_MODEL_LIST_RESPONSE_TOO_LARGE",
+      details: { rawResponseText: "response_too_large" },
     });
   });
 
@@ -171,7 +236,7 @@ describe("Cloudflare AI model list proxy", () => {
     }), envFixture())).rejects.toMatchObject({
       status: 408,
       code: "AI_MODEL_LIST_TIMEOUT",
-      details: { reason: "timeout" },
+      details: { rawResponseText: "timeout" },
     });
   });
 });

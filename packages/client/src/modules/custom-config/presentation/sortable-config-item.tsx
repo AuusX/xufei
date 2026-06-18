@@ -111,17 +111,15 @@ export const SortableConfigItem = memo(function SortableConfigItem({
     transition,
   };
 
-  const isDisabled = toggleMode && item.enabled === false;
-
   return (
     <div
       ref={setNodeRef}
+      data-config-manager-item=""
       style={style}
       className={cn(
-        "flex min-w-0 items-center gap-3 rounded-lg border border-border bg-secondary/50 p-3",
+        "flex min-w-0 shrink-0 items-center gap-3 rounded-lg border border-border bg-secondary/50 p-3",
         isDragging && "opacity-50 shadow-lg",
         isEditing && "ring-2 ring-primary",
-        isDisabled && "opacity-50",
       )}
     >
       <button
@@ -222,7 +220,7 @@ export const SortableConfigItem = memo(function SortableConfigItem({
           </span>
           <TruncatedTooltipText
             text={label(item.labels)}
-            className={cn("min-w-0 flex-1 text-sm", isDisabled && "text-muted-foreground")}
+            className="min-w-0 flex-1 text-sm"
           />
 
           {isSystemItem && !toggleMode && (

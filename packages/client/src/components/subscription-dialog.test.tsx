@@ -13,9 +13,9 @@ const mocks = vi.hoisted(() => ({
     statuses: [{ id: "active", value: "active", labels: { "zh-CN": "活跃", "en-US": "Active" } }],
     paymentMethods: [{ id: "alipay", value: "alipay", labels: { "zh-CN": "支付宝", "en-US": "Alipay" } }],
     currencies: [
-      { id: "CNY", value: "CNY", labels: { "zh-CN": "人民币 (¥)", "en-US": "Chinese yuan (¥)" }, enabled: true },
-      { id: "USD", value: "USD", labels: { "zh-CN": "美元 ($)", "en-US": "US dollar ($)" }, enabled: true },
-      { id: "EUR", value: "EUR", labels: { "zh-CN": "欧元 (€)", "en-US": "Euro (€)" }, enabled: true },
+      { id: "CNY", value: "CNY", labels: { "zh-CN": "¥ 人民币 (CNY)", "en-US": "¥ Chinese Yuan (CNY)" }, enabled: true },
+      { id: "USD", value: "USD", labels: { "zh-CN": "$ 美元 (USD)", "en-US": "$ US Dollar (USD)" }, enabled: true },
+      { id: "EUR", value: "EUR", labels: { "zh-CN": "€ 欧元 (EUR)", "en-US": "€ Euro (EUR)" }, enabled: true },
     ],
   },
 }));
@@ -167,12 +167,12 @@ describe("SubscriptionDialog", () => {
     expect(screen.queryByRole("spinbutton", { name: "价格" })).not.toBeInTheDocument();
 
     const currencySelect = screen.getByRole("combobox", { name: "选择货币" });
-    expect(currencySelect).toHaveTextContent("美元 ($)");
+    expect(currencySelect).toHaveTextContent("$ 美元 (USD)");
 
     await user.click(currencySelect);
-    await user.click(await screen.findByText("人民币 (¥)"));
+    await user.click(await screen.findByText("¥ 人民币 (CNY)"));
 
-    expect(screen.getByRole("combobox", { name: "选择货币" })).toHaveTextContent("人民币 (¥)");
+    expect(screen.getByRole("combobox", { name: "选择货币" })).toHaveTextContent("¥ 人民币 (CNY)");
   });
 
   it("defaults new subscriptions to manual renewal and submits explicit auto-renew opt-in", async () => {

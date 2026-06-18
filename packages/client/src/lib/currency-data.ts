@@ -25,8 +25,28 @@ export type SupportedExchangeRateCurrency = (typeof SUPPORTED_EXCHANGE_RATE_CURR
 
 const SUPPORTED_EXCHANGE_RATE_CURRENCY_SET = new Set<string>(SUPPORTED_EXCHANGE_RATE_CURRENCIES);
 
+/** 产品级常用货币顺序：只用于默认货币管理顺序、旧默认快照迁移和汇率预览口径。 */
+export const COMMON_CURRENCY_PRIORITY = [
+  "CNY", "USD", "EUR", "GBP", "AUD", "TRY", "NGN", "ARS", "PHP",
+] as const satisfies readonly SupportedExchangeRateCurrency[];
+
+const COMMON_CURRENCY_PRIORITY_INDEX = new Map<string, number>(
+  COMMON_CURRENCY_PRIORITY.map((currency, index) => [currency, index]),
+);
+
 export function isSupportedExchangeRateCurrency(value: string): value is SupportedExchangeRateCurrency {
   return SUPPORTED_EXCHANGE_RATE_CURRENCY_SET.has(value);
+}
+
+export function orderCurrencyItemsByCommonPriority<T extends { value: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => {
+    const aRank = COMMON_CURRENCY_PRIORITY_INDEX.get(a.value);
+    const bRank = COMMON_CURRENCY_PRIORITY_INDEX.get(b.value);
+    if (aRank === undefined && bRank === undefined) return 0;
+    if (aRank === undefined) return 1;
+    if (bRank === undefined) return -1;
+    return aRank - bRank;
+  });
 }
 
 export function getIntlCurrencyName(currency: string, locale: string): string {
@@ -61,6 +81,33 @@ export function getIntlCurrencySymbol(currency: string, locale = "zh-CN"): strin
   }
 }
 
+export interface IntlCurrencyIdentityLabel {
+  code: string;
+  name: string;
+  symbol: string;
+  label: string;
+}
+
+function isCurrencySymbolCode(symbol: string, code: string): boolean {
+  return symbol.trim().toUpperCase() === code;
+}
+
+function formatCurrencyIdentityLabel(code: string, name: string, symbol: string): string {
+  if (isCurrencySymbolCode(symbol, code)) {
+    return name === code ? code : `${code} ${name}`;
+  }
+  return `${symbol} ${name} (${code})`;
+}
+
+export function getIntlCurrencyIdentityLabel(currency: string, locale: string): IntlCurrencyIdentityLabel {
+  const code = currency.toUpperCase();
+  const name = getIntlCurrencyName(code, locale);
+  const symbol = getIntlCurrencySymbol(code, locale);
+  const label = formatCurrencyIdentityLabel(code, name, symbol);
+
+  return { code, name, symbol, label };
+}
+
 export function getIntlCurrencyOptionLabel(currency: string, locale: string): string {
-  return `${getIntlCurrencyName(currency, locale)} (${getIntlCurrencySymbol(currency, locale)})`;
+  return getIntlCurrencyIdentityLabel(currency, locale).label;
 }

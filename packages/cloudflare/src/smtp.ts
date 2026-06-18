@@ -10,6 +10,7 @@ const SUPPORTED_AUTH_METHOD = "PLAIN";
 
 const emailAddressSchema = z.email();
 
+/** 账号级 SMTP 配置；Cloudflare Worker 不读取部署级 SMTP secrets，也不支持 25 端口提交路径。 */
 export interface SmtpConfig {
   host: string;
   port: number;
@@ -110,6 +111,7 @@ class SmtpConnection {
 
 /** 将账号级设置转换为 Cloudflare SMTP 配置；部署级 SMTP secrets 不参与 Worker 邮件通知。 */
 export function notificationSmtpConfig(settings: ApiAppSettings, locale: AppLocale): SmtpConfig {
+  // Cloudflare 版邮件只读取账号级设置；wrangler vars/secrets 不作为通知 SMTP 回退。
   return buildSmtpConfig(
     settings.smtpHost,
     settings.smtpPort,
@@ -129,6 +131,7 @@ export function notificationSmtpConfig(settings: ApiAppSettings, locale: AppLoca
  * 连接先完成 EHLO/STARTTLS，再进行 AUTH 与 DATA；失败信息会被 publicSmtpError 清洗后返回给 UI。
  */
 export async function sendSmtpEmail(config: SmtpConfig, email: SmtpEmail, locale: AppLocale): Promise<void> {
+  // Workers TCP sockets 不支持把 25 端口当常规 submission 路径；端口合法性在 buildSmtpConfig 里统一拦截。
   const to = email.to.map((item) => parseMailbox(item, locale));
   if (to.length === 0) throw new Error(serverText(locale, "smtp.recipientEmpty"));
   const from = parseMailbox(config.from, locale);

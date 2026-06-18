@@ -2,15 +2,35 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
+import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 
-const rootDir = fileURLToPath(new URL('.', import.meta.url))
+import {
+  renderRobotsTxt,
+  renderSitemapXml,
+  replaceWebsiteMetadataPlaceholders,
+  resolveWebsiteDeployment,
+} from './src/lib/website-metadata'
 
-// 只有 GitHub 仓库页需要 /renewlet/ base；Cloudflare Pages、自定义域和 Docker 静态站都走根路径。
-const base = process.env.GITHUB_PAGES === 'true' ? '/renewlet/' : '/'
+const rootDir = fileURLToPath(new URL('.', import.meta.url))
+const deployment = resolveWebsiteDeployment(process.env)
+
+function websiteMetadataPlugin(): Plugin {
+  return {
+    name: 'renewlet-website-metadata',
+    transformIndexHtml(html) {
+      return replaceWebsiteMetadataPlaceholders(html, deployment)
+    },
+    generateBundle() {
+      // GitHub Pages 当前发布 URL 是官网路径事实来源；不要再把仓库名或自定义域写进静态文件。
+      this.emitFile({ type: 'asset', fileName: 'robots.txt', source: renderRobotsTxt(deployment) })
+      this.emitFile({ type: 'asset', fileName: 'sitemap.xml', source: renderSitemapXml(deployment) })
+    },
+  }
+}
 
 export default defineConfig({
-  base,
+  base: deployment.viteBase,
   build: {
     rollupOptions: {
       // 中文根路径与英文 /en/ 都是可索引 HTML 入口；不要退回只靠前端按钮切语言。
@@ -20,7 +40,7 @@ export default defineConfig({
       },
     },
   },
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), websiteMetadataPlugin()],
   test: {
     environment: 'jsdom',
     globals: true,

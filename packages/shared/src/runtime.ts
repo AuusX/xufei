@@ -89,6 +89,7 @@ export function isInheritReminderDays(value: number): boolean {
 }
 
 export function effectiveReminderDays(reminderDays: number, notificationReminderDays: number): number | undefined {
+  // -2 在通知链路中表示“单订阅静默”；undefined 让调用方自然跳过该订阅，不写通知 payload。
   if (isDisabledReminderDays(reminderDays)) return undefined;
   return isInheritReminderDays(reminderDays) ? notificationReminderDays : reminderDays;
 }

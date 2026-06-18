@@ -1,3 +1,9 @@
+/**
+ * AI 识别提示词构造器是 Docker Go 与 Cloudflare Worker 的共同事实源。
+ *
+ * prompt JSON 记录可审阅的系统规则、字段规则和示例；运行时代码只注入用户上下文，
+ * 避免两个后端各自维护一份不可对齐的提示词。
+ */
 import { z } from "zod";
 import promptSpecJson from "../data/ai-recognition-prompt.json";
 
@@ -19,6 +25,7 @@ export const aiRecognitionPromptSpec = promptSpecSchema.parse(promptSpecJson);
 export const AI_RECOGNITION_PROMPT_VERSION = aiRecognitionPromptSpec.version;
 export const AI_RECOGNITION_SCHEMA_NAME = aiRecognitionPromptSpec.schemaName;
 
+/** 配置选项同时保留 value 与双语标签，让模型能优先复用用户已存在的分类/支付方式。 */
 export interface AIRecognitionPromptConfigOption {
   value: string;
   label: string;
@@ -26,16 +33,23 @@ export interface AIRecognitionPromptConfigOption {
   enUS: string;
 }
 
+/** 动态上下文只提供偏好与候选，不构成识别证据；模型不能凭这些选项虚构订阅。 */
 export interface AIRecognitionPromptConfigContext {
   categories: readonly AIRecognitionPromptConfigOption[];
   paymentMethods: readonly AIRecognitionPromptConfigOption[];
   tags: readonly string[];
 }
 
+/** 系统 prompt 固定来自版本化 JSON，便于 Go/Worker diagnostics 回显同一个 promptVersion。 */
 export function buildAIRecognitionSystemPrompt(): string {
   return aiRecognitionPromptSpec.system.join("\n");
 }
 
+/**
+ * 构造单次识别 user prompt。
+ *
+ * 日期、时区、默认币种和现有配置都随请求注入；它们帮助模型解释输入，但不能绕过最终 schema/normalize。
+ */
 export function buildAIRecognitionUserPrompt({
   text,
   timezone,
@@ -100,6 +114,11 @@ export function buildAIRecognitionUserPrompt({
   ].join("\n");
 }
 
+/**
+ * 构造 schema repair prompt。
+ *
+ * Repair 只允许基于原始输入、图片、前一轮 JSON 和高置信公共知识补齐 notes，不能引入本地品牌表。
+ */
 export function buildAIRecognitionRepairUserPrompt({
   originalUserPrompt,
   previousObject,

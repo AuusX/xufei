@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Brain, Sparkles, TestTube2 } from "lucide-react";
+import { AlertTriangle, Brain, Sparkles, TestTube2 } from "lucide-react";
+import { AIErrorDetailsDialog } from "@/components/ai-recognition/ai-error-details-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n } from "@/i18n/I18nProvider";
-import { getDisplayErrorMessage } from "@/lib/display-error";
+import { createAIErrorDetails, type AIErrorDetails } from "@/lib/ai-error-details";
 import { cn } from "@/lib/utils";
 import {
   canonicalAIRecognitionTransportProtocol,
@@ -61,6 +62,7 @@ interface AIRecognitionSettingsSectionProps {
   className?: string;
   settings: AiRecognitionSettings;
   onChange: (settings: AiRecognitionSettings) => void;
+  disabled?: boolean;
 }
 
 export function AIRecognitionSettingsSection({
@@ -68,11 +70,14 @@ export function AIRecognitionSettingsSection({
   className,
   settings,
   onChange,
+  disabled = false,
 }: AIRecognitionSettingsSectionProps) {
   const { t } = useI18n();
   const { toast } = useToast();
   const [testing, setTesting] = useState(false);
   const [modelListState, setModelListState] = useState<AIModelListState>(EMPTY_MODEL_LIST_STATE);
+  const [aiErrorDetails, setAIErrorDetails] = useState<AIErrorDetails | null>(null);
+  const [aiErrorDetailsOpen, setAIErrorDetailsOpen] = useState(false);
   const modelListRequestRef = useRef(0);
   const canonicalSettings = useMemo(() => {
     const transportProtocol = canonicalAIRecognitionTransportProtocol(settings.providerType);
@@ -103,9 +108,12 @@ export function AIRecognitionSettingsSection({
     // 模型列表来自第三方 provider，必须随凭证/地址变化失效；旧请求返回较慢时也不能覆盖新配置。
     modelListRequestRef.current += 1;
     setModelListState(EMPTY_MODEL_LIST_STATE);
+    setAIErrorDetails(null);
+    setAIErrorDetailsOpen(false);
   }, [canonicalSettings.apiKey, canonicalSettings.baseUrl, canonicalSettings.providerType, canonicalSettings.transportProtocol]);
 
   const update = (patch: Partial<AiRecognitionSettings>) => {
+    if (disabled) return;
     const providerType = patch.providerType ?? settings.providerType;
     const transportProtocol = canonicalAIRecognitionTransportProtocol(providerType);
     const next = { ...settings, ...patch, providerType, transportProtocol };
@@ -129,6 +137,7 @@ export function AIRecognitionSettingsSection({
   };
 
   const handleRefreshModels = async () => {
+    if (disabled) return;
     const baseUrl = canonicalSettings.baseUrl.trim();
     const apiKey = canonicalSettings.apiKey.trim();
     if (endpoint.baseUrlRequired && !baseUrl) {
@@ -158,15 +167,19 @@ export function AIRecognitionSettingsSection({
       });
     } catch (error) {
       if (modelListRequestRef.current !== requestId) return;
+      const details = createAIErrorDetails(error, t("aiRecognition.modelListFailedDescription"));
+      setAIErrorDetails(details);
+      setAIErrorDetailsOpen(true);
       setModelListState({
         ...EMPTY_MODEL_LIST_STATE,
         status: "error",
-        error: getDisplayErrorMessage(error, t("aiRecognition.modelListFailedDescription")),
+        error: null,
       });
     }
   };
 
   const handleModelInputModeChange = (modelInputMode: AiRecognitionSettings["modelInputMode"]) => {
+    if (disabled) return;
     update({ modelInputMode });
     if (
       modelInputMode === "select"
@@ -179,6 +192,7 @@ export function AIRecognitionSettingsSection({
   };
 
   const handleTestConnection = async () => {
+    if (disabled) return;
     if (testBlocker) {
       toast({
         title: t("aiRecognition.testBlockedTitle"),
@@ -190,16 +204,15 @@ export function AIRecognitionSettingsSection({
     setTesting(true);
     try {
       await aiRecognitionService.testConnection(canonicalSettings);
+      setAIErrorDetails(null);
       toast({
         title: t("aiRecognition.testSucceeded"),
         description: t("aiRecognition.testSucceededDescription"),
       });
     } catch (error) {
-      toast({
-        title: t("aiRecognition.testFailed"),
-        description: getDisplayErrorMessage(error, t("aiRecognition.testFailedDescription")),
-        variant: "destructive",
-      });
+      const details = createAIErrorDetails(error, t("aiRecognition.testFailedDescription"));
+      setAIErrorDetails(details);
+      setAIErrorDetailsOpen(true);
     } finally {
       setTesting(false);
     }
@@ -220,7 +233,7 @@ export function AIRecognitionSettingsSection({
           variant="outline"
           className="relative shrink-0 gap-2 border-border"
           onClick={() => void handleTestConnection()}
-          disabled={testing}
+          disabled={disabled || testing}
           aria-busy={testing ? true : undefined}
         >
           <LoadingButtonContent loading={testing} loadingLabel={t("aiRecognition.testing")}>
@@ -230,6 +243,21 @@ export function AIRecognitionSettingsSection({
         </Button>
       </div>
 
+      {aiErrorDetails ? (
+        <div className="mb-5 flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="border-border"
+            onClick={() => setAIErrorDetailsOpen(true)}
+          >
+            <AlertTriangle className="h-4 w-4" />
+            {t("aiRecognition.errorDetailsOpenLast")}
+          </Button>
+        </div>
+      ) : null}
+
       <div className="grid gap-5">
         <div className="grid items-start gap-5 md:grid-cols-2 md:gap-x-5 md:gap-y-2" data-testid="ai-provider-model-grid">
           <div className="grid gap-2 md:contents" data-testid="ai-provider-type-field">
@@ -237,7 +265,7 @@ export function AIRecognitionSettingsSection({
               <Label htmlFor="ai-provider-type">{t("aiRecognition.providerType")}</Label>
             </div>
             <div className="self-start md:order-3" data-testid="ai-provider-control-row">
-              <Select value={canonicalSettings.providerType} onValueChange={(value) => handleProviderTypeChange(value as AiRecognitionProviderType)}>
+              <Select value={canonicalSettings.providerType} disabled={disabled} onValueChange={(value) => handleProviderTypeChange(value as AiRecognitionProviderType)}>
                 <SelectTrigger id="ai-provider-type" className="border-border bg-secondary">
                   <SelectValue />
                 </SelectTrigger>
@@ -255,6 +283,7 @@ export function AIRecognitionSettingsSection({
               <Label htmlFor="ai-model">{t("aiRecognition.model")}</Label>
               <AIModelModeSwitch
                 mode={canonicalSettings.modelInputMode}
+                disabled={disabled}
                 onModeChange={handleModelInputModeChange}
               />
             </div>
@@ -270,6 +299,7 @@ export function AIRecognitionSettingsSection({
                 truncated={modelListState.truncated}
                 canAutoRefreshModels={canListAIModels(canonicalSettings)}
                 onRequestModels={() => void handleRefreshModels()}
+                disabled={disabled}
                 placeholder={t("aiRecognition.modelPlaceholder")}
               />
             </div>
@@ -282,6 +312,7 @@ export function AIRecognitionSettingsSection({
             <Input
               id="ai-base-url"
               value={canonicalSettings.baseUrl}
+              disabled={disabled}
               onChange={(event) => update({ baseUrl: event.target.value })}
               placeholder={endpoint.baseUrlRequired ? "https://api.example.com/v1" : t("aiRecognition.baseUrlPlaceholder")}
               className="border-border bg-secondary"
@@ -297,6 +328,7 @@ export function AIRecognitionSettingsSection({
               type="password"
               autoComplete="off"
               value={canonicalSettings.apiKey}
+              disabled={disabled}
               onChange={(event) => update({ apiKey: event.target.value })}
               placeholder={endpoint.apiKeyRequired ? "sk-..." : t("aiRecognition.apiKeyOptionalPlaceholder")}
               className="border-border bg-secondary"
@@ -311,7 +343,7 @@ export function AIRecognitionSettingsSection({
           <Brain className="h-4 w-4 text-primary" />
           {t("aiRecognition.defaultThinking")}
         </Label>
-        <Select value={selectedThinkingId} onValueChange={handleThinkingChange}>
+        <Select value={selectedThinkingId} disabled={disabled} onValueChange={handleThinkingChange}>
           <SelectTrigger id="ai-thinking" className="border-border bg-secondary md:max-w-md">
             <SelectValue />
           </SelectTrigger>
@@ -330,6 +362,11 @@ export function AIRecognitionSettingsSection({
             : t(canonicalSettings.providerType === "openai-compatible" ? "aiRecognition.thinkingUnsupportedCompatible" : "aiRecognition.thinkingUnsupportedModel")}
         </p>
       </div>
+      <AIErrorDetailsDialog
+        open={aiErrorDetailsOpen}
+        details={aiErrorDetails}
+        onOpenChange={setAIErrorDetailsOpen}
+      />
     </section>
   );
 }

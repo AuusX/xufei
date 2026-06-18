@@ -72,6 +72,7 @@ export default function Index() {
     defaultCurrency,
     convert,
     timeZone,
+    inheritedReminderDays,
   );
   const {
     editingSubscription,
@@ -213,7 +214,11 @@ export default function Index() {
             {/* 即将续费 */}
             <div className="rounded-xl border border-border bg-card p-6 shadow-card">
               <h3 className="mb-4 text-lg font-semibold text-foreground">{t("dashboard.upcomingRenewals")}</h3>
-                <UpcomingRenewals subscriptions={subscriptions} timeZone={timeZone} />
+              <UpcomingRenewals
+                subscriptions={subscriptions}
+                timeZone={timeZone}
+                notificationReminderDays={inheritedReminderDays}
+              />
             </div>
           </div>
         </div>

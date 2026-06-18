@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { compareDateOnly } from "@/lib/time/date-only";
 import { LogoPicker } from "@/components/logo-picker";
+import { CostSharingFields } from "@/components/subscription-cost-sharing-fields";
 import { SubscriptionFormDateFields } from "@/components/subscription-form-date-fields";
 import { SubscriptionPaymentMethodSelect } from "@/components/subscription-payment-method-select";
 import { SubscriptionTagInput } from "@/components/subscription-tag-input";
@@ -68,6 +69,7 @@ export const SubscriptionFormFields = memo(function SubscriptionFormFields({
   errors = {},
   onClearFieldError,
   notificationReminderDays,
+  costSharingCurrencyConvert,
 }: SubscriptionFormFieldsProps) {
   const { t, locale, label } = useI18n();
 
@@ -350,7 +352,7 @@ export const SubscriptionFormFields = memo(function SubscriptionFormFields({
                   key={mode}
                   type="button"
                   className={cn(
-                    "min-h-8 rounded-sm px-2 text-sm font-medium transition-colors",
+                    "inline-flex min-h-8 min-w-0 items-center justify-center whitespace-nowrap rounded-sm px-2 text-sm font-medium transition-colors",
                     formData.oneTimeMode === mode
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
@@ -608,6 +610,15 @@ export const SubscriptionFormFields = memo(function SubscriptionFormFields({
           ) : null}
         </div>
       )}
+
+      <CostSharingFields
+        id={id}
+        formData={formData}
+        update={update}
+        error={errors.costSharing}
+        currencyOptions={currencyOptions}
+        currencyConvert={costSharingCurrencyConvert}
+      />
 
       <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-secondary/30 p-3">
         <div className="min-w-0">

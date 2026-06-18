@@ -1,6 +1,7 @@
 package main
 
-// 本文件测试 PocketBase hooks 的持久层兜底，确保 API、SDK 和管理后台写入都无法绕过订阅/资产契约。
+// Hook 测试保护 PocketBase API、SDK 和管理后台写入共享同一套持久层校验。
+// 这些用例不是 UI 行为测试，而是防止绕过自定义 route 时写入坏 date-only、Logo 或 JSON 形状。
 
 import (
 	"bytes"
@@ -70,6 +71,66 @@ func TestDetectUploadMimeTypeRejectsNonSvgXml(t *testing.T) {
 	}
 	if got == "image/svg+xml" || isAllowedImageMime(got) {
 		t.Fatalf("expected non-SVG XML to be rejected, got %q", got)
+	}
+}
+
+func TestSubscriptionSchedulerStateRefreshesAfterSubscriptionWrites(t *testing.T) {
+	app := newSchemaTestApp(t)
+	if err := ensureSchema(app); err != nil {
+		t.Fatal(err)
+	}
+	registerRecordHooks(app)
+	user, _ := createRouteTestUser(t, app, "scheduler-state")
+
+	record := createRouteTestSubscription(t, app, user.Id, map[string]interface{}{
+		"autoRenew":             false,
+		"repeatReminderEnabled": false,
+	})
+	state, err := getSubscriptionSchedulerState(app, user.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AutoRenewCount != 0 || state.RepeatReminderCount != 0 {
+		t.Fatalf("initial scheduler state = %#v, want zero counts", state)
+	}
+
+	record.Set("autoRenew", true)
+	record.Set("repeatReminderEnabled", true)
+	if err := app.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	state, err = getSubscriptionSchedulerState(app, user.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AutoRenewCount != 1 || state.RepeatReminderCount != 1 {
+		t.Fatalf("updated scheduler state = %#v, want one auto and one repeat", state)
+	}
+
+	if err := markSubscriptionAutoRenewChecked(app, user.Id, "2026-05-14"); err != nil {
+		t.Fatal(err)
+	}
+	record.Set("notes", "invalidate scheduler check")
+	if err := app.Save(record); err != nil {
+		t.Fatal(err)
+	}
+	state, err = getSubscriptionSchedulerState(app, user.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LastAutoRenewLocalDate != "" {
+		t.Fatalf("expected subscription update to invalidate last auto renew check, got %#v", state)
+	}
+
+	if err := app.Delete(record); err != nil {
+		t.Fatal(err)
+	}
+	state, err = getSubscriptionSchedulerState(app, user.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AutoRenewCount != 0 || state.RepeatReminderCount != 0 {
+		t.Fatalf("deleted scheduler state = %#v, want zero counts", state)
 	}
 }
 
@@ -255,6 +316,63 @@ func TestNormalizeSubscriptionRecordDefaultsAndValidatesContract(t *testing.T) {
 	record.Set("reminderDays", maxReminderDays+1)
 	if err := normalizeSubscriptionRecord(record); err == nil {
 		t.Fatal("expected too-high reminder days to fail")
+	}
+}
+
+func TestNormalizeSubscriptionRecordValidatesCostSharing(t *testing.T) {
+	collection := core.NewBaseCollection("subscriptions")
+	base := func(price float64, costSharing string) *core.Record {
+		record := core.NewRecord(collection)
+		record.Set("name", "Family Plan")
+		record.Set("price", price)
+		record.Set("currency", "USD")
+		record.Set("billingCycle", "monthly")
+		record.Set("customDays", 0)
+		record.Set("startDate", "2026-05-14")
+		record.Set("nextBillingDate", "2026-06-14")
+		record.Set("tags", []string{})
+		record.Set("reminderDays", 3)
+		record.Set("costSharing", types.JSONRaw(costSharing))
+		return record
+	}
+
+	valid := base(100, `{
+		"enabled": true,
+		"payerMemberId": "me",
+		"selfMemberId": "me",
+		"splitMode": "custom",
+		"members": [
+			{"id": "me", "name": "Me", "currency": "USD", "included": true, "customAmount": 40},
+			{"id": "partner", "name": "Partner", "currency": "USD", "included": true, "customAmount": 60}
+		]
+	}`)
+	if err := normalizeSubscriptionRecord(valid); err != nil {
+		t.Fatalf("expected valid cost sharing to be accepted: %v", err)
+	}
+	data, err := jsonBytesFromValue(valid.Get("costSharing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload costSharingPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SplitMode != "custom" || len(payload.Members) != 2 || payload.Members[0].CustomAmount == nil || *payload.Members[0].CustomAmount != 40 {
+		t.Fatalf("unexpected normalized cost sharing payload: %#v", payload)
+	}
+
+	invalidTotal := base(100, `{
+		"enabled": true,
+		"payerMemberId": "me",
+		"selfMemberId": "me",
+		"splitMode": "custom",
+		"members": [
+			{"id": "me", "name": "Me", "currency": "USD", "included": true, "customAmount": 40},
+			{"id": "partner", "name": "Partner", "currency": "USD", "included": true, "customAmount": 50}
+		]
+	}`)
+	if err := normalizeSubscriptionRecord(invalidTotal); err == nil || !strings.Contains(err.Error(), "COST_SHARING_CUSTOM_TOTAL_INVALID") {
+		t.Fatalf("expected invalid custom total to fail, got %v", err)
 	}
 }
 

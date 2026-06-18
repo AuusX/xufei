@@ -81,7 +81,11 @@ const AI_RECOGNITION_NOTE_MARKETING_FRAGMENTS = [
   "all-in-one",
 ] as const;
 
-// AI 备注会进入订阅长期备注；这里只兜底清掉识别过程和产品内视角，保留真实服务/网站简介。
+/**
+ * 清洗 AI 识别草稿中的长期备注。
+ *
+ * AI 备注会进入订阅长期记录；这里只兜底清掉识别过程、产品内视角和营销套话，保留真实服务/网站简介。
+ */
 export function normalizeAIRecognitionUsefulNotes(value: string | null | undefined, maxLength = 5000): string | null {
   const text = trimMax(value ?? "", maxLength);
   if (!text || isAIRecognitionProcessNote(text)) return null;
@@ -90,6 +94,7 @@ export function normalizeAIRecognitionUsefulNotes(value: string | null | undefin
   return trimMax(cleanAIRecognitionServiceDescription(withoutAdvice), maxLength) || null;
 }
 
+/** 识别模型推理、低置信提示或“请确认”类备注；这些内容不应随订阅导入长期入库。 */
 export function isAIRecognitionProcessNote(value: string): boolean {
   const key = recognitionNoteMatchKey(value);
   return Boolean(key) && AI_RECOGNITION_PROCESS_NOTE_FRAGMENTS.some((fragment) => key.includes(fragment));

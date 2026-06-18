@@ -1,3 +1,8 @@
+/**
+ * Worker AI 输出归一化层。
+ *
+ * 第三方模型输出先经过 generated schema，再在这里收敛到 shared RecognizeResponse；任何字段进入导入预览前都必须经过这层。
+ */
 import {
   AI_RECOGNITION_MAX_SUBSCRIPTIONS,
   aiRecognizeResponseSchema,
@@ -114,6 +119,7 @@ export function fillMissingNotesWithDynamicFallback(
   locale: AppLocale,
   configContext: AIRecognitionPromptConfigContext,
 ): AiRecognizeResponse {
+  // fallback note 只能使用模型已给出的稳定字段，不能引入 Worker 本地品牌知识，保持 Docker/Worker 草稿一致。
   const subscriptions = response.subscriptions.map((draft) => {
     if (draft.notes || !isDescribableForAINotes(draft)) return draft;
     const note = buildDynamicFallbackNote(draft, locale, configContext);
@@ -302,6 +308,7 @@ function normalizeGeneratedTags(tags: readonly string[], subscriptionName: strin
     const existingValue = existing.get(key);
     const nextValue = existingValue ?? value;
     if (!existingValue && !isUsefulGeneratedTag(value, key, serviceKey)) continue;
+    // AI 生成标签只允许稳定复用维度；价格、套餐、机房等一次性属性不能污染用户长期筛选。
     seen.add(key);
     out.push(nextValue);
     if (out.length >= 3) break;

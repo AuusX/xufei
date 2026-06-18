@@ -2,8 +2,8 @@
  * 订阅相关 React Query Hooks（前端数据层）。
  *
  * 说明：
- * - 通过 subscriptionService 按运行目标读写当前用户订阅数据
- * - PocketBase SDK 或 Worker API 响应都会在 service 边界统一 normalize + Zod parse
+ * - 通过 subscriptionService 读写当前用户订阅数据
+ * - Docker 与 Cloudflare 都经 `/api/app/subscriptions`，并在 service 边界统一 normalize + Zod parse
  * - API 返回 date-only 字符串（YYYY-MM-DD），前端在这里统一转成品牌类型
  *
  * 注意： Date 转换只发生在 hook 边界。页面/组件内部应使用 `Subscription` domain 类型，

@@ -93,4 +93,41 @@ describe("NumericInput", () => {
     expect(input.value).not.toContain(".");
     expect(rawValues.every((value) => !value.includes("."))).toBe(true);
   });
+
+  it("keeps bounded integer inputs within range while allowing empty edits", async () => {
+    const user = userEvent.setup();
+    const rawValues: string[] = [];
+
+    render(
+      <ControlledNumericInput
+        aria-label="Retention"
+        allowNegative={false}
+        decimalScale={0}
+        inputMode="numeric"
+        isAllowed={(values) => (
+          values.value === ""
+          || (values.floatValue !== undefined && values.floatValue >= 1 && values.floatValue <= 30)
+        )}
+        onRawValue={(value) => rawValues.push(value)}
+      />,
+    );
+
+    const input = screen.getByLabelText("Retention") as HTMLInputElement;
+
+    await user.type(input, "30");
+    expect(input).toHaveValue("30");
+    expect(rawValues[rawValues.length - 1]).toBe("30");
+
+    await user.clear(input);
+    expect(input).toHaveValue("");
+    expect(rawValues[rawValues.length - 1]).toBe("");
+
+    await user.type(input, "0");
+    expect(input).toHaveValue("");
+    expect(rawValues[rawValues.length - 1]).toBe("");
+
+    await user.type(input, "31");
+    expect(input).toHaveValue("3");
+    expect(rawValues[rawValues.length - 1]).toBe("3");
+  });
 });

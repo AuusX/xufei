@@ -1,6 +1,7 @@
 package main
 
-// 本文件测试自定义 API route、安装入口、私有资产上传、管理员保护和严格 JSON 边界。
+// Route 测试保护自定义 API 的认证、严格 JSON、管理员防自锁、私有资产和跨运行面契约边界。
+// 新增 route 时优先在这里证明 Go/PocketBase 行为与前端 Zod、Cloudflare Worker 契约一致。
 
 import (
 	"bytes"
@@ -593,31 +594,6 @@ func TestAdminUsersRouteReturnsManagementContract(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("missing %s in response: %s", expected, body)
 		}
-	}
-}
-
-func TestSystemRestartRouteRequiresAdmin(t *testing.T) {
-	app := newSchemaTestApp(t)
-	if err := ensureSchema(app); err != nil {
-		t.Fatal(err)
-	}
-	_, userToken := createRouteTestUser(t, app, "user")
-
-	cases := []struct {
-		name     string
-		token    string
-		wantCode int
-	}{
-		{name: "anonymous", token: "", wantCode: http.StatusUnauthorized},
-		{name: "non admin", token: userToken, wantCode: http.StatusForbidden},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			res := serveTestRequest(t, app, http.MethodPost, "/api/app/admin/system/restart", `{}`, tc.token)
-			if res.Code != tc.wantCode {
-				t.Fatalf("expected restart auth status %d, got %d: %s", tc.wantCode, res.Code, res.Body.String())
-			}
-		})
 	}
 }
 

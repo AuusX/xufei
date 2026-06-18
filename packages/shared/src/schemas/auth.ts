@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+/** 登录态用户安全视图；密码 hash、reset token 和 session 元数据不能进入前端。 */
 export interface AuthUserResponse {
   id: string;
   email: string;
@@ -28,12 +29,14 @@ export const sessionResponseSchema: z.ZodType<SessionResponse> = z.object({
   user: authUserSchema,
 }).strict();
 
+/** 首装创建管理员只能在后端再次确认 setup 可用时生效；schema 只负责请求形状和密码上限。 */
 export const setupCreateBodySchema = z.object({
   name: z.string().trim().min(1).max(80),
   email: z.email().max(254),
   password: z.string().min(8).max(72),
 }).strict();
 
+/** 登录请求不接受额外字段；Cloudflare/Go 都应只按 email+password 建立会话。 */
 export const loginBodySchema = z.object({
   email: z.email().max(254),
   password: z.string().min(1).max(72),

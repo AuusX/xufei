@@ -115,6 +115,7 @@ describe("authClient.useSession for PocketBase", () => {
     expect(result.current.data).toBeNull();
     expect(result.current.isPending).toBe(true);
     expect(mocks.authRefresh).toHaveBeenCalledTimes(1);
+    expect(mocks.authRefresh).toHaveBeenCalledWith({ body: {} });
 
     deferred.resolve();
 
@@ -208,6 +209,44 @@ describe("authClient.useSession for PocketBase", () => {
     });
     expect(mocks.pb.authStore.token).toBe("token-login");
     expect(mocks.authStoreClear).not.toHaveBeenCalled();
+  });
+
+  it("does not clear a newer password login when an older authRefresh fails", async () => {
+    const deferred = createDeferred();
+    mocks.authRefresh.mockReturnValue(deferred.promise);
+    mocks.authWithPassword.mockImplementation(() => {
+      mocks.pb.authStore.token = "token-login";
+      return Promise.resolve();
+    });
+    mocks.authStoreOnChange.mockImplementation((listener: () => void) => {
+      listener();
+      return vi.fn();
+    });
+    const { authClient } = await import("./auth-client");
+    const { result: pendingRefreshResult } = renderHook(() => authClient.useSession(), {
+      wrapper: createWrapper(),
+    });
+
+    await expect(
+      authClient.signIn.email({ email: "alice@example.com", password: "password123" }),
+    ).resolves.toMatchObject({
+      data: { session: { id: "token-login" } },
+      error: null,
+    });
+    deferred.reject(new Error("expired token"));
+
+    await waitFor(() => {
+      expect(pendingRefreshResult.current.isPending).toBe(false);
+    });
+    expect(mocks.pb.authStore.token).toBe("token-login");
+    expect(mocks.authStoreClear).not.toHaveBeenCalled();
+
+    const { result } = renderHook(() => authClient.useSession(), { wrapper: createWrapper() });
+    await waitFor(() => {
+      expect(result.current.data?.session.id).toBe("token-login");
+      expect(result.current.isPending).toBe(false);
+    });
+    expect(mocks.authRefresh).toHaveBeenCalledTimes(1);
   });
 
   it("does not restore an older authRefresh after sign out", async () => {

@@ -36,6 +36,7 @@ import {
 } from "@/lib/subscription-form";
 import { useCustomConfig } from "@/contexts/CustomConfigContext";
 import { useDeferredDialogCleanup } from "@/hooks/use-deferred-dialog-cleanup";
+import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import { useSubscriptionFormAutoDates } from "@/hooks/use-subscription-form-auto-dates";
 import { useSettings } from "@/hooks/use-settings";
 import type { Subscription, SubscriptionDraft } from "@/types/subscription";
@@ -44,6 +45,7 @@ import { createSubscriptionFormState, type SubscriptionFormState } from "@/types
 import { useI18n } from "@/i18n/I18nProvider";
 import { todayDateOnlyInTimeZone } from "@/lib/time/date-only";
 import { getSystemTimeZone } from "@/lib/time/time-zone";
+import { costSharingCustomTotalMatches } from "@renewlet/shared/cost-sharing";
 
 type CreateDialogProps = {
   mode: "create";
@@ -83,6 +85,7 @@ export function SubscriptionDialog(props: SubscriptionDialogProps) {
   const { t } = useI18n();
   const statisticCurrency = settings?.defaultCurrency ?? "CNY";
   const notificationReminderDays = settings?.notificationReminderDays ?? DEFAULT_NOTIFICATION_REMINDER_DAYS;
+  const { convert: convertCurrency } = useExchangeRates(settings?.exchangeRateProvider);
 
   // 新建订阅时默认货币：
   // - 优先使用“统计货币”（Settings.defaultCurrency）
@@ -202,6 +205,7 @@ export function SubscriptionDialog(props: SubscriptionDialogProps) {
       repeatReminderEnabled: isDisabledReminder ? false : subscription.repeatReminderEnabled,
       repeatReminderInterval: subscription.repeatReminderInterval,
       repeatReminderWindow: subscription.repeatReminderWindow,
+      costSharing: subscription.costSharing,
       website: subscription.website ?? "",
       notes: subscription.notes ?? "",
       tags: subscription.tags ?? [],
@@ -266,13 +270,23 @@ export function SubscriptionDialog(props: SubscriptionDialogProps) {
     if (!isOptionalHttpUrl(nextFormData.website)) {
       errors.website = t("subscription.validation.websiteInvalid");
     }
+    if (nextFormData.costSharing?.enabled) {
+      const price = parseNonNegativeFiniteNumberInput(nextFormData.price);
+      if (
+        price === null ||
+        !nextFormData.costSharing.members.some((member) => member.included) ||
+        !costSharingCustomTotalMatches(nextFormData.costSharing, price, { baseCurrency: nextFormData.currency, convert: convertCurrency })
+      ) {
+        errors.costSharing = t("subscription.validation.costSharingInvalid");
+      }
+    }
     const tagsError = getTagsValidationError(nextFormData.tags);
     if (tagsError) {
       errors.tags = tagsError;
     }
 
     return errors;
-  }, [t]);
+  }, [convertCurrency, t]);
 
   const clearFieldError = useCallback((field: keyof SubscriptionFormErrors) => {
     setSubmitError(null);
@@ -305,7 +319,7 @@ export function SubscriptionDialog(props: SubscriptionDialogProps) {
     }
 
     setFormErrors({});
-    const draft = toSubscriptionDraft(submissionFormData);
+    const draft = toSubscriptionDraft(submissionFormData, { costSharingCurrencyConvert: convertCurrency });
     if (!draft) {
       setSubmitError(t("subscription.formIncomplete"));
       return;
@@ -374,7 +388,7 @@ export function SubscriptionDialog(props: SubscriptionDialogProps) {
 
       <DialogContent
         layout="frame"
-        className="h5-dialog-frame h5-subscription-dialog-panel border-border bg-card p-0 sm:max-w-lg"
+        className="h5-dialog-frame h5-subscription-dialog-panel border-border bg-card p-0 sm:max-w-2xl"
       >
         <DialogHeader data-subscription-dialog-header="" className="shrink-0 p-6 pb-0">
           <DialogTitle className="text-xl font-semibold">
@@ -407,8 +421,9 @@ export function SubscriptionDialog(props: SubscriptionDialogProps) {
               onFieldChange={handleFieldChange}
               errors={formErrors}
               onClearFieldError={clearFieldError}
-              notificationReminderDays={notificationReminderDays}
-            />
+            notificationReminderDays={notificationReminderDays}
+            costSharingCurrencyConvert={convertCurrency}
+          />
           </div>
 
           <div

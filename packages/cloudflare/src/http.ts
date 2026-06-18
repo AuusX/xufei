@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DEFAULT_SERVER_I18N_LOCALE, requestLocale, serverText, type AppLocale } from "./server-i18n";
 
 const JSON_LIMIT_BYTES = 1 << 20;
+const EMPTY_BODY_LIMIT_BYTES = 1024;
 
 export { requestLocale, type AppLocale } from "./server-i18n";
 
@@ -105,6 +106,14 @@ export async function readOptionalJson<Schema extends z.ZodType>(
   const text = await readLimitedText(request, locale, true);
   if (!text) return schema.parse({});
   return parseJsonText(text, schema, locale);
+}
+
+/** 显式无参数动作必须保持真正空 body，避免 `{}` 被误当成长期 API 形状。 */
+export async function requireEmptyBody(request: Request, locale: AppLocale): Promise<void> {
+  const text = await readLimitedTextWithLimit(request, locale, true, EMPTY_BODY_LIMIT_BYTES);
+  if (text.length > 0) {
+    throw new HttpError(400, serverText(locale, "common.invalidPayload"), "NON_EMPTY_BODY");
+  }
 }
 
 async function readLimitedText(request: Request, locale: AppLocale, allowEmpty: boolean): Promise<string> {

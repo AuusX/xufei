@@ -25,14 +25,15 @@ import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import { useSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useSubscriptions } from "@/hooks/use-subscriptions";
 import { usePasswordResetAvailability } from "@/hooks/use-password-reset-availability";
+import { useSetupStatus } from "@/hooks/use-setup-status";
 import { useCalendarFeedStatus, useCreateCalendarFeed, useDeleteCalendarFeed } from "@/hooks/use-calendar-feed";
 import { useToast } from "@/hooks/use-toast";
 import { getDisplayErrorMessage } from "@/lib/display-error";
+import type { RawErrorResponseDetails } from "@/lib/raw-error-response";
 import { applyThemeVariant } from "@/lib/theme-variant";
 import { openValidatedWebcalUrl } from "@/shared/browser/calendar-links";
+import { copyTextToClipboard, type ClipboardCopyTarget } from "@/shared/browser/clipboard";
 import {
-  readAppearancePendingFromStorage,
-  readSettingsAppearanceDraftFromStorage,
   clearSettingsAppearanceDraftFromStorage,
   writeAppearancePendingToStorage,
   writeCustomThemeColorToStorage,
@@ -53,9 +54,20 @@ import { useAccountIdentity } from "./use-account-email";
 import { useNotificationTest } from "./use-notification-test";
 import { usePasswordChange, type PasswordChangeController } from "./use-password-change";
 import {
+  areJsonSnapshotsEqual,
+  createDraftSettingsFromRemote,
+  createSavedSettingsBaseline,
+  EXTERNAL_INTEGRATION_SETTING_KEYS,
+  getExchangeRateProviderSaveErrorMessage,
+} from "./settings-form-controller-utils";
+import {
   usePublicStatusPageSettingsController,
   type SettingsPublicStatusPageController,
 } from "./use-public-status-page-settings-controller";
+import {
+  useSettingsBuiltInIconIndexController,
+  type SettingsBuiltInIconIndexController,
+} from "./use-built-in-icon-index-controller";
 import {
   useNotificationHistory,
   type NotificationHistoryResponse,
@@ -64,87 +76,6 @@ import {
 import { useI18n } from "@/i18n/I18nProvider";
 
 type UpdateSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function numericField(value: Record<string, unknown>, keys: string[]): number | null {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === "number") return candidate;
-  }
-  return null;
-}
-
-function stringField(value: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === "string" && candidate.trim()) return candidate;
-  }
-  return null;
-}
-
-function isPocketBaseUpdateRecord400(error: unknown): boolean {
-  if (!isObjectRecord(error)) return false;
-
-  const response = isObjectRecord(error["response"]) ? error["response"] : null;
-  // PocketBase SDK/自定义 API 对错误对象包装不完全一致，因此这里从顶层和 response 双路径读取状态码。
-  const status = numericField(error, ["status", "statusCode"])
-    ?? (response ? numericField(response, ["status", "statusCode"]) : null);
-  if (status !== 400) return false;
-
-  const message = [
-    stringField(error, ["message", "detail", "error"]),
-    response ? stringField(response, ["message", "detail", "error"]) : null,
-  ].filter(Boolean).join(" ").toLowerCase();
-
-  return message.includes("failed to update record");
-}
-
-function getExchangeRateProviderSaveErrorMessage(error: unknown, t: ReturnType<typeof useI18n>["t"]) {
-  if (isPocketBaseUpdateRecord400(error)) {
-    return t("settings.exchangeRateProviderServerOutdated");
-  }
-  return getDisplayErrorMessage(error, t("settings.exchangeRateProviderSaveFailed"));
-}
-
-function areJsonSnapshotsEqual(left: unknown, right: unknown): boolean {
-  // settings/customConfig 都是由 schema 生成的稳定普通对象；用 JSON 快照比深比较依赖更轻量。
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function normalizeAccountRecipientEmail(accountEmail: string | null): string {
-  const email = (accountEmail ?? "").trim();
-  return email && email.includes("@") ? email : "";
-}
-
-function createDraftSettingsFromRemote(remoteSettings: AppSettings, accountEmail: string | null): AppSettings {
-  const recipientEmail = remoteSettings.recipientEmail.trim()
-    ? remoteSettings.recipientEmail
-    : normalizeAccountRecipientEmail(accountEmail);
-  const baseSettings: AppSettings = recipientEmail && recipientEmail !== remoteSettings.recipientEmail
-    ? { ...remoteSettings, recipientEmail }
-    : remoteSettings;
-
-  if (!readAppearancePendingFromStorage()) return baseSettings;
-  // Settings 外观草稿用独立 pending 存储恢复；不能读取 Header 的本机主题偏好，否则全局切换会污染表单 dirty。
-  const appearanceDraft = readSettingsAppearanceDraftFromStorage();
-  return {
-    ...baseSettings,
-    themeMode: appearanceDraft.themeMode ?? baseSettings.themeMode,
-    themeVariant: appearanceDraft.themeVariant ?? baseSettings.themeVariant,
-    themeCustomColor: appearanceDraft.themeCustomColor ?? baseSettings.themeCustomColor,
-  };
-}
-
-function createSavedSettingsBaseline(remoteSettings: AppSettings, draftSettings: AppSettings): AppSettings {
-  if (readAppearancePendingFromStorage()) return remoteSettings;
-  // 账号邮箱自动补全属于初始化默认值；只有外观 pending 草稿才应在进页时保留为未保存改动。
-  return draftSettings.recipientEmail !== remoteSettings.recipientEmail
-    ? { ...remoteSettings, recipientEmail: draftSettings.recipientEmail }
-    : remoteSettings;
-}
 
 interface SettingsSubscriptionsQuery {
   data: Subscription[] | undefined;
@@ -170,7 +101,7 @@ interface SettingsCalendarFeedController {
   isCreating: boolean;
   isDeleting: boolean;
   createOrRotate: () => Promise<void>;
-  copyUrl: () => Promise<void>;
+  copyUrl: (target?: ClipboardCopyTarget | null) => Promise<void>;
   openSystem: () => Promise<void>;
   regenerate: () => Promise<void>;
   revoke: () => Promise<void>;
@@ -180,6 +111,7 @@ export interface SettingsFormController {
   settings: AppSettings;
   effectiveThemeMode: ThemeMode;
   accountEmail: string | null;
+  canManageUsers: boolean;
   canAccessPocketBaseAdmin: boolean;
   customConfig: CustomConfig;
   subscriptionsQuery: SettingsSubscriptionsQuery;
@@ -189,12 +121,14 @@ export interface SettingsFormController {
   ratesLoading: boolean;
   lastUpdated: Date | null;
   ratesError: string | null;
+  ratesErrorDetails: RawErrorResponseDetails | null;
   getCurrencySymbol: (currency: string) => string;
   updateCategories: (items: ConfigItem[]) => void;
   updateStatuses: (items: ConfigItem[]) => void;
   updatePaymentMethods: (items: ConfigItem[]) => void;
   updateCurrencies: (items: ConfigItem[]) => void;
   updateSetting: UpdateSetting;
+  monthlyBudgetInput: string;
   monthlyBudgetError: string | null;
   handleMonthlyBudgetInputChange: (rawValue: string) => void;
   toggleChannel: (channel: NotificationChannel) => void;
@@ -211,11 +145,16 @@ export interface SettingsFormController {
   handleThemeCustomColorChange: (value: CustomThemeColor) => void;
   testingChannel: NotificationChannel | null;
   handleTestConnection: (channel: NotificationChannel) => void | Promise<void>;
+  notificationTestErrorDetails: RawErrorResponseDetails | null;
+  notificationTestErrorDetailsOpen: boolean;
+  setNotificationTestErrorDetailsOpen: (open: boolean) => void;
   notificationHistory: SettingsNotificationHistoryController;
   calendarFeed: SettingsCalendarFeedController;
+  builtInIconIndex: SettingsBuiltInIconIndexController;
   publicStatusPage: SettingsPublicStatusPageController;
   password: PasswordChangeController;
   passwordResetEnabled: boolean;
+  externalIntegrationsDisabled: boolean;
 }
 
 /**
@@ -230,10 +169,12 @@ export function useSettingsFormController(): SettingsFormController {
   const [customConfig, setCustomConfig] = useState<CustomConfig>(() => normalizeCustomConfig(null));
   const [savedCustomConfig, setSavedCustomConfig] = useState<CustomConfig>(() => normalizeCustomConfig(null));
   const [hasInitializedCustomConfig, setHasInitializedCustomConfig] = useState(false);
+  const [monthlyBudgetInput, setMonthlyBudgetInput] = useState(String(DEFAULT_SETTINGS.monthlyBudget));
   const [monthlyBudgetError, setMonthlyBudgetError] = useState<string | null>(null);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const accountIdentity = useAccountIdentity();
   const accountEmail = accountIdentity.email;
+  const canManageUsers = accountIdentity.role === "admin" && !accountIdentity.banned;
   const { data: remoteSettings } = useSettings();
   const subscriptionsQuery = useSubscriptions();
   const updateSettings = useUpdateSettings();
@@ -246,10 +187,13 @@ export function useSettingsFormController(): SettingsFormController {
     lastUpdated,
     refresh: refreshRates,
     error: ratesError,
+    errorDetails: ratesErrorDetails,
     getCurrencySymbol,
   } = useExchangeRates(savedSettings.exchangeRateProvider);
   const { toast } = useToast();
   const { t, setLocale } = useI18n();
+  const appStatus = useSetupStatus();
+  const externalIntegrationsDisabled = appStatus.isLoading || appStatus.demoMode;
   const password = usePasswordChange();
   const passwordResetEnabled = usePasswordResetAvailability();
   const notificationTest = useNotificationTest(settings);
@@ -257,6 +201,8 @@ export function useSettingsFormController(): SettingsFormController {
   const calendarFeedStatus = useCalendarFeedStatus();
   const createCalendarFeed = useCreateCalendarFeed();
   const deleteCalendarFeed = useDeleteCalendarFeed();
+  const canRefreshBuiltInIconIndex = accountIdentity.role === "admin";
+  const builtInIconIndex = useSettingsBuiltInIconIndexController(canRefreshBuiltInIconIndex);
   const { refetch: refetchNotificationHistory } = notificationHistory;
   const hasInitializedFromRemoteRef = useRef(false);
   const hasResolvedDefaultRecipientEmailRef = useRef(false);
@@ -269,21 +215,23 @@ export function useSettingsFormController(): SettingsFormController {
   );
   const publicStatusPage = usePublicStatusPageSettingsController(subscriptionsQuery.data);
 
+  const monthlyBudgetInputDirty = monthlyBudgetInput !== String(settings.monthlyBudget);
   const settingsDirty = useMemo(
     () => !areJsonSnapshotsEqual(settings, savedSettings),
     [settings, savedSettings],
   );
+  const settingsInputDirty = settingsDirty || monthlyBudgetInputDirty;
   const customConfigDirty = useMemo(
     () => !areJsonSnapshotsEqual(customConfig, savedCustomConfig),
     [customConfig, savedCustomConfig],
   );
-  const hasUnsavedChanges = settingsDirty || customConfigDirty;
+  const hasUnsavedChanges = settingsInputDirty || customConfigDirty;
   const effectiveThemeMode: ThemeMode = theme;
 
   useEffect(() => {
     // effect 读取 ref 而不是把 draft 放入依赖，是为了在远端刷新时判断“当前是否仍可安全覆盖本地草稿”。
-    settingsDirtyRef.current = settingsDirty;
-  }, [settingsDirty]);
+    settingsDirtyRef.current = settingsInputDirty;
+  }, [settingsInputDirty]);
 
   useEffect(() => {
     // 自定义配置可能由独立 Provider 防抖保存回流；dirty ref 防止回流覆盖用户正在编辑的草稿。
@@ -293,16 +241,18 @@ export function useSettingsFormController(): SettingsFormController {
   useEffect(() => {
     if (!remoteSettings) return;
     // 收件人邮箱默认值必须和远端 settings 同步在同一条 effect 里生成，避免 Cloudflare session 先恢复时被下一轮远端草稿覆盖。
-    const shouldDefaultRecipientEmail = !hasResolvedDefaultRecipientEmailRef.current;
+    const shouldDefaultRecipientEmail = !externalIntegrationsDisabled && !hasResolvedDefaultRecipientEmailRef.current;
     const nextDraft = createDraftSettingsFromRemote(
       remoteSettings,
       shouldDefaultRecipientEmail ? accountEmail : null,
+      shouldDefaultRecipientEmail,
     );
     const nextSavedSettings = createSavedSettingsBaseline(remoteSettings, nextDraft);
     const hasResolvedRecipientEmail = Boolean(nextDraft.recipientEmail.trim());
     if (!hasInitializedFromRemoteRef.current) {
       setSavedSettings(nextSavedSettings);
       setSettings(nextDraft);
+      setMonthlyBudgetInput(String(nextDraft.monthlyBudget));
       if (hasResolvedRecipientEmail) hasResolvedDefaultRecipientEmailRef.current = true;
       hasInitializedFromRemoteRef.current = true;
       return;
@@ -312,11 +262,12 @@ export function useSettingsFormController(): SettingsFormController {
     if (!settingsDirtyRef.current) {
       setSavedSettings(nextSavedSettings);
       setSettings(nextDraft);
+      setMonthlyBudgetInput(String(nextDraft.monthlyBudget));
       if (hasResolvedRecipientEmail) hasResolvedDefaultRecipientEmailRef.current = true;
     } else if (remoteSettings.recipientEmail.trim()) {
       hasResolvedDefaultRecipientEmailRef.current = true;
     }
-  }, [accountEmail, remoteSettings]);
+  }, [accountEmail, externalIntegrationsDisabled, remoteSettings]);
 
   useEffect(() => {
     const normalized = normalizeCustomConfig(persistedCustomConfig);
@@ -335,14 +286,16 @@ export function useSettingsFormController(): SettingsFormController {
   }, [hasInitializedCustomConfig, persistedCustomConfig]);
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    // Demo 置灰只是体验层；controller 也阻止本地草稿改动外部集成字段，真正安全边界仍在后端 route/hook。
+    if (externalIntegrationsDisabled && EXTERNAL_INTEGRATION_SETTING_KEYS.has(key)) return;
     setSettings((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  }, [externalIntegrationsDisabled]);
 
   const handleMonthlyBudgetInputChange = useCallback(
     (rawValue: string) => {
+      setMonthlyBudgetInput(rawValue);
       if (rawValue.trim() === "") {
-        setMonthlyBudgetError(null);
-        updateSetting("monthlyBudget", 0);
+        setMonthlyBudgetError(t("settings.budgetInvalid"));
         return;
       }
 
@@ -359,13 +312,14 @@ export function useSettingsFormController(): SettingsFormController {
   );
 
   const toggleChannel = useCallback((channel: NotificationChannel) => {
+    if (externalIntegrationsDisabled) return;
     setSettings((prev) => ({
       ...prev,
       enabledChannels: prev.enabledChannels.includes(channel)
         ? prev.enabledChannels.filter((c) => c !== channel)
         : [...prev.enabledChannels, channel],
     }));
-  }, []);
+  }, [externalIntegrationsDisabled]);
 
   const updateCategories = useCallback((items: ConfigItem[]) => {
     setCustomConfig((prev) => ({ ...prev, categories: items }));
@@ -470,6 +424,8 @@ export function useSettingsFormController(): SettingsFormController {
         const saved = settingsResult.value;
         setSavedSettings(saved);
         setSettings(saved);
+        setMonthlyBudgetInput(String(saved.monthlyBudget));
+        setMonthlyBudgetError(null);
         syncSavedPreviewState(saved, { syncAppearance: appearanceChanged });
         void refetchNotificationHistory();
         if (providerChanged) {
@@ -494,6 +450,11 @@ export function useSettingsFormController(): SettingsFormController {
       }
 
       if (failedScopes.length === 0) {
+        const committedSettings = settingsResult.status === "fulfilled" && settingsResult.value
+          ? settingsResult.value
+          : settings;
+        setMonthlyBudgetInput(String(committedSettings.monthlyBudget));
+        setMonthlyBudgetError(null);
         toast({
           title: t("settings.saved"),
           description: t("settings.savedDescription"),
@@ -537,6 +498,7 @@ export function useSettingsFormController(): SettingsFormController {
 
   const handleDiscardChanges = useCallback(() => {
     setSettings(savedSettings);
+    setMonthlyBudgetInput(String(savedSettings.monthlyBudget));
     setCustomConfig(savedCustomConfig);
     setMonthlyBudgetError(null);
     syncSavedPreviewState(savedSettings, { syncAppearance: true });
@@ -573,23 +535,23 @@ export function useSettingsFormController(): SettingsFormController {
     }
   }, [createCalendarFeed, t, toast]);
 
-  const handleCopyCalendarFeedUrl = useCallback(async () => {
+  const handleCopyCalendarFeedUrl = useCallback(async (target?: ClipboardCopyTarget | null) => {
     const feedUrl = calendarFeedStatus.data?.feedUrl;
     if (!feedUrl) return;
-    try {
-      // 复制只读当前缓存中的 URL；不在点击时重新请求，避免系统剪贴板权限弹窗和网络竞态叠加。
-      await navigator.clipboard.writeText(feedUrl);
+    // 复制只读当前缓存中的 URL；不在点击时重新请求，避免系统剪贴板动作和网络竞态叠加。
+    const copyResult = await copyTextToClipboard(feedUrl, { target });
+    if (copyResult.ok) {
       toast({
         title: t("settings.calendarFeedCopied"),
         description: t("settings.calendarFeedCopiedDescription"),
       });
-    } catch (error) {
-      toast({
-        title: t("settings.calendarFeedCopyFailed"),
-        description: getDisplayErrorMessage(error, t("settings.calendarFeedCopyFailedDescription")),
-        variant: "destructive",
-      });
+      return;
     }
+    toast({
+      title: t("settings.calendarFeedCopyFailed"),
+      description: t("settings.calendarFeedCopyFailedDescription"),
+      variant: "destructive",
+    });
   }, [calendarFeedStatus.data?.feedUrl, t, toast]);
 
   const handleOpenCalendarFeedSystem = useCallback(async () => {
@@ -690,11 +652,20 @@ export function useSettingsFormController(): SettingsFormController {
     [effectiveThemeMode, settings.themeVariant],
   );
 
+  const handleTestConnection = useCallback(
+    (channel: NotificationChannel) => {
+      if (externalIntegrationsDisabled) return;
+      return notificationTest.testConnection(channel);
+    },
+    [externalIntegrationsDisabled, notificationTest],
+  );
+
   return {
     settings,
     effectiveThemeMode,
     accountEmail,
-    canAccessPocketBaseAdmin: accountIdentity.role === "admin" && !isCloudflareRuntime,
+    canManageUsers,
+    canAccessPocketBaseAdmin: canManageUsers && !isCloudflareRuntime,
     customConfig,
     subscriptionsQuery,
     categoryUsageCount,
@@ -703,12 +674,14 @@ export function useSettingsFormController(): SettingsFormController {
     ratesLoading,
     lastUpdated,
     ratesError,
+    ratesErrorDetails,
     getCurrencySymbol,
     updateCategories,
     updateStatuses,
     updatePaymentMethods,
     updateCurrencies,
     updateSetting,
+    monthlyBudgetInput,
     monthlyBudgetError,
     handleMonthlyBudgetInputChange,
     toggleChannel,
@@ -724,7 +697,10 @@ export function useSettingsFormController(): SettingsFormController {
     handleThemeVariantChange,
     handleThemeCustomColorChange,
     testingChannel: notificationTest.testingChannel,
-    handleTestConnection: notificationTest.testConnection,
+    handleTestConnection,
+    notificationTestErrorDetails: notificationTest.errorDetails,
+    notificationTestErrorDetailsOpen: notificationTest.errorDetailsOpen,
+    setNotificationTestErrorDetailsOpen: notificationTest.setErrorDetailsOpen,
     notificationHistory,
     calendarFeed: {
       data: calendarFeedStatus.data,
@@ -738,8 +714,10 @@ export function useSettingsFormController(): SettingsFormController {
       regenerate: handleRegenerateCalendarFeed,
       revoke: handleRevokeCalendarFeed,
     },
+    builtInIconIndex,
     publicStatusPage,
     password,
     passwordResetEnabled,
+    externalIntegrationsDisabled,
   };
 }

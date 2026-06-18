@@ -1,5 +1,7 @@
 package main
 
+// AI 识别归一化测试保护模型宽松输出进入标准草稿契约前的清洗层。
+// 重点覆盖 nullable website、备注去过程化、标签复用和 schema mismatch，避免 AI 文本直接污染长期订阅字段。
 import (
 	"errors"
 	"reflect"

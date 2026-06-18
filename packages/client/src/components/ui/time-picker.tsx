@@ -12,13 +12,18 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n/I18nProvider';
+import { useAppRootScrollLock } from '@/hooks/use-app-root-scroll-lock';
 
 interface TimePickerProps {
+  id?: string;
   /** `HH:mm` 本地墙钟时间；必须与 settings.timeZone 一起解释为 UTC instant。 */
   value: string;
   /** 输出仍为 `HH:mm`，组件不做时区换算。 */
   onChange: (value: string) => void;
   className?: string;
+  disabled?: boolean;
+  ariaLabel?: string;
+  density?: 'default' | 'compact';
 }
 
 const ITEM_HEIGHT = 40;
@@ -26,6 +31,7 @@ const VISIBLE_ITEMS = 5;
 const PADDING_ITEMS = Math.floor(VISIBLE_ITEMS / 2);
 const DRAG_THRESHOLD_PX = 4;
 const SCROLL_END_DEBOUNCE_MS = 120;
+const WHEEL_LINE_HEIGHT_PX = 16;
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => i);
 const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, i) => i);
 
@@ -49,6 +55,17 @@ function formatTimePart(value: number) {
 function parseTimePart(value: string | undefined, max: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= max ? parsed : 0;
+}
+
+function normalizeWheelDelta(delta: number, deltaMode: number, viewportHeight: number) {
+  switch (deltaMode) {
+    case 1:
+      return delta * WHEEL_LINE_HEIGHT_PX;
+    case 2:
+      return delta * viewportHeight;
+    default:
+      return delta;
+  }
 }
 
 function WheelColumn({ 
@@ -163,6 +180,30 @@ function WheelColumn({
       container.removeEventListener('scrollend', handleScrollEnd);
     };
   }, [clearScrollEndTimer, snapToNearest]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return;
+
+      const viewportHeight = container.clientHeight || ITEM_HEIGHT * VISIBLE_ITEMS;
+      const deltaX = normalizeWheelDelta(event.deltaX, event.deltaMode, viewportHeight);
+      const deltaY = normalizeWheelDelta(event.deltaY, event.deltaMode, viewportHeight);
+
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        // 桌面触摸板会给纵向轮盘带横向 wheel；只吞横向主导输入，避免破坏原生纵向滚动手感。
+        event.preventDefault();
+        container.scrollLeft = 0;
+      }
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', handleWheel);
+    };
+  }, []);
 
   useEffect(() => clearScrollEndTimer, [clearScrollEndTimer]);
 
@@ -289,7 +330,7 @@ function WheelColumn({
           onPointerCancel={finishPointerDrag}
           onKeyDown={handleKeyDown}
           className={cn(
-            "relative w-16 overflow-y-auto scrollbar-hide outline-none select-none",
+            "relative w-16 overflow-x-hidden overflow-y-auto scrollbar-hide outline-none select-none",
             "cursor-grab rounded-lg focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
             isDragging && "cursor-grabbing",
           )}
@@ -297,6 +338,7 @@ function WheelColumn({
             scrollSnapType: 'y mandatory',
             scrollPaddingTop: ITEM_HEIGHT * PADDING_ITEMS,
             scrollPaddingBottom: ITEM_HEIGHT * PADDING_ITEMS,
+            overscrollBehaviorX: 'none',
             overscrollBehaviorY: 'contain',
             touchAction: 'pan-y',
             height: ITEM_HEIGHT * VISIBLE_ITEMS,
@@ -322,7 +364,7 @@ function WheelColumn({
 
                   commitValue(option);
                 }}
-                style={{ height: ITEM_HEIGHT, scrollSnapAlign: 'center' }}
+                style={{ height: ITEM_HEIGHT, scrollSnapAlign: 'center', scrollSnapStop: 'always' }}
                 className={cn(
                   "w-full flex items-center justify-center text-lg font-medium tabular-nums transition-all",
                   isSelected 
@@ -340,7 +382,15 @@ function WheelColumn({
   );
 }
 
-export function TimePicker({ value, onChange, className }: TimePickerProps) {
+export function TimePicker({
+  id,
+  value,
+  onChange,
+  className,
+  disabled = false,
+  ariaLabel,
+  density = 'default',
+}: TimePickerProps) {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
   const [hours, setHours] = useState(() => {
@@ -351,12 +401,19 @@ export function TimePicker({ value, onChange, className }: TimePickerProps) {
     const [, m] = value.split(':');
     return parseTimePart(m, 59);
   });
+  const displayTime = `${formatTimePart(hours)}:${formatTimePart(minutes)}`;
 
   useEffect(() => {
     const [h, m] = value.split(':');
     setHours(parseTimePart(h, 23));
     setMinutes(parseTimePart(m, 59));
   }, [value]);
+
+  useEffect(() => {
+    if (disabled) {
+      setIsOpen(false);
+    }
+  }, [disabled]);
 
   const handleTimeChange = useCallback((newHours: number, newMinutes: number) => {
     setHours(newHours);
@@ -365,9 +422,9 @@ export function TimePicker({ value, onChange, className }: TimePickerProps) {
     onChange(formatted);
   }, [onChange]);
 
-  const formatDisplayTime = () => {
-    return `${formatTimePart(hours)}:${formatTimePart(minutes)}`;
-  };
+  const handleOpenChange = useCallback((open: boolean) => {
+    setIsOpen(disabled ? false : open);
+  }, [disabled]);
 
   const quickTimes = [
     { label: '08:00', desc: t("time.morning") },
@@ -375,30 +432,47 @@ export function TimePicker({ value, onChange, className }: TimePickerProps) {
     { label: '18:00', desc: t("time.evening") },
     { label: '21:00', desc: t("time.night") },
   ];
+  const isCompact = density === 'compact';
+  const buttonAriaLabel = ariaLabel ? `${ariaLabel} ${displayTime}` : t("time.notificationAria", { time: displayTime });
+  useAppRootScrollLock(isOpen);
 
   return (
-    <Popover open={isOpen} onOpenChange={setIsOpen}>
+    <Popover open={isOpen} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
+          id={id}
           variant="outline"
-          aria-label={t("time.notificationAria", { time: formatDisplayTime() })}
+          disabled={disabled}
+          aria-label={buttonAriaLabel}
           className={cn(
-            "h-auto py-3 px-4 justify-start text-left font-normal border-border bg-secondary hover:bg-secondary/80 group",
-            className
+            isCompact
+              ? "h-9 w-full justify-start border-border bg-background px-3 py-2 text-left font-medium tabular-nums hover:bg-accent hover:text-accent-foreground group"
+              : "h-auto py-3 px-4 justify-start text-left font-normal border-border bg-secondary hover:bg-secondary/80 group",
+            className,
           )}
         >
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary/10 group-hover:bg-primary/20 transition-colors">
-              <Clock className="h-5 w-5 text-primary" />
+          {isCompact ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="truncate text-sm font-medium tabular-nums">{displayTime}</span>
             </div>
-            <span className="text-2xl font-bold tracking-wider tabular-nums">{formatDisplayTime()}</span>
-          </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary/10 group-hover:bg-primary/20 transition-colors">
+                <Clock className="h-5 w-5 text-primary" />
+              </div>
+              <span className="text-2xl font-bold tracking-wider tabular-nums">{displayTime}</span>
+            </div>
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent 
-        className="w-auto p-0 border-border bg-card pointer-events-auto shadow-xl" 
+        className={cn(
+          "w-auto p-0 border-border bg-card pointer-events-auto",
+          isCompact ? "shadow-lg" : "shadow-xl",
+        )}
         align="start"
-        sideOffset={8}
+        sideOffset={isCompact ? 6 : 8}
       >
         <div className="flex items-center justify-center gap-2 p-4 pb-2">
           <WheelColumn
@@ -422,28 +496,30 @@ export function TimePicker({ value, onChange, className }: TimePickerProps) {
           />
         </div>
 
-        <div className="border-t border-border p-3">
-          <div className="grid grid-cols-4 gap-2">
-            {quickTimes.map(({ label, desc }) => (
-              <button
-                key={label}
-                onClick={() => {
-                  const [h, m] = label.split(':');
-                  handleTimeChange(parseTimePart(h, 23), parseTimePart(m, 59));
-                }}
-                className={cn(
-                  "flex flex-col items-center py-2 px-1 rounded-lg text-xs font-medium transition-all",
-                  value === label 
-                    ? "bg-primary text-primary-foreground" 
-                    : "bg-secondary/50 hover:bg-secondary text-foreground"
-                )}
-              >
-                <span className="font-bold">{label}</span>
-                <span className="text-[10px] opacity-70">{desc}</span>
-              </button>
-            ))}
+        {!isCompact ? (
+          <div className="border-t border-border p-3">
+            <div className="grid grid-cols-4 gap-2">
+              {quickTimes.map(({ label, desc }) => (
+                <button
+                  key={label}
+                  onClick={() => {
+                    const [h, m] = label.split(':');
+                    handleTimeChange(parseTimePart(h, 23), parseTimePart(m, 59));
+                  }}
+                  className={cn(
+                    "flex flex-col items-center py-2 px-1 rounded-lg text-xs font-medium transition-all",
+                    value === label
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-secondary/50 hover:bg-secondary text-foreground",
+                  )}
+                >
+                  <span className="font-bold">{label}</span>
+                  <span className="text-[10px] opacity-70">{desc}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );

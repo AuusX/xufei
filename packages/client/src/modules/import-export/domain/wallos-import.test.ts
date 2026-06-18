@@ -553,8 +553,29 @@ describe("wallos import", () => {
 
     expect(assetMocks.create).toHaveBeenCalledTimes(1);
     expect(assetMocks.create).toHaveBeenCalledWith(expect.any(Blob), "logo", "writable.png");
-    expect(resolved.subscriptions[0]?.logo).toBeNull();
-    expect(resolved.subscriptions[1]?.logo).toBe("/api/app/assets/uploaded_logo");
+    expect(resolved.uploadedLogoCount).toBe(1);
+    expect(resolved.payload.subscriptions[0]?.logo).toBeNull();
+    expect(resolved.payload.subscriptions[1]?.logo).toBe("/api/app/assets/uploaded_logo");
+  });
+
+  it("reports zero uploaded logos when import apply has no writable staged assets", async () => {
+    const payload = importPayloadSchema.parse({
+      source: "wallos",
+      subscriptions: [
+        importSubscriptionFixture("Plain Import", "plain"),
+      ],
+    });
+
+    const resolved = await resolveImportAssets({
+      payload,
+      assets: [],
+      warnings: [],
+    }, [
+      { index: 0, name: "Plain Import", source: "wallos", sourceId: "plain", action: "create", warnings: [], errors: [] },
+    ]);
+
+    expect(assetMocks.create).not.toHaveBeenCalled();
+    expect(resolved).toEqual({ payload, uploadedLogoCount: 0 });
   });
 });
 

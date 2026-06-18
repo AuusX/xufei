@@ -1,6 +1,6 @@
 package main
 
-// hooks.go 负责 PocketBase record 写入前的运行时规范化与校验。
+// hooks.go 负责 PocketBase record 写入前的运行时规范化，并覆盖 API、SDK 与管理后台写入路径。
 //
 // 架构位置：
 //   - HTTP route 负责请求体 schema；PocketBase SDK、Admin UI、迁移脚本等写入会经过这里。
@@ -66,6 +66,9 @@ type customConfigPayload struct {
 // 为什么放在 RecordValidate：同一规则可以覆盖自定义 API、PocketBase SDK 和管理后台写入。
 func registerRecordHooks(app core.App) {
 	app.OnRecordValidate().BindFunc(func(e *core.RecordEvent) error {
+		if err := demoModePolicy.EnforceRecordValidation(app, e.Record); err != nil {
+			return err
+		}
 		switch e.Record.Collection().Name {
 		case "subscriptions":
 			if err := normalizeSubscriptionRecord(e.Record); err != nil {
@@ -95,9 +98,133 @@ func registerRecordHooks(app core.App) {
 			if err := normalizePublicStatusPageRecord(e.Record); err != nil {
 				return err
 			}
+		case "cloud_backup_targets":
+			if err := normalizeCloudBackupTargetRecord(e.Record); err != nil {
+				return err
+			}
 		}
 		return e.Next()
 	})
+	app.OnRecordDelete("users").BindFunc(func(e *core.RecordEvent) error {
+		if err := demoModePolicy.EnforceRecordDelete(e.Record); err != nil {
+			return err
+		}
+		return e.Next()
+	})
+	app.OnRecordAfterCreateSuccess("subscriptions").BindFunc(func(e *core.RecordEvent) error {
+		if err := e.Next(); err != nil {
+			return err
+		}
+		return refreshSubscriptionSchedulerStateAfterWrite(app, e.Record)
+	})
+	app.OnRecordAfterUpdateSuccess("subscriptions").BindFunc(func(e *core.RecordEvent) error {
+		if err := e.Next(); err != nil {
+			return err
+		}
+		return refreshSubscriptionSchedulerStateAfterWrite(app, e.Record)
+	})
+	app.OnRecordAfterDeleteSuccess("subscriptions").BindFunc(func(e *core.RecordEvent) error {
+		if err := e.Next(); err != nil {
+			return err
+		}
+		return refreshSubscriptionSchedulerStateAfterWrite(app, e.Record)
+	})
+}
+
+func refreshSubscriptionSchedulerStateAfterWrite(app core.App, record *core.Record) error {
+	_, err := refreshSubscriptionSchedulerState(app, record.GetString("user"), true)
+	return err
+}
+
+func normalizeCloudBackupTargetRecord(record *core.Record) error {
+	provider := strings.TrimSpace(record.GetString("provider"))
+	if provider != cloudBackupProviderWebDAV && provider != cloudBackupProviderS3 {
+		return errors.New("CLOUD_BACKUP_PROVIDER_INVALID")
+	}
+	record.Set("provider", provider)
+	var stored cloudBackupStoredConfig
+	if data, err := jsonBytesFromValue(record.Get("config")); err == nil && len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, &stored); err != nil {
+			return err
+		}
+	}
+	if provider == cloudBackupProviderWebDAV && stored.S3 != nil {
+		stored.S3 = nil
+	}
+	if provider == cloudBackupProviderS3 && stored.WebDAV != nil {
+		stored.WebDAV = nil
+	}
+	if stored.WebDAV != nil {
+		if err := stored.WebDAV.NormalizeAndValidate(); err != nil {
+			return err
+		}
+	}
+	if stored.S3 != nil {
+		if err := stored.S3.NormalizeAndValidate(); err != nil {
+			return err
+		}
+	}
+	record.Set("config", stored)
+	var credential cloudBackupStoredCredential
+	if data, err := jsonBytesFromValue(record.Get("credential")); err == nil && len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, &credential); err != nil {
+			return err
+		}
+	}
+	if provider == cloudBackupProviderWebDAV {
+		credential.S3SecretAccessKey = ""
+	} else {
+		credential.WebDAVPassword = ""
+	}
+	// credential 永远作为独立 JSON 保存；出站 DTO 只回 credentialSet，防止管理后台之外的 API 明文回显。
+	record.Set("credential", credential)
+	frequency := strings.TrimSpace(record.GetString("scheduleFrequency"))
+	if frequency == "" {
+		frequency = "daily"
+	}
+	if frequency != "daily" && frequency != "weekly" {
+		return errors.New("CLOUD_BACKUP_SCHEDULE_INVALID")
+	}
+	record.Set("scheduleFrequency", frequency)
+	scheduleTime := strings.TrimSpace(record.GetString("scheduleTime"))
+	if scheduleTime == "" {
+		scheduleTime = cloudBackupDefaultScheduleTime
+	}
+	if !localTimeRe.MatchString(scheduleTime) || !isValidLocalTime(scheduleTime) {
+		return errors.New("CLOUD_BACKUP_SCHEDULE_TIME_INVALID")
+	}
+	record.Set("scheduleTime", scheduleTime)
+	scheduleWeekday := strings.TrimSpace(record.GetString("scheduleWeekday"))
+	if scheduleWeekday == "" {
+		scheduleWeekday = cloudBackupDefaultScheduleWeekday
+	}
+	if !validCloudBackupWeekday(scheduleWeekday) {
+		return errors.New("CLOUD_BACKUP_SCHEDULE_WEEKDAY_INVALID")
+	}
+	record.Set("scheduleWeekday", scheduleWeekday)
+	retention := record.GetInt("retention")
+	if retention <= 0 {
+		record.Set("retention", cloudBackupDefaultRetention)
+	} else if retention > cloudBackupMaxRetention {
+		return errors.New("CLOUD_BACKUP_RETENTION_INVALID")
+	}
+	status := strings.TrimSpace(record.GetString("lastStatus"))
+	if status == "" {
+		record.Set("lastStatus", cloudBackupStatusIdle)
+	} else if status != cloudBackupStatusIdle && status != cloudBackupStatusSuccess && status != cloudBackupStatusFailed {
+		return errors.New("CLOUD_BACKUP_STATUS_INVALID")
+	}
+	for _, field := range []string{"lastBackupAt", "lockedUntil"} {
+		value := strings.TrimSpace(record.GetString(field))
+		if value != "" {
+			if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+				return errors.New("CLOUD_BACKUP_TIME_INVALID")
+			}
+		}
+		record.Set(field, value)
+	}
+	record.Set("lastError", strings.TrimSpace(record.GetString("lastError")))
+	return nil
 }
 
 func normalizePublicStatusPageRecord(record *core.Record) error {
@@ -218,6 +345,12 @@ func normalizeSubscriptionRecord(record *core.Record) error {
 		return err
 	}
 	record.Set("tags", tags)
+
+	costSharing, err := normalizeCostSharing(record.Get("costSharing"), price, currency)
+	if err != nil {
+		return err
+	}
+	record.Set("costSharing", costSharing)
 
 	if record.Get("extra") == nil || strings.TrimSpace(record.GetString("extra")) == "" {
 		// 统一空 JSON 为 `{}`，避免前端 schema 在 null/空字符串之间做额外兼容。

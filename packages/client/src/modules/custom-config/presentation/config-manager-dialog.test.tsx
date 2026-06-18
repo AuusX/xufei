@@ -111,9 +111,9 @@ describe("ConfigManagerDialog", () => {
         <ConfigManagerDialog
           title="货币管理"
           items={[
-            { id: "CNY", value: "CNY", labels: { "zh-CN": "人民币 (¥)", "en-US": "Chinese Yuan (¥)" }, enabled: true },
-            { id: "USD", value: "USD", labels: { "zh-CN": "美元 ($)", "en-US": "US Dollar ($)" }, enabled: true },
-            { id: "EUR", value: "EUR", labels: { "zh-CN": "欧元 (€)", "en-US": "Euro (€)" }, enabled: true },
+            { id: "CNY", value: "CNY", labels: { "zh-CN": "¥ 人民币 (CNY)", "en-US": "¥ Chinese Yuan (CNY)" }, enabled: true },
+            { id: "USD", value: "USD", labels: { "zh-CN": "$ 美元 (USD)", "en-US": "$ US Dollar (USD)" }, enabled: true },
+            { id: "EUR", value: "EUR", labels: { "zh-CN": "€ 欧元 (EUR)", "en-US": "€ Euro (EUR)" }, enabled: true },
           ]}
           onUpdate={vi.fn()}
           toggleMode
@@ -154,10 +154,10 @@ describe("ConfigManagerDialog", () => {
         <ConfigManagerDialog
           title="货币管理"
           items={[
-            { id: "HKD", value: "HKD", labels: { "zh-CN": "港元 (HK$)", "en-US": "Hong Kong dollar" }, enabled: true },
-            { id: "AFN", value: "AFN", labels: { "zh-CN": "阿富汗尼 (AFN)", "en-US": "Afghan Afghani" }, enabled: true },
-            { id: "NGN", value: "NGN", labels: { "zh-CN": "尼日利亚奈拉 (NGN)", "en-US": "Nigerian Naira" }, enabled: true },
-            { id: "NIO", value: "NIO", labels: { "zh-CN": "尼加拉瓜科多巴 (NIO)", "en-US": "Nicaraguan Córdoba" }, enabled: true },
+            { id: "HKD", value: "HKD", labels: { "zh-CN": "HK$ 港元 (HKD)", "en-US": "HK$ Hong Kong Dollar (HKD)" }, enabled: true },
+            { id: "AFN", value: "AFN", labels: { "zh-CN": "AFN 阿富汗尼", "en-US": "AFN Afghan Afghani" }, enabled: true },
+            { id: "NGN", value: "NGN", labels: { "zh-CN": "₦ 尼日利亚奈拉 (NGN)", "en-US": "₦ Nigerian Naira (NGN)" }, enabled: true },
+            { id: "NIO", value: "NIO", labels: { "zh-CN": "NIO 尼加拉瓜科多巴", "en-US": "NIO Nicaraguan Córdoba" }, enabled: true },
           ]}
           onUpdate={vi.fn()}
           toggleMode
@@ -210,13 +210,80 @@ describe("ConfigManagerDialog", () => {
     const header = dialog.querySelector("[data-config-manager-header]");
     const searchRow = within(dialog).getByPlaceholderText("搜索货币、代码或符号...").closest("div");
     const scrollRegion = dialog.querySelector("[data-config-manager-scroll]");
+    const list = dialog.querySelector("[data-config-manager-list]");
     const footer = dialog.querySelector("[data-config-manager-footer]");
 
     expect(dialog).toHaveClass("h5-dialog-frame", "h5-config-manager-dialog-panel");
     expect(dialog).not.toHaveClass("h-fit");
     expect(header).toHaveClass("shrink-0");
     expect(searchRow).toHaveClass("shrink-0");
-    expect(scrollRegion).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
+    expect(scrollRegion).toHaveClass("min-h-0", "overflow-y-auto");
+    expect(scrollRegion).not.toHaveClass("grid");
+    expect(scrollRegion).not.toHaveClass("flex");
+    expect(list).toHaveClass("flex", "flex-col", "gap-2");
     expect(footer).toHaveClass("shrink-0");
+  });
+
+  it("keeps filtered currency rows at their content height", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <TooltipProvider delayDuration={0}>
+        <ConfigManagerDialog
+          title="货币管理"
+          items={[
+            { id: "BRL", value: "BRL", labels: { "zh-CN": "R$ 巴西雷亚尔 (BRL)", "en-US": "R$ Brazilian Real (BRL)" }, enabled: true },
+            { id: "ERN", value: "ERN", labels: { "zh-CN": "ERN 厄立特里亚纳克法", "en-US": "ERN Eritrean Nakfa" }, enabled: true },
+            { id: "KRW", value: "KRW", labels: { "zh-CN": "₩ 韩元 (KRW)", "en-US": "₩ South Korean Won (KRW)" }, enabled: true },
+            { id: "SGD", value: "SGD", labels: { "zh-CN": "SGD 新加坡元", "en-US": "SGD Singapore Dollar" }, enabled: true },
+          ]}
+          onUpdate={vi.fn()}
+          toggleMode
+          searchable
+          searchPlaceholder="搜索货币、代码或符号..."
+        />
+      </TooltipProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /货币管理/ }));
+    const dialog = screen.getByRole("dialog", { name: "货币管理" });
+    const search = within(dialog).getByPlaceholderText("搜索货币、代码或符号...");
+
+    await user.type(search, "re");
+
+    const list = dialog.querySelector("[data-config-manager-list]");
+    const rows = Array.from(dialog.querySelectorAll("[data-config-manager-item]"));
+    expect(list).toHaveClass("flex", "flex-col", "gap-2");
+    expect(rows).toHaveLength(4);
+    expect(rows.every((row) => row.parentElement === list)).toBe(true);
+    for (const row of rows) {
+      expect(row).toHaveClass("shrink-0");
+    }
+  });
+
+  it("keeps disabled currency rows readable and lets the switch show the off state", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <TooltipProvider delayDuration={0}>
+        <ConfigManagerDialog
+          title="货币管理"
+          items={[
+            { id: "CNY", value: "CNY", labels: { "zh-CN": "¥ 人民币 (CNY)", "en-US": "¥ Chinese Yuan (CNY)" }, enabled: true },
+            { id: "USD", value: "USD", labels: { "zh-CN": "$ 美元 (USD)", "en-US": "$ US Dollar (USD)" }, enabled: false },
+          ]}
+          onUpdate={vi.fn()}
+          toggleMode
+        />
+      </TooltipProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /货币管理/ }));
+    const dialog = screen.getByRole("dialog", { name: "货币管理" });
+    const usdRow = within(dialog).getByText("USD").closest("[data-config-manager-item]");
+    if (!(usdRow instanceof HTMLElement)) throw new Error("USD row should be rendered");
+    expect(usdRow).not.toHaveClass("opacity-50");
+    expect(within(usdRow).getByText("$ 美元 (USD)")).not.toHaveClass("text-muted-foreground");
+    expect(within(usdRow).getByRole("switch")).toHaveAttribute("aria-checked", "false");
   });
 });

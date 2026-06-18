@@ -1,6 +1,7 @@
 // 系统更新弹窗测试保护 Docker 页面内更新的 pending restart 状态流和 Cloudflare/source 禁用分支。
+import rootPackageJson from "../../../../package.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,6 +65,12 @@ vi.mock("@/i18n/I18nProvider", () => ({
         "system.updating": "更新中...",
         "system.viewChangelog": "查看更新日志",
         "system.warningTitle": "检查提示",
+        "rawErrorResponse.title": "错误响应详情",
+        "rawErrorResponse.description": "接口返回的原始响应。",
+        "rawErrorResponse.copy": "复制错误详情",
+        "rawErrorResponse.copied": "已复制",
+        "rawErrorResponse.copyFailed": "复制失败",
+        "rawErrorResponse.responseUnavailable": "当前错误没有可回显的响应正文。",
       };
       let value = messages[key] ?? key;
       for (const [name, param] of Object.entries(params ?? {})) {
@@ -105,7 +112,7 @@ function versionFixture(overrides: Record<string, unknown> = {}) {
 
 function mockVersionEndpoint(overrides: Record<string, unknown> = {}) {
   mocks.apiFetch.mockImplementation((input: string) => {
-    if (input.startsWith("/api/app/admin/system/version")) return Promise.resolve(versionFixture(overrides));
+    if (input.startsWith("/api/app/system/version")) return Promise.resolve(versionFixture(overrides));
     return Promise.reject(new Error(`Unexpected request ${input}`));
   });
 }
@@ -154,6 +161,18 @@ describe("SystemUpdateDialog", () => {
     await waitFor(() => expect(mocks.apiFetch).toHaveBeenCalledWith(expect.stringContaining("force=true"), expect.anything(), expect.anything()));
   });
 
+  it("shows the build version while the badge query is still pending", () => {
+    mocks.apiFetch.mockImplementation((input: string) => {
+      if (input.startsWith("/api/app/system/version")) return new Promise(() => {});
+      return Promise.reject(new Error(`Unexpected request ${input}`));
+    });
+
+    renderWithQuery(<SystemVersionBadge />);
+
+    expect(screen.getByText(`v${rootPackageJson.version}`)).toBeInTheDocument();
+    expect(screen.queryByText("v...")).not.toBeInTheDocument();
+  });
+
   it("shows up-to-date state with a check mark and disables update action", async () => {
     mockVersionEndpoint({
       latestVersion: "1.0.0",
@@ -177,7 +196,7 @@ describe("SystemUpdateDialog", () => {
   it("shows checking state while the popover version query is pending", async () => {
     let resolveVersion: (value: ReturnType<typeof versionFixture>) => void = () => {};
     mocks.apiFetch.mockImplementation((input: string) => {
-      if (input.startsWith("/api/app/admin/system/version")) {
+      if (input.startsWith("/api/app/system/version")) {
         return new Promise((resolve) => {
           resolveVersion = resolve;
         });
@@ -197,7 +216,7 @@ describe("SystemUpdateDialog", () => {
 
   it("updates release builds and then shows restart flow", async () => {
     mocks.apiFetch.mockImplementation((input: string, _schema: unknown, init?: RequestInit) => {
-      if (input.startsWith("/api/app/admin/system/version")) return Promise.resolve(versionFixture());
+      if (input.startsWith("/api/app/system/version")) return Promise.resolve(versionFixture());
       if (input === "/api/app/admin/system/update" && init?.method === "POST") {
         return Promise.resolve({ ok: true, currentVersion: "1.0.0", targetVersion: "1.1.0", needsRestart: true, message: "更新完成" });
       }
@@ -308,6 +327,45 @@ describe("SystemUpdateDialog", () => {
     expect(screen.queryByRole("button", { name: "立即更新" })).not.toBeInTheDocument();
   });
 
+  it("shows Cloudflare deploy button stable versions without a dev suffix", async () => {
+    mockVersionEndpoint({
+      currentVersion: "0.1.1",
+      latestVersion: "0.1.1",
+      hasUpdate: false,
+      checkSucceeded: true,
+      deployment: "cloudflare",
+      updateMode: "cloudflare-deploy",
+      updateSupported: false,
+      unsupportedReason: "Cloudflare 需要通过部署流程升级",
+      releaseInfo: {
+        tagName: "v0.1.1",
+        version: "0.1.1",
+        name: "Renewlet 0.1.1",
+        body: "",
+        publishedAt: "2026-06-09T00:00:00Z",
+        htmlUrl: "https://github.com/zhiyingzzhou/renewlet/releases/tag/v0.1.1",
+        assets: [],
+      },
+      build: {
+        version: "0.1.1",
+        commit: "",
+        buildTime: "",
+        buildType: "cloudflare",
+      },
+    });
+
+    const user = userEvent.setup();
+    renderWithQuery(<SystemUpdateHarness />);
+
+    await user.click(await screen.findByRole("button", { name: "打开系统更新" }));
+
+    expect(await screen.findByText("已是最新版本")).toBeInTheDocument();
+    expect(screen.getAllByText("v0.1.1").length).toBeGreaterThan(0);
+    expect(screen.queryByText("v0.1.1-dev")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "发布页" })).toHaveAttribute("href", "https://github.com/zhiyingzzhou/renewlet/releases/tag/v0.1.1");
+    expect(screen.queryByRole("button", { name: "立即更新" })).not.toBeInTheDocument();
+  });
+
   it("shows Cloudflare dev deploys as up to date with commit link", async () => {
     mockVersionEndpoint({
       currentVersion: "0.1.0-dev+504c168",
@@ -374,7 +432,7 @@ describe("SystemUpdateDialog", () => {
 
   it("shows update error and retry button", async () => {
     mocks.apiFetch.mockImplementation((input: string, _schema: unknown, init?: RequestInit) => {
-      if (input.startsWith("/api/app/admin/system/version")) return Promise.resolve(versionFixture());
+      if (input.startsWith("/api/app/system/version")) return Promise.resolve(versionFixture());
       if (input === "/api/app/admin/system/update" && init?.method === "POST") {
         return Promise.reject(new Error("下载失败"));
       }
@@ -387,8 +445,10 @@ describe("SystemUpdateDialog", () => {
     await user.click(await screen.findByRole("button", { name: "打开系统更新" }));
     await user.click(await screen.findByRole("button", { name: "立即更新" }));
 
+    const detailsDialog = await screen.findByRole("dialog", { name: "错误响应详情" });
+    expect(detailsDialog).toHaveTextContent("下载失败");
+    await user.click(within(detailsDialog).getByRole("button", { name: "关闭" }));
     expect(await screen.findByText("更新失败")).toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("更新失败");
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
   });
 
@@ -397,7 +457,7 @@ describe("SystemUpdateDialog", () => {
     vi.spyOn(systemRestartBrowser, "reload").mockImplementation(reload);
     const fetchMock = vi.spyOn(window, "fetch").mockResolvedValue({ ok: true } as Response);
     mocks.apiFetch.mockImplementation((input: string, _schema: unknown, init?: RequestInit) => {
-      if (input.startsWith("/api/app/admin/system/version")) return Promise.resolve(versionFixture());
+      if (input.startsWith("/api/app/system/version")) return Promise.resolve(versionFixture());
       if (input === "/api/app/admin/system/update" && init?.method === "POST") {
         return Promise.resolve({ ok: true, currentVersion: "1.0.0", targetVersion: "1.1.0", needsRestart: true, message: "更新完成" });
       }
@@ -434,7 +494,7 @@ describe("SystemUpdateDialog", () => {
       hasUpdate: false,
       checkSucceeded: false,
       releaseInfo: null,
-      warning: "GitHub API 临时限流，请稍后重新检查。",
+      warning: "暂时无法获取 GitHub Release，请稍后重试。",
     });
 
     const user = userEvent.setup();
@@ -442,16 +502,16 @@ describe("SystemUpdateDialog", () => {
 
     await user.click(await screen.findByRole("button", { name: "打开系统更新" }));
 
-    await screen.findByText("GitHub API 临时限流，请稍后重新检查。");
+    await screen.findByText("暂时无法获取 GitHub Release，请稍后重试。");
     expect(screen.getAllByText("暂时无法检查更新")).toHaveLength(1);
     expect(screen.getByRole("status")).toHaveTextContent("暂时无法检查更新");
-    expect(screen.getByText("GitHub API 临时限流，请稍后重新检查。")).toBeInTheDocument();
+    expect(screen.getByText("暂时无法获取 GitHub Release，请稍后重试。")).toBeInTheDocument();
     expect(screen.queryByText("已是最新版本")).not.toBeInTheDocument();
   });
 
   it("shows check failed state when the version response is invalid", async () => {
     mocks.apiFetch.mockImplementation((input: string) => {
-      if (input.startsWith("/api/app/admin/system/version")) return Promise.reject(new Error("invalid_response"));
+      if (input.startsWith("/api/app/system/version")) return Promise.reject(new Error("invalid_response"));
       return Promise.reject(new Error(`Unexpected request ${input}`));
     });
 

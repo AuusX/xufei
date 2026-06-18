@@ -1,6 +1,7 @@
 package main
 
-// 本文件测试日历 Feed 登录态管理 API 与公开 ICS token 路由的完整生命周期，防止 Go 后端和 Worker 行为分叉。
+// 日历 Feed 测试保护登录态管理 API、公开 ICS bearer token、scope 隔离和撤销语义。
+// 外部日历客户端不带登录态，所以这些用例必须证明 token 是唯一公开读取入口。
 
 import (
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 )
@@ -271,6 +273,137 @@ func TestSubscriptionCalendarFeedLifecycleAndICSRoute(t *testing.T) {
 	}
 	if revokedFirst := serveTestRequest(t, app, http.MethodGet, calendarFeedRequestTarget(t, firstBody.CalendarFeed.FeedURL), "", ""); revokedFirst.Code != http.StatusNotFound {
 		t.Fatalf("expected first subscription feed URL to return 404, got %d: %s", revokedFirst.Code, revokedFirst.Body.String())
+	}
+}
+
+func TestSubscriptionCalendarICSDownload(t *testing.T) {
+	app := newSchemaTestApp(t)
+	if err := ensureSchema(app); err != nil {
+		t.Fatal(err)
+	}
+	user, token := createRouteTestUser(t, app, "calendar-download")
+	otherUser, otherToken := createRouteTestUser(t, app, "calendar-download-other")
+	settings := defaultAppSettings()
+	settings.Locale = "en-US"
+	settings.Timezone = "UTC"
+	settings.NotificationReminderDays = 5
+	createCalendarFeedTestSettings(t, app, user, settings)
+	createCalendarFeedTestCustomConfig(t, app, user.Id)
+	paused := createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
+		Name:            "Paused Plan",
+		Price:           9,
+		BillingCycle:    "monthly",
+		Category:        "developer_tools",
+		Status:          "paused",
+		PaymentMethod:   "credit_card",
+		NextBillingDate: "2099-06-03",
+		Notes:           "One-off download",
+	})
+	buyout := createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
+		Name:            "One Time Plan",
+		BillingCycle:    "one-time",
+		Status:          "active",
+		NextBillingDate: "2099-06-04",
+	})
+	fixedTerm := createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
+		Name:             "Fixed Term Plan",
+		BillingCycle:     "one-time",
+		OneTimeTermCount: 6,
+		OneTimeTermUnit:  "month",
+		Status:           "active",
+		NextBillingDate:  "2099-06-05",
+	})
+	otherSubscription := createCalendarFeedTestSubscription(t, app, otherUser.Id, calendarFeedTestSubscription{
+		Name:            "Other Plan",
+		BillingCycle:    "monthly",
+		Status:          "active",
+		NextBillingDate: "2099-06-06",
+	})
+
+	downloadRes := serveTestRequest(t, app, http.MethodGet, "/api/app/subscriptions/"+paused.Id+"/calendar.ics", "", token)
+	if downloadRes.Code != http.StatusOK {
+		t.Fatalf("expected subscription ICS download 200, got %d: %s", downloadRes.Code, downloadRes.Body.String())
+	}
+	if got := downloadRes.Header().Get("Content-Type"); got != "text/calendar; charset=utf-8" {
+		t.Fatalf("expected text/calendar content type, got %q", got)
+	}
+	if got := downloadRes.Header().Get("Content-Disposition"); got != `attachment; filename="renewlet-`+paused.Id+`.ics"` {
+		t.Fatalf("expected attachment filename header, got %q", got)
+	}
+	if got := downloadRes.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected no-store cache header, got %q", got)
+	}
+	if got := downloadRes.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected nosniff header, got %q", got)
+	}
+	assertCalendarFeedLineEndings(t, downloadRes.Body.String())
+	unfoldedICS := unfoldCalendarTestICS(downloadRes.Body.String())
+	for _, expected := range []string{
+		"NAME:Renewlet - Paused Plan",
+		"SUMMARY:Paused Plan",
+		"DESCRIPTION:Amount: 9 USD\\nBilling cycle: Monthly\\nCategory: Developer Tools\\nPayment method: Credit Card\\nNotes: One-off download",
+		"CATEGORIES:Developer Tools",
+		"DTSTART;VALUE=DATE:20990603",
+	} {
+		if !strings.Contains(unfoldedICS, expected) {
+			t.Fatalf("expected downloaded ICS to contain %q, got:\n%s", expected, unfoldedICS)
+		}
+	}
+	for _, excluded := range []string{"SOURCE;VALUE=URI", "REFRESH-INTERVAL", "X-PUBLISHED-TTL", "Other Plan"} {
+		if strings.Contains(unfoldedICS, excluded) {
+			t.Fatalf("expected one-off download to exclude %q, got:\n%s", excluded, unfoldedICS)
+		}
+	}
+
+	ownerLeakRes := serveTestRequest(t, app, http.MethodGet, "/api/app/subscriptions/"+otherSubscription.Id+"/calendar.ics", "", token)
+	if ownerLeakRes.Code != http.StatusNotFound {
+		t.Fatalf("expected non-owner download to return 404, got %d: %s", ownerLeakRes.Code, ownerLeakRes.Body.String())
+	}
+	otherTokenRes := serveTestRequest(t, app, http.MethodGet, "/api/app/subscriptions/"+paused.Id+"/calendar.ics", "", otherToken)
+	if otherTokenRes.Code != http.StatusNotFound {
+		t.Fatalf("expected other user download to return 404, got %d: %s", otherTokenRes.Code, otherTokenRes.Body.String())
+	}
+
+	buyoutRes := serveTestRequest(t, app, http.MethodGet, "/api/app/subscriptions/"+buyout.Id+"/calendar.ics", "", token)
+	if buyoutRes.Code != http.StatusNotFound {
+		t.Fatalf("expected one-time buyout download to return 404, got %d: %s", buyoutRes.Code, buyoutRes.Body.String())
+	}
+
+	fixedTermRes := serveTestRequest(t, app, http.MethodGet, "/api/app/subscriptions/"+fixedTerm.Id+"/calendar.ics", "", token)
+	if fixedTermRes.Code != http.StatusOK {
+		t.Fatalf("expected fixed-term download 200, got %d: %s", fixedTermRes.Code, fixedTermRes.Body.String())
+	}
+	fixedTermICS := unfoldCalendarTestICS(fixedTermRes.Body.String())
+	if !strings.Contains(fixedTermICS, "SUMMARY:Fixed Term Plan") || !strings.Contains(fixedTermICS, "UID:renewlet-expiry-") {
+		t.Fatalf("expected fixed-term download to include expiry item, got:\n%s", fixedTermICS)
+	}
+}
+
+func TestCalendarFeedICSSkipsInvalidDateOnlyEvents(t *testing.T) {
+	now, err := time.Parse(time.RFC3339, "2026-05-29T10:20:30Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := buildCalendarFeedICS(calendarFeedBuildOptions{
+		Name:     "Renewlet - Invalid Date Plan",
+		Now:      now,
+		Settings: defaultAppSettings(),
+		Events: []calendarFeedEvent{{
+			UID:         "renewlet-renewal-sub_invalid@renewlet",
+			Kind:        "renewal",
+			Date:        "not-a-date",
+			Summary:     "Invalid Date Plan",
+			Description: "Amount: 9 USD",
+		}},
+		RefreshableSource: false,
+	})
+
+	assertCalendarFeedLineEndings(t, body)
+	if !strings.Contains(body, "BEGIN:VCALENDAR") || !strings.Contains(body, "END:VCALENDAR") {
+		t.Fatalf("expected valid VCALENDAR output, got:\n%s", body)
+	}
+	if strings.Contains(body, "BEGIN:VEVENT") {
+		t.Fatalf("expected invalid date-only event to be skipped, got:\n%s", body)
 	}
 }
 

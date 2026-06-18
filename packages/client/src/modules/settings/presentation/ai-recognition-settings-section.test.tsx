@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ApiError } from "@/lib/api-client";
 import type { AiRecognitionSettings } from "@/lib/api/schemas/ai-recognition";
 import { DEFAULT_SETTINGS } from "@/types/subscription";
 import { aiRecognitionService } from "@/services/ai-recognition-service";
@@ -38,6 +39,13 @@ vi.mock("@/i18n/I18nProvider", () => ({
         "aiRecognition.baseUrlPlaceholder": "默认地址",
         "aiRecognition.baseUrlRequired": "OpenAI Compatible 需要填写 Base URL。",
         "aiRecognition.defaultThinking": "默认思考控制",
+        "aiRecognition.errorDetailsDescription": "接口返回的原始响应。",
+        "aiRecognition.errorDetailsOpenLast": "查看上次响应",
+        "aiRecognition.errorDetailsTitle": "AI 错误详情",
+        "rawErrorResponse.copy": "复制错误详情",
+        "rawErrorResponse.copied": "已复制",
+        "rawErrorResponse.copyFailed": "复制失败",
+        "rawErrorResponse.responseUnavailable": "当前错误没有可回显的响应正文。",
         "aiRecognition.model": "模型",
         "aiRecognition.modelListFailedDescription": "无法获取模型列表，请检查 Base URL 和 API Key，或手动输入模型 ID。",
         "aiRecognition.modelListLoading": "正在获取模型列表...",
@@ -57,23 +65,44 @@ vi.mock("@/i18n/I18nProvider", () => ({
         "aiRecognition.settingsDescription": "配置用于识别订阅图片、备忘录或表格文本的第三方模型。",
         "aiRecognition.settingsTitle": "AI 识别",
         "aiRecognition.testConnection": "测试连接",
+        "aiRecognition.testFailedDescription": "无法完成测试调用，请检查模型、Base URL 和 API Key。",
         "aiRecognition.testing": "测试中...",
         "aiRecognition.thinking.modelDefault": "模型默认",
         "aiRecognition.thinkingHelp": "仅展示当前平台和模型明确支持的官方思考控制。",
         "aiRecognition.thinkingUnsupportedCompatible": "OpenAI Compatible 没有统一 thinking 标准。",
         "aiRecognition.thinkingUnsupportedModel": "当前模型未匹配到官方 thinking 能力。",
+        "common.close": "关闭",
       };
       return messages[key] ?? key;
     },
   }),
 }));
 
+function aiModelListApiError(body = "{\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"}") {
+  const rawResponse = `{"message":"无法获取模型列表，请检查 Base URL 和 API Key，或手动输入模型 ID。","code":"AI_MODEL_LIST_FAILED","details":{"rawResponseText":${JSON.stringify(body)}}}`;
+  return new ApiError(
+    "无法获取模型列表，请检查 Base URL 和 API Key，或手动输入模型 ID。",
+    401,
+    {
+      message: "无法获取模型列表，请检查 Base URL 和 API Key，或手动输入模型 ID。",
+      code: "AI_MODEL_LIST_FAILED",
+      details: {
+        rawResponseText: body,
+      },
+    },
+    "AI_MODEL_LIST_FAILED",
+    rawResponse,
+  );
+}
+
 function renderAIRecognitionSection({
   initialSettings,
   onChange = vi.fn(),
+  disabled = false,
 }: {
   initialSettings?: Partial<AiRecognitionSettings>;
   onChange?: (settings: AiRecognitionSettings) => void;
+  disabled?: boolean;
 } = {}) {
   function StatefulSection() {
     const [settings, setSettings] = useState<AiRecognitionSettings>({
@@ -95,6 +124,7 @@ function renderAIRecognitionSection({
             setSettings(nextSettings);
             onChange(nextSettings);
           }}
+          disabled={disabled}
         />
       </TooltipProvider>
     );
@@ -163,6 +193,27 @@ describe("AIRecognitionSettingsSection provider model layout", () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ modelInputMode: "select" }));
   });
 
+  it("disables provider credentials, test and model refresh controls when requested", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderAIRecognitionSection({
+      onChange,
+      disabled: true,
+      initialSettings: { modelInputMode: "select" },
+    });
+
+    expect(screen.getByRole("combobox", { name: "平台类型" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "模型" })).toBeDisabled();
+    expect(screen.getByLabelText("Base URL")).toBeDisabled();
+    expect(screen.getByLabelText("API Key")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "测试连接" })).toBeDisabled();
+
+    await user.click(screen.getByRole("combobox", { name: "模型" }));
+
+    expect(aiRecognitionService.listModels).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("derives hidden protocol when provider type changes", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
@@ -178,33 +229,66 @@ describe("AIRecognitionSettingsSection provider model layout", () => {
     }));
   });
 
-  it("keeps provider field structure when model loading fails", async () => {
+  it("opens provider response details when model loading fails", async () => {
     const user = userEvent.setup();
-    mocks.listModels.mockRejectedValueOnce(new Error("请求体不是有效 JSON"));
+    mocks.listModels.mockRejectedValueOnce(aiModelListApiError());
     renderAIRecognitionSection();
 
     const providerControlRow = screen.getByTestId("ai-provider-control-row");
     await user.click(screen.getByRole("button", { name: "选择模型" }));
 
-    expect(await screen.findByText("请求体不是有效 JSON")).toBeInTheDocument();
+    const detailsDialog = await screen.findByRole("dialog", { name: "AI 错误详情" });
+    const fixedDialogClass = "h-[min(calc(var(--app-viewport-height)-2rem),42rem)]";
+    expect(detailsDialog).toHaveClass(fixedDialogClass);
+    expect(detailsDialog).not.toHaveClass("h-fit");
+    expect(detailsDialog).toHaveTextContent("INVALID_API_KEY");
+    expect(detailsDialog).toHaveTextContent("Invalid API key");
+    expect(detailsDialog).not.toHaveTextContent("AI_MODEL_LIST_FAILED");
+    expect(detailsDialog).not.toHaveTextContent("rawResponseText");
     expect(providerControlRow).toHaveClass("self-start");
     expect(providerControlRow).toHaveClass("md:order-3");
   });
 
-  it("hides model list errors after switching back to manual input", async () => {
+  it("keeps last provider response entry after switching back to manual input", async () => {
     const user = userEvent.setup();
-    mocks.listModels.mockRejectedValueOnce(new Error("请求体不是有效 JSON"));
+    mocks.listModels.mockRejectedValueOnce(aiModelListApiError("invalid provider response"));
     renderAIRecognitionSection();
 
     await user.click(screen.getByRole("button", { name: "选择模型" }));
+    expect(await screen.findByRole("dialog", { name: "AI 错误详情" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "关闭" }));
 
-    expect(await screen.findByText("请求体不是有效 JSON")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看上次响应" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "手动输入" }));
 
-    await waitFor(() => {
-      expect(screen.queryByText("请求体不是有效 JSON")).not.toBeInTheDocument();
-    });
+    expect(screen.getByRole("button", { name: "查看上次响应" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "模型" })).toBeInTheDocument();
+  });
+
+  it("opens provider response details instead of toast when connection test fails", async () => {
+    const user = userEvent.setup();
+    mocks.testConnection.mockRejectedValueOnce(new ApiError(
+      "AI 连接失败",
+      400,
+      {
+        message: "AI 连接失败",
+        code: "AI_RECOGNITION_TEST_FAILED",
+        details: {
+          rawResponseText: "{\"error\":\"forbidden\"}",
+        },
+      },
+      "AI_RECOGNITION_TEST_FAILED",
+      "{\"message\":\"AI 连接失败\",\"code\":\"AI_RECOGNITION_TEST_FAILED\",\"details\":{\"rawResponseText\":\"{\\\"error\\\":\\\"forbidden\\\"}\"}}",
+    ));
+    renderAIRecognitionSection();
+
+    await user.click(screen.getByRole("button", { name: "测试连接" }));
+
+    expect(await screen.findByRole("dialog", { name: "AI 错误详情" })).toBeInTheDocument();
+    expect(screen.getByText(/forbidden/)).toBeInTheDocument();
+    expect(screen.queryByText(/AI_RECOGNITION_TEST_FAILED/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/rawResponseText/)).not.toBeInTheDocument();
+    expect(mocks.toast).not.toHaveBeenCalled();
   });
 });

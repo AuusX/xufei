@@ -195,6 +195,7 @@ async function readNotificationSummaryText(page: Page): Promise<string> {
 async function expectExistingPrivateLogoLoads(page: Page) {
   const logo = page.locator("img.subscription-logo-image").first();
   if (!(await logo.isVisible().catch(() => false))) return;
+  // 私有 Logo 经过 Worker/R2 代理和浏览器解码；轮询 naturalWidth 比等待 networkidle 更贴近真实渲染完成。
   await expect.poll(async () => logo.evaluate((element) => (
     element instanceof HTMLImageElement ? element.complete && element.naturalWidth > 0 : false
   )), { message: "existing private subscription logo should load" }).toBe(true);

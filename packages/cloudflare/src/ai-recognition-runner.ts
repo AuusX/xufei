@@ -42,6 +42,7 @@ import {
   todayDateOnly,
   type AIRecognitionCapture,
 } from "./ai-recognition-runtime";
+import { providerResponseFromError } from "./ai-provider-response";
 
 type AIRecognitionInput = {
   text: string;
@@ -77,6 +78,11 @@ class AIRecognitionGenerationError extends Error {
   }
 }
 
+/**
+ * 执行非流式 AI 识别并返回结构化导入草稿。
+ *
+ * 模型输出会经过“生成 -> 原文 JSON 恢复 -> schema repair -> 最终规范化”链路；失败时只返回脱敏 diagnostics。
+ */
 export async function runAIRecognition({
   settings,
   input,
@@ -188,6 +194,11 @@ export async function runAIRecognition({
   }
 }
 
+/**
+ * 执行流式 AI 识别。
+ *
+ * SSE 中的 progress/partial/text/reasoning 只服务前端进度面板，最终草稿仍只来自 recognition/final 的结构化对象。
+ */
 export async function runAIRecognitionStream({
   settings,
   input,
@@ -506,12 +517,11 @@ async function generateAIRecognitionObjectStream({
       maxRetries: 1,
     });
     const outputPromise = Promise.resolve(result.output);
-    await Promise.all([
+    const object = await settleAIRecognitionStreamTasks([
       outputPromise,
       consumeAIRecognitionFullStream(result.fullStream, sink, capture),
       consumeAIRecognitionPartialStream(result.partialOutputStream, sink),
     ]);
-    const object = await outputPromise;
     return {
       object,
       rawModelText: capture.rawModelText,
@@ -522,6 +532,33 @@ async function generateAIRecognitionObjectStream({
   } catch (error) {
     throw new AIRecognitionGenerationError(error, capture);
   }
+}
+
+async function settleAIRecognitionStreamTasks(tasks: [
+  Promise<AiGeneratedRecognizeObject>,
+  Promise<void>,
+  Promise<void>,
+]): Promise<AiGeneratedRecognizeObject> {
+  // AI SDK 会在 output/fullStream 不同通道抛错；等待全部 settle 后优先保留带 HTTP body 的 provider 错误。
+  const results = await Promise.allSettled(tasks);
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length > 0) throw selectAIRecognitionStreamError(errors);
+  const output = results[0];
+  if (output.status === "fulfilled") return output.value;
+  throw new Error("AI recognition stream output missing");
+}
+
+function selectAIRecognitionStreamError(errors: unknown[]): unknown {
+  let providerError: unknown | null = null;
+  for (const error of errors) {
+    const providerResponse = providerResponseFromError(error);
+    if (!providerResponse) continue;
+    if (providerResponse.body) return error;
+    providerError ??= error;
+  }
+  return providerError ?? errors[0];
 }
 
 async function consumeAIRecognitionFullStream(
@@ -614,6 +651,7 @@ function diagnosticsFromGeneration(
   });
 }
 
+/** 校验用户设置中的模型、base URL 和 API key；真正的 provider 请求只在通过后才会发出。 */
 export function assertAIRecognitionSettings(settings: AiRecognitionSettings, locale: AppLocale): void {
   if (!settings.model.trim()) {
     throw new HttpError(400, serverText(locale, "aiRecognition.modelRequired"), "AI_MODEL_REQUIRED");
@@ -627,6 +665,7 @@ export function assertAIRecognitionSettings(settings: AiRecognitionSettings, loc
   }
 }
 
+/** 把模型/校验异常收敛成 shared SSE error event，避免向前端透传 AI SDK 原始错误对象。 */
 export function aiRecognitionStreamErrorEvent(locale: AppLocale, error: unknown): AiRecognitionStreamEvent {
   if (error instanceof HttpError) {
     const parsedDetails = aiRecognitionErrorDetailsSchema.safeParse(error.details);
@@ -655,6 +694,7 @@ export function aiRecognitionStreamErrorEvent(locale: AppLocale, error: unknown)
   });
 }
 
+/** 超时事件保留 diagnostics 时仍走同一脱敏结构，前端只通过 code 区分可提示文案。 */
 export function aiRecognitionStreamTimeoutErrorEvent(locale: AppLocale, error: unknown): AiRecognitionStreamEvent {
   const diagnostics = aiRecognitionDiagnosticsFromError(error);
   const cause = aiRecognitionCauseFromError(error);
@@ -666,6 +706,7 @@ export function aiRecognitionStreamTimeoutErrorEvent(locale: AppLocale, error: u
   });
 }
 
+/** schema mismatch 是“模型没有产出可用对象”的用户可诊断失败，不等同于 Worker 内部错误。 */
 export function isAIRecognitionSchemaMismatch(error: unknown): boolean {
   const cause = aiRecognitionCauseFromError(error);
   const message = (cause instanceof Error ? cause.message : String(cause)).toLowerCase();
@@ -675,10 +716,12 @@ export function isAIRecognitionSchemaMismatch(error: unknown): boolean {
     || message.includes("invalid object");
 }
 
+/** 只从内部 run error 取 diagnostics，避免任意外部异常伪造调试信息进入响应。 */
 export function aiRecognitionDiagnosticsFromError(error: unknown): AiRecognitionDiagnostics | null {
   return error instanceof AIRecognitionRunError ? error.diagnostics : null;
 }
 
+/** 解除内部错误包装，供脱敏层读取真实 provider/schema 失败原因。 */
 export function aiRecognitionCauseFromError(error: unknown): unknown {
   return error instanceof AIRecognitionRunError ? error.causeError : error;
 }

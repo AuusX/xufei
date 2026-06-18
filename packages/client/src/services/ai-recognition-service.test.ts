@@ -178,6 +178,39 @@ describe("aiRecognitionService", () => {
     ]);
   });
 
+  it("keeps raw response details from stream errors", async () => {
+    const details = {
+      rawResponseText: "{\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"}",
+    };
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+          type: "recognition/error",
+          message: "AI 识别失败",
+          code: "AI_RECOGNITION_FAILED",
+          details,
+        })}\n\n`));
+        controller.close();
+      },
+    });
+    mocks.apiFetchStream.mockImplementationOnce(async (_input: string, _init: RequestInit, consume: (response: Response) => Promise<unknown>) => (
+      await consume(new Response(stream))
+    ));
+
+    await expect(aiRecognitionService.recognizeSubscriptionsStream({
+      text: "github copilot 20刀 一个月",
+      images: [],
+      thinkingControl: null,
+    })).rejects.toMatchObject({
+      message: "AI 识别失败",
+      code: "AI_RECOGNITION_FAILED",
+      details: {
+        rawResponseText: "{\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"}",
+      },
+    });
+  });
+
   it("loads provider models through the authenticated app API", async () => {
     const modelList = {
       providerType: "openai",

@@ -52,12 +52,21 @@ func main() {
 	if err := validatePBEncryptionKeyEnv(); err != nil {
 		log.Fatal(err)
 	}
+	if err := validateCustomHeadScriptEnv(); err != nil {
+		log.Fatal(err)
+	}
 
 	app := pocketbase.New()
 	if err := registerSubscriptionRenewalCron(app); err != nil {
 		log.Fatal(err)
 	}
 	if err := registerNotificationCron(app); err != nil {
+		log.Fatal(err)
+	}
+	if err := registerCloudBackupCron(app); err != nil {
+		log.Fatal(err)
+	}
+	if err := registerDemoResetCron(app); err != nil {
 		log.Fatal(err)
 	}
 	// Record hook 必须早于 Serve route 注册，这样 API、SDK 和管理后台写入都能共享同一套持久层校验。
@@ -70,7 +79,10 @@ func main() {
 		if err := e.App.RunAppMigrations(); err != nil {
 			return err
 		}
-		return ensureSchema(e.App)
+		if err := ensureSchema(e.App); err != nil {
+			return err
+		}
+		return ensureDemoMode(e.App)
 	})
 
 	registerAuthHooks(app)
@@ -155,7 +167,7 @@ func runHealthcheck() {
 // staticWithSecurityHeaders 为嵌入式前端静态资源补安全响应头。
 // 注意： CSP connect-src 需要覆盖前端直接访问的第三方 API；新增外部 fetch 时要同步这里。
 func staticWithSecurityHeaders(staticFS fs.FS) func(*core.RequestEvent) error {
-	handler := apis.Static(staticFS, true)
+	handler := apis.Static(customHeadScriptFS{FS: staticFS}, true)
 	return func(e *core.RequestEvent) error {
 		headers := e.Response.Header()
 		headers.Set("X-Content-Type-Options", "nosniff")
@@ -167,14 +179,23 @@ func staticWithSecurityHeaders(staticFS fs.FS) func(*core.RequestEvent) error {
 }
 
 func staticContentSecurityPolicy(request *http.Request) string {
+	scriptSources := []string{"'self'", "'wasm-unsafe-eval'"}
+	connectSources := []string{"'self'", "https://cdn.jsdelivr.net", "https://latest.currency-api.pages.dev", "https://www.floatrates.com"}
+	if script, ok := customHeadScriptFromEnv(); ok {
+		// 自定义 head 脚本是部署者显式打开的外部执行边界；注入和 CSP 必须从同一份校验结果派生。
+		scriptSources = appendUniqueString(scriptSources, script.ScriptOrigin)
+		for _, origin := range script.ConnectOrigins {
+			connectSources = appendUniqueString(connectSources, origin)
+		}
+	}
 	directives := []string{
 		"default-src 'self'",
 		// wasm-unsafe-eval 只给前端 Worker 内 sql.js 解析用户本地 Wallos DB；不允许后端代请求 Wallos URL。
-		"script-src 'self' 'wasm-unsafe-eval'",
+		"script-src " + strings.Join(scriptSources, " "),
 		"style-src 'self' 'unsafe-inline'",
 		"font-src 'self' data:",
 		"img-src 'self' data: blob: " + staticImageSources(request),
-		"connect-src 'self' https://cdn.jsdelivr.net https://latest.currency-api.pages.dev https://www.floatrates.com",
+		"connect-src " + strings.Join(connectSources, " "),
 		"object-src 'none'",
 		"base-uri 'self'",
 		"frame-ancestors 'none'",
@@ -191,39 +212,4 @@ func staticImageSources(request *http.Request) string {
 		return "https:"
 	}
 	return "http: https:"
-}
-
-func externalRequestProto(request *http.Request) string {
-	if proto := forwardedProto(request.Header.Get("Forwarded")); proto != "" {
-		return proto
-	}
-	if proto := strings.TrimSpace(request.Header.Get("X-Forwarded-Proto")); proto != "" {
-		if comma := strings.Index(proto, ","); comma >= 0 {
-			proto = proto[:comma]
-		}
-		proto = strings.ToLower(strings.TrimSpace(proto))
-		if proto == "http" || proto == "https" {
-			return proto
-		}
-	}
-	if request.TLS != nil {
-		return "https"
-	}
-	return "http"
-}
-
-func forwardedProto(value string) string {
-	for _, forwardedValue := range strings.Split(value, ",") {
-		for _, part := range strings.Split(forwardedValue, ";") {
-			pair := strings.SplitN(strings.TrimSpace(part), "=", 2)
-			if len(pair) != 2 || !strings.EqualFold(strings.TrimSpace(pair[0]), "proto") {
-				continue
-			}
-			proto := strings.ToLower(strings.Trim(strings.TrimSpace(pair[1]), `"`))
-			if proto == "http" || proto == "https" {
-				return proto
-			}
-		}
-	}
-	return ""
 }

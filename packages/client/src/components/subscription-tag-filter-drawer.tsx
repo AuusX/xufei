@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Drawer } from "vaul";
 import { Filter, Search, X } from "lucide-react";
 
+import { SubscriptionFilterPopoverFrame } from "@/components/subscription-filter-popover-frame";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverTrigger } from "@/components/ui/popover";
 import { useI18n } from "@/i18n/I18nProvider";
 import { cn } from "@/lib/utils";
 
@@ -150,29 +151,16 @@ export function SubscriptionTagFilterPopover({
         </PopoverTrigger>
       </div>
 
-      <PopoverContent
-        align="end"
-        sideOffset={8}
-        className="w-[min(24rem,calc(100vw-2rem))] overflow-hidden border-border bg-popover p-0 text-popover-foreground"
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-foreground">{t("subscriptions.tags.drawerTitle")}</p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="-mr-2 h-8 w-8 text-muted-foreground"
-            onClick={() => setOpen(false)}
-          >
-            <X className="h-4 w-4" />
-            <span className="sr-only">{t("common.close")}</span>
-          </Button>
-        </div>
-
-        <div className="border-b border-border px-4 py-3">
-          <div className="relative">
+      {/* 桌面标签筛选和分类共用同一条高度链；H5 Drawer 继续独立处理批量选择后的确认提交。 */}
+      <SubscriptionFilterPopoverFrame
+        title={t("subscriptions.tags.drawerTitle")}
+        closeLabel={t("common.close")}
+        onClose={() => setOpen(false)}
+        contentTestId="desktop-tag-filter-popover"
+        scrollTestId="desktop-tag-filter-scroll"
+        footerTestId="desktop-tag-filter-footer"
+        searchInput={(
+          <>
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={searchQuery}
@@ -180,31 +168,10 @@ export function SubscriptionTagFilterPopover({
               placeholder={t("subscriptions.tags.searchPlaceholder")}
               className="h-10 border-border bg-secondary pl-10"
             />
-          </div>
-        </div>
-
-        <div className="max-h-72 overflow-y-auto p-4">
-          {visibleTags.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {visibleTags.map((tag) => (
-                <TagFilterChip
-                  key={tag}
-                  tag={tag}
-                  selected={selectedTags.includes(tag)}
-                  onToggle={() => onToggleTag(tag)}
-                  className="min-h-9 px-3 text-sm"
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="flex min-h-32 items-center justify-center rounded-lg border border-dashed border-border bg-secondary/40 px-4 text-center text-sm text-muted-foreground">
-              {t("subscriptions.tags.emptyMatch")}
-            </div>
-          )}
-        </div>
-
-        {selectedTags.length > 0 && (
-          <div className="flex justify-end border-t border-border bg-card px-4 py-3">
+          </>
+        )}
+        footer={
+          selectedTags.length > 0 ? (
             <Button
               type="button"
               variant="ghost"
@@ -213,9 +180,27 @@ export function SubscriptionTagFilterPopover({
             >
               {t("subscriptions.tags.clearSelection")}
             </Button>
+          ) : undefined
+        }
+      >
+        {visibleTags.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {visibleTags.map((tag) => (
+              <TagFilterChip
+                key={tag}
+                tag={tag}
+                selected={selectedTags.includes(tag)}
+                onToggle={() => onToggleTag(tag)}
+                className="min-h-9 px-3 text-sm"
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex min-h-32 items-center justify-center rounded-lg border border-dashed border-border bg-secondary/40 px-4 text-center text-sm text-muted-foreground">
+            {t("subscriptions.tags.emptyMatch")}
           </div>
         )}
-      </PopoverContent>
+      </SubscriptionFilterPopoverFrame>
     </Popover>
   );
 }

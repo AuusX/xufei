@@ -8,6 +8,7 @@
  * 注意： 搜索评分需要稳定，改动会直接影响用户输入时的选项排序。
  */
 import { formatTimeZoneOffset } from "@/lib/time/time-zone";
+import { getIntlCurrencyIdentityLabel } from "@/lib/currency-data";
 import type { ConfigItem } from "@/types/config";
 import type { CurrencyOption, CurrencyRegion } from "@/types/subscription";
 import { localizedLabel, type Locale } from "@/i18n/locales";
@@ -103,51 +104,25 @@ function uniq(values: readonly (string | undefined | null)[]): string[] {
   return out;
 }
 
-function extractCurrencySymbol(label: string): string | undefined {
-  // 内置货币 label 采用 `名称 (符号)` 形式；只读取括号内容，避免把多语言名称当作符号。
-  return /\(([^)]+)\)/.exec(label)?.[1]?.trim();
-}
-
-function getIntlCurrencyName(currency: string, locale: string): string | undefined {
-  try {
-    const displayNames = new Intl.DisplayNames([locale], { type: "currency" });
-    return displayNames.of(currency);
-  } catch {
-    return undefined;
-  }
-}
-
-function getIntlCurrencySymbol(currency: string, locale: string): string | undefined {
-  try {
-    const parts = new Intl.NumberFormat(locale, {
-      style: "currency",
-      currency,
-      currencyDisplay: "narrowSymbol",
-      maximumFractionDigits: 0,
-    }).formatToParts(0);
-    return parts.find((part) => part.type === "currency")?.value;
-  } catch {
-    return undefined;
-  }
-}
-
 /** 为货币生成多语言/符号/区域关键词，支持 CNY、人民币、¥ 等搜索方式。 */
 export function createCurrencyKeywords(
   currency: Pick<CurrencyOption, "value" | "labels" | "region">,
 ): string[] {
   const zhLabel = localizedLabel(currency.labels, "zh-CN");
   const enLabel = localizedLabel(currency.labels, "en-US");
-  const symbol = extractCurrencySymbol(zhLabel) ?? extractCurrencySymbol(enLabel);
+  const zhIdentity = getIntlCurrencyIdentityLabel(currency.value, "zh-CN");
+  const enIdentity = getIntlCurrencyIdentityLabel(currency.value, "en-US");
   return uniq([
     currency.value,
     currency.value.toLowerCase(),
     zhLabel,
     enLabel,
-    symbol,
-    getIntlCurrencySymbol(currency.value, "zh-CN"),
-    getIntlCurrencySymbol(currency.value, "en-US"),
-    getIntlCurrencyName(currency.value, "zh-CN"),
-    getIntlCurrencyName(currency.value, "en-US"),
+    zhIdentity.label,
+    enIdentity.label,
+    zhIdentity.symbol,
+    enIdentity.symbol,
+    zhIdentity.name,
+    enIdentity.name,
     ...CURRENCY_REGION_KEYWORDS[currency.region],
   ]);
 }
@@ -158,7 +133,6 @@ export function createCurrencySelectOptions(params: {
   currencyOptions: readonly CurrencyOption[];
   includeDisabledCurrent?: string;
   locale?: Locale;
-  formatLabel?: (item: ConfigItem, option: CurrencyOption | undefined, locale: Locale) => string;
 }): SearchableSelectOption[] {
   const locale = params.locale ?? "zh-CN";
   const optionByValue = new Map(params.currencyOptions.map((option) => [option.value, option]));
@@ -171,7 +145,7 @@ export function createCurrencySelectOptions(params: {
   const items: SearchableSelectOption[] = [];
   if (selected && !selectedEnabled) {
     const option = optionByValue.get(selected.value);
-    const label = params.formatLabel?.(selected, option, locale) ?? (option ? localizedLabel(option.labels, locale) : localizedLabel(selected.labels, locale));
+    const label = option ? localizedLabel(option.labels, locale) : localizedLabel(selected.labels, locale);
     items.push({
       value: selected.value,
       label: translateStaticMessage(locale, "common.optionDisabled", { label }),
@@ -182,7 +156,7 @@ export function createCurrencySelectOptions(params: {
 
   for (const item of enabled) {
     const option = optionByValue.get(item.value);
-    const label = params.formatLabel?.(item, option, locale) ?? (option ? localizedLabel(option.labels, locale) : localizedLabel(item.labels, locale));
+    const label = option ? localizedLabel(option.labels, locale) : localizedLabel(item.labels, locale);
     items.push({
       value: item.value,
       label,

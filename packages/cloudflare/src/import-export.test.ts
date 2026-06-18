@@ -45,6 +45,7 @@ vi.mock("./db", async (importOriginal) => {
 });
 
 function envFixture() {
+  // apply 用例通过捕获 bind 顺序验证 D1 写入形状；preview 失败时 batch 必须完全不被触发。
   const statements: Array<{ sql: string; values: unknown[] }> = [];
   const db = {
     prepare: vi.fn((sql: string) => ({
@@ -60,7 +61,7 @@ function envFixture() {
     batch: vi.fn(async () => ({ success: true, results: [], meta: {} })),
   };
   return {
-    env: { DB: db as unknown as D1Database, ASSETS_BUCKET: {} as R2Bucket } as Env,
+    env: { DB: db as unknown as D1Database, ASSETS: {} as Fetcher, ASSETS_BUCKET: {} as R2Bucket } as Env,
     db,
     statements,
   };
@@ -220,6 +221,40 @@ describe("Cloudflare import", () => {
     expect(db.batch).toHaveBeenCalledTimes(1);
     const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
     expect(insert?.values[24]).toBe(-2);
+  });
+
+  it("preserves cost sharing before binding D1 statements", async () => {
+    const { env, db, statements } = envFixture();
+    const costSharing = {
+      enabled: true,
+      payerMemberId: "self",
+      selfMemberId: "self",
+      splitMode: "custom",
+      members: [
+        { id: "self", name: "Me", included: true, customAmount: 7 },
+        { id: "partner", name: "Partner", included: true, customAmount: 5 },
+      ],
+    };
+    const response = await applyImport(requestFor("/api/app/import/apply", importPayload([
+      importSubscription({ costSharing }),
+    ])), env);
+
+    expect(response.status).toBe(200);
+    expect(db.batch).toHaveBeenCalledTimes(1);
+    const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
+    expect(insert?.sql).toContain("cost_sharing_json");
+    expect(JSON.parse(insert?.values[28] as string)).toEqual(costSharing);
+  });
+
+  it("refreshes scheduler state after applying subscription imports", async () => {
+    const { env, db, statements } = envFixture();
+    const response = await applyImport(requestFor("/api/app/import/apply", importPayload([
+      importSubscription({ autoRenew: true, repeatReminderEnabled: true }),
+    ])), env);
+
+    expect(response.status).toBe(200);
+    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(statements.some((statement) => statement.sql.includes("INSERT INTO subscription_scheduler_state"))).toBe(true);
   });
 
   it("defaults missing import autoRenew to manual renewal before binding D1 statements", async () => {

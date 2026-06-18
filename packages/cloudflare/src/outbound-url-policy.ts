@@ -7,6 +7,11 @@ type Ipv4Octets = [number, number, number, number];
 const DNS_JSON_ENDPOINT = "https://cloudflare-dns.com/dns-query";
 const LOCAL_HOSTNAMES = new Set(["localhost"]);
 
+/**
+ * assertSafeOutboundUrl 保护通知 Webhook 等用户配置外链。
+ *
+ * Worker 需要主动请求这些 URL，因此必须同时限制 HTTPS、凭据 URL、本地域名和解析到内网/保留网段的地址。
+ */
 export async function assertSafeOutboundUrl(raw: string, locale: AppLocale, resolveHost: OutboundResolver = resolveHostViaDoh): Promise<URL> {
   let url: URL;
   try {
@@ -31,6 +36,7 @@ export async function assertSafeOutboundUrl(raw: string, locale: AppLocale, reso
 }
 
 async function resolveHostViaDoh(hostname: string): Promise<string[]> {
+  // Workers 没有 Node DNS API；用 Cloudflare DoH 同时查 A/AAAA，避免只检查字面 hostname 而漏掉内网解析。
   const results = await Promise.all(["A", "AAAA"].map(async (type) => {
     const url = new URL(DNS_JSON_ENDPOINT);
     url.searchParams.set("name", hostname);
@@ -71,6 +77,7 @@ function parseIpv4Literal(value: string): Ipv4Octets | null {
 }
 
 function parseIpv4Part(value: string): number | null {
+  // 浏览器/URL 解析可能接受十六进制、八进制或整数 IPv4；SSRF 防护必须先规范化再判断网段。
   if (/^0x[0-9a-f]+$/i.test(value)) return Number.parseInt(value.slice(2), 16);
   if (/^0[0-7]+$/.test(value)) return Number.parseInt(value.slice(1), 8);
   if (/^\d+$/.test(value)) return Number.parseInt(value, 10);
@@ -104,6 +111,25 @@ function isUnsafeIpv6(value: string): boolean {
   const ip = value.toLowerCase().replace(/^\[|\]$/g, "");
   if (ip === "::1" || ip === "::") return true;
   if (ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80:")) return true;
-  if (ip.startsWith("::ffff:")) return isUnsafeOutboundIp(ip.slice("::ffff:".length));
+  const mapped = parseIpv4MappedIpv6(ip);
+  if (mapped) return isUnsafeIpv4(mapped);
   return false;
+}
+
+function parseIpv4MappedIpv6(value: string): Ipv4Octets | null {
+  if (!value.startsWith("::ffff:")) return null;
+  const suffix = value.slice("::ffff:".length);
+  const dotted = parseIpv4Literal(suffix);
+  if (dotted) return dotted;
+  // URL 会把 ::ffff:127.0.0.1 规范化成 ::ffff:7f00:1；这里还原后再走 IPv4 私网判断。
+  const parts = suffix.split(":");
+  if (parts.length !== 2) return null;
+  const words = parts.map((part) => Number.parseInt(part, 16));
+  if (words.some((word) => !Number.isInteger(word) || word < 0 || word > 0xffff)) return null;
+  return [
+    (words[0]! >>> 8) & 0xff,
+    words[0]! & 0xff,
+    (words[1]! >>> 8) & 0xff,
+    words[1]! & 0xff,
+  ];
 }

@@ -19,12 +19,17 @@ type SubscriptionOverrides = Partial<SubscriptionBaseFixture> & (
 const mocks = vi.hoisted(() => ({
   handleAddSubscription: vi.fn(),
   refreshRates: vi.fn(),
+  rechartsBarChartProps: [] as Array<Record<string, unknown>>,
+  rechartsBarProps: [] as Array<Record<string, unknown>>,
   rechartsCellProps: [] as Array<Record<string, unknown>>,
+  rechartsCartesianGridProps: [] as Array<Record<string, unknown>>,
   rechartsLegendProps: [] as Array<Record<string, unknown>>,
   rechartsPieChartProps: [] as Array<Record<string, unknown>>,
   rechartsPieProps: [] as Array<Record<string, unknown>>,
   rechartsResponsiveContainerProps: [] as Array<Record<string, unknown>>,
   rechartsTooltipProps: [] as Array<Record<string, unknown>>,
+  rechartsXAxisProps: [] as Array<Record<string, unknown>>,
+  rechartsYAxisProps: [] as Array<Record<string, unknown>>,
   useCustomConfig: vi.fn(),
   useSettings: vi.fn(),
   useSubscriptionCrud: vi.fn(),
@@ -36,6 +41,18 @@ vi.mock("@/components/header", () => ({
 }));
 
 vi.mock("recharts", () => ({
+  Bar: (props: Record<string, unknown>) => {
+    mocks.rechartsBarProps.push(props);
+    return null;
+  },
+  BarChart: ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) => {
+    mocks.rechartsBarChartProps.push(props);
+    return <div>{children}</div>;
+  },
+  CartesianGrid: (props: Record<string, unknown>) => {
+    mocks.rechartsCartesianGridProps.push(props);
+    return null;
+  },
   Cell: (props: Record<string, unknown>) => {
     mocks.rechartsCellProps.push(props);
     return null;
@@ -58,6 +75,14 @@ vi.mock("recharts", () => ({
   },
   Tooltip: (props: Record<string, unknown>) => {
     mocks.rechartsTooltipProps.push(props);
+    return null;
+  },
+  XAxis: (props: Record<string, unknown>) => {
+    mocks.rechartsXAxisProps.push(props);
+    return null;
+  },
+  YAxis: (props: Record<string, unknown>) => {
+    mocks.rechartsYAxisProps.push(props);
     return null;
   },
 }));
@@ -160,12 +185,17 @@ function renderStatistics() {
 
 describe("Statistics page", () => {
   beforeEach(() => {
+    mocks.rechartsBarChartProps.length = 0;
+    mocks.rechartsBarProps.length = 0;
     mocks.rechartsCellProps.length = 0;
+    mocks.rechartsCartesianGridProps.length = 0;
     mocks.rechartsLegendProps.length = 0;
     mocks.rechartsPieChartProps.length = 0;
     mocks.rechartsPieProps.length = 0;
     mocks.rechartsResponsiveContainerProps.length = 0;
     mocks.rechartsTooltipProps.length = 0;
+    mocks.rechartsXAxisProps.length = 0;
+    mocks.rechartsYAxisProps.length = 0;
     mocks.useCustomConfig.mockReturnValue({ config: DEFAULT_CUSTOM_CONFIG });
     mocks.useSettings.mockReturnValue({
       data: {
@@ -196,7 +226,7 @@ describe("Statistics page", () => {
 
     const skeleton = screen.getByTestId("statistics-skeleton");
     expect(skeleton).toHaveAttribute("aria-hidden", "true");
-    expect(skeleton.querySelectorAll(".rounded-xl.border.border-border.bg-card")).toHaveLength(14);
+    expect(skeleton.querySelectorAll(".rounded-xl.border.border-border.bg-card")).toHaveLength(15);
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
@@ -218,7 +248,7 @@ describe("Statistics page", () => {
   it("disables position animation for all chart tooltips", () => {
     renderStatistics();
 
-    expect(mocks.rechartsTooltipProps).toHaveLength(3);
+    expect(mocks.rechartsTooltipProps).toHaveLength(4);
     for (const props of mocks.rechartsTooltipProps) {
       expect(props["isAnimationActive"]).toBe(false);
       expect(props["offset"]).toBe(12);
@@ -254,7 +284,10 @@ describe("Statistics page", () => {
         }),
       );
     }
-    expect(screen.getAllByRole("list")).toHaveLength(3);
+    const visibleChartLegends = screen
+      .getAllByRole("list")
+      .filter((list) => list.getAttribute("aria-label") !== "未来 12 个月费用走势明细");
+    expect(visibleChartLegends).toHaveLength(3);
   });
 
   it("gives Recharts positive dimensions before ResizeObserver reports layout", () => {
@@ -263,8 +296,9 @@ describe("Statistics page", () => {
     for (const frame of screen.getAllByTestId("statistics-chart-frame")) {
       expect(frame).toHaveClass("recharts-frame");
     }
-    expect(mocks.rechartsResponsiveContainerProps).toHaveLength(3);
-    for (const props of mocks.rechartsResponsiveContainerProps) {
+    const donutContainerProps = mocks.rechartsResponsiveContainerProps.filter((props) => props["height"] === 220);
+    expect(donutContainerProps).toHaveLength(3);
+    for (const props of donutContainerProps) {
       const initialDimension = props["initialDimension"] as { width: number; height: number };
 
       expect(props).toEqual(
@@ -279,6 +313,71 @@ describe("Statistics page", () => {
       expect(initialDimension.width).toBeGreaterThan(0);
       expect(initialDimension.height).toBe(220);
     }
+  });
+
+  it("renders the trend bar chart with cashflow by default and switches to amortized cost", async () => {
+    const user = userEvent.setup();
+
+    renderStatistics();
+
+    expect(screen.getByRole("heading", { name: "费用走势" })).toBeInTheDocument();
+    expect(screen.getByText("按未来 12 个月到期或续费日汇总预计扣费。")).toBeInTheDocument();
+    expect(mocks.rechartsBarChartProps).toHaveLength(1);
+    expect(mocks.rechartsBarChartProps[0]).toEqual(
+      expect.objectContaining({
+        accessibilityLayer: true,
+        title: "未来扣费",
+        tabIndex: 0,
+      }),
+    );
+    expect(mocks.rechartsBarProps).toEqual([
+      expect.objectContaining({
+        dataKey: "cashflow",
+        fill: "hsl(var(--chart-1))",
+        radius: [4, 4, 0, 0],
+        isAnimationActive: false,
+        activeBar: {
+          fill: "hsl(var(--chart-1))",
+          fillOpacity: 0.88,
+          stroke: "hsl(var(--chart-1))",
+          strokeOpacity: 0.5,
+          strokeWidth: 1,
+        },
+      }),
+    ]);
+    expect(mocks.rechartsTooltipProps.filter((props) => props["cursor"] === false)).toHaveLength(1);
+    expect(mocks.rechartsYAxisProps).toEqual([
+      expect.objectContaining({
+        domain: [0, "dataMax"],
+        width: 72,
+      }),
+    ]);
+
+    await user.click(screen.getByRole("tab", { name: "月均摊销" }));
+
+    expect(screen.getByText("按当前有效订阅组合估算未来 12 个月的月均成本归属。")).toBeInTheDocument();
+    const lastBarChartProps = mocks.rechartsBarChartProps[mocks.rechartsBarChartProps.length - 1];
+    const lastBarProps = mocks.rechartsBarProps[mocks.rechartsBarProps.length - 1];
+    expect(lastBarChartProps).toEqual(expect.objectContaining({ title: "月均摊销" }));
+    expect(lastBarProps).toEqual(expect.objectContaining({ dataKey: "amortized" }));
+  });
+
+  it("gives the trend chart positive dimensions before ResizeObserver reports layout", () => {
+    renderStatistics();
+
+    expect(screen.getByTestId("statistics-trend-chart-frame")).toHaveClass("recharts-frame");
+    const trendFrameProps = mocks.rechartsResponsiveContainerProps.find((props) => props["height"] === 280);
+    expect(trendFrameProps).toEqual(
+      expect.objectContaining({
+        width: "100%",
+        height: 280,
+        minWidth: 0,
+        debounce: 50,
+      }),
+    );
+    const initialDimension = trendFrameProps?.["initialDimension"] as { width: number; height: number };
+    expect(initialDimension.width).toBeGreaterThan(0);
+    expect(initialDimension.height).toBe(280);
   });
 
   it("uses the same subtle hover feedback as the dashboard spending chart", () => {

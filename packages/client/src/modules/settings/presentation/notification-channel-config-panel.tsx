@@ -9,6 +9,7 @@ import { ExternalLink, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { NumericInput } from '@/components/ui/numeric-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { useI18n } from '@/i18n/I18nProvider';
@@ -34,16 +35,33 @@ const NOTIFICATION_TEST_LABEL_KEYS: Record<NotificationChannel, MessageKey> = {
   serverchan: "settings.testChannel.serverchan",
 };
 
+const SMTP_PORT_MAX = 65_535;
+
+type NumericAllowedValues = {
+  floatValue: number | undefined;
+  value: string;
+};
+
+function isAllowedSmtpPortValue(values: NumericAllowedValues) {
+  return values.value === "" || (
+    /^[1-9]\d{0,4}$/.test(values.value)
+    && values.floatValue !== undefined
+    && values.floatValue <= SMTP_PORT_MAX
+  );
+}
+
 function NotificationTestButton({
   channel,
   label,
   testingChannel,
   onTest,
+  disabled,
 }: {
   channel: NotificationChannel;
   label: string;
   testingChannel: NotificationChannel | null;
   onTest: (channel: NotificationChannel) => void;
+  disabled: boolean;
 }) {
   const { t } = useI18n();
   const isTesting = testingChannel === channel;
@@ -54,7 +72,7 @@ function NotificationTestButton({
       variant="outline"
       className="relative border-primary text-primary hover:bg-primary/10"
       onClick={() => onTest(channel)}
-      disabled={testingChannel !== null}
+      disabled={disabled || testingChannel !== null}
       aria-busy={isTesting ? true : undefined}
     >
       <LoadingButtonContent loading={isTesting} loadingLabel={t("settings.testing")}>
@@ -93,6 +111,7 @@ export function NotificationChannelConfigPanel({
   updateSetting,
   testingChannel,
   onTest,
+  disabled = false,
 }: {
   channel: NotificationChannel;
   settings: AppSettings;
@@ -100,6 +119,7 @@ export function NotificationChannelConfigPanel({
   updateSetting: UpdateSetting;
   testingChannel: NotificationChannel | null;
   onTest: (channel: NotificationChannel) => void;
+  disabled?: boolean;
 }) {
   const { t, label } = useI18n();
   const help = getNotificationChannelHelp(channel, t);
@@ -137,6 +157,7 @@ export function NotificationChannelConfigPanel({
                 id="telegramBot"
                 placeholder="xx:xxxxxxxxx-token"
                 value={settings.telegramBotToken}
+                disabled={disabled}
                 onChange={(e) => updateSetting('telegramBotToken', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -147,6 +168,7 @@ export function NotificationChannelConfigPanel({
                 id="telegramChat"
                 placeholder={t("settings.telegramChatPlaceholder")}
                 value={settings.telegramChatId}
+                disabled={disabled}
                 onChange={(e) => updateSetting('telegramChatId', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -158,6 +180,7 @@ export function NotificationChannelConfigPanel({
               label={testChannelLabel}
               testingChannel={testingChannel}
               onTest={onTest}
+              disabled={disabled}
             />
           </div>
         </>
@@ -171,6 +194,7 @@ export function NotificationChannelConfigPanel({
               id="notifyxKey"
               placeholder="napi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
               value={settings.notifyxApiKey}
+              disabled={disabled}
               onChange={(e) => updateSetting('notifyxApiKey', e.target.value)}
               className="border-border bg-secondary"
             />
@@ -182,6 +206,7 @@ export function NotificationChannelConfigPanel({
               label={testChannelLabel}
               testingChannel={testingChannel}
               onTest={onTest}
+              disabled={disabled}
             />
           </div>
         </>
@@ -202,6 +227,7 @@ export function NotificationChannelConfigPanel({
                 spellCheck={false}
                 placeholder="https://your-webhook-endpoint.com/path"
                 value={settings.webhookUrl}
+                disabled={disabled}
                 onChange={(e) => updateSetting('webhookUrl', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -214,6 +240,7 @@ export function NotificationChannelConfigPanel({
                 <Label htmlFor="webhookMethod">{t("settings.webhookMethod")}</Label>
                 <Select
                   value={settings.webhookMethod}
+                  disabled={disabled}
                   onValueChange={(value) => updateSetting('webhookMethod', value as 'GET' | 'POST')}
                 >
                   <SelectTrigger className="border-border bg-secondary">
@@ -232,6 +259,7 @@ export function NotificationChannelConfigPanel({
                 id="webhookHeaders"
                 placeholder={WEBHOOK_HEADERS_PLACEHOLDER}
                 value={settings.webhookHeaders}
+                disabled={disabled}
                 onChange={(e) => updateSetting('webhookHeaders', e.target.value)}
                 className="min-h-[80px] border-border bg-secondary font-mono text-sm"
               />
@@ -243,6 +271,7 @@ export function NotificationChannelConfigPanel({
                 id="webhookPayload"
                 placeholder={WEBHOOK_PAYLOAD_PLACEHOLDER}
                 value={settings.webhookPayload}
+                disabled={disabled}
                 onChange={(e) => updateSetting('webhookPayload', e.target.value)}
                 className="min-h-[80px] border-border bg-secondary font-mono text-sm"
               />
@@ -257,6 +286,7 @@ export function NotificationChannelConfigPanel({
               label={testChannelLabel}
               testingChannel={testingChannel}
               onTest={onTest}
+              disabled={disabled}
             />
           </div>
         </>
@@ -277,6 +307,7 @@ export function NotificationChannelConfigPanel({
                 spellCheck={false}
                 placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-xxxx"
                 value={settings.wechatWebhookUrl}
+                disabled={disabled}
                 onChange={(e) => updateSetting('wechatWebhookUrl', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -287,6 +318,7 @@ export function NotificationChannelConfigPanel({
                 <Label htmlFor="wechatMsgType">{t("settings.messageType")}</Label>
                 <Select
                   value={settings.wechatMessageType}
+                  disabled={disabled}
                   onValueChange={(value) => updateSetting('wechatMessageType', value as 'text' | 'markdown')}
                 >
                   <SelectTrigger className="border-border bg-secondary">
@@ -304,6 +336,7 @@ export function NotificationChannelConfigPanel({
               checked={settings.wechatAddModeTag}
               onCheckedChange={(checked) => updateSetting('wechatAddModeTag', checked)}
               label={t("settings.wechatModeTag")}
+              disabled={disabled}
             />
             <div className="grid gap-2">
               <Label htmlFor="wechatPhones">{t("settings.wechatPhones")}</Label>
@@ -316,6 +349,7 @@ export function NotificationChannelConfigPanel({
                 autoComplete="tel"
                 placeholder="135xxxxxxxx,136xxxxxxxx"
                 value={settings.wechatAtPhones}
+                disabled={disabled}
                 onChange={(e) => updateSetting('wechatAtPhones', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -326,6 +360,7 @@ export function NotificationChannelConfigPanel({
               checked={settings.wechatAtAll}
               onCheckedChange={(checked) => updateSetting('wechatAtAll', checked)}
               label={t("settings.wechatAtAll")}
+              disabled={disabled}
             />
           </div>
           <div className="mt-4 flex justify-end">
@@ -334,6 +369,7 @@ export function NotificationChannelConfigPanel({
               label={testChannelLabel}
               testingChannel={testingChannel}
               onTest={onTest}
+              disabled={disabled}
             />
           </div>
         </>
@@ -349,20 +385,25 @@ export function NotificationChannelConfigPanel({
                   id="smtpHost"
                   placeholder="smtp.example.com"
                   value={settings.smtpHost}
+                  disabled={disabled}
                   onChange={(e) => updateSetting('smtpHost', e.target.value)}
                   className="border-border bg-secondary"
                 />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="smtpPort">{t("settings.smtpPort")}</Label>
-                <Input
+                <NumericInput
                   id="smtpPort"
                   name="smtpPort"
                   inputMode="numeric"
                   enterKeyHint="next"
                   placeholder="587"
                   value={settings.smtpPort}
-                  onChange={(e) => updateSetting('smtpPort', e.target.value)}
+                  allowNegative={false}
+                  decimalScale={0}
+                  isAllowed={isAllowedSmtpPortValue}
+                  disabled={disabled}
+                  onRawValueChange={(value) => updateSetting('smtpPort', value)}
                   className="border-border bg-secondary"
                 />
               </div>
@@ -373,6 +414,7 @@ export function NotificationChannelConfigPanel({
               onCheckedChange={(checked) => updateSetting('smtpSecure', checked)}
               label={t("settings.smtpSecure")}
               description={t("settings.smtpSecureHelp")}
+              disabled={disabled}
             />
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="grid gap-2">
@@ -381,6 +423,7 @@ export function NotificationChannelConfigPanel({
                   id="smtpUser"
                   name="smtpUser"
                   value={settings.smtpUser}
+                  disabled={disabled}
                   onChange={(e) => updateSetting('smtpUser', e.target.value)}
                   className="border-border bg-secondary"
                   autoComplete="username"
@@ -394,6 +437,7 @@ export function NotificationChannelConfigPanel({
                   name="smtpPassword"
                   type="password"
                   value={settings.smtpPassword}
+                  disabled={disabled}
                   onChange={(e) => updateSetting('smtpPassword', e.target.value)}
                   className="border-border bg-secondary"
                   autoComplete="new-password"
@@ -408,6 +452,7 @@ export function NotificationChannelConfigPanel({
                   id="smtpFrom"
                   placeholder="Renewlet <noreply@example.com>"
                   value={settings.smtpFrom}
+                  disabled={disabled}
                   onChange={(e) => updateSetting('smtpFrom', e.target.value)}
                   className="border-border bg-secondary"
                 />
@@ -418,6 +463,7 @@ export function NotificationChannelConfigPanel({
                   id="smtpReplyTo"
                   placeholder="support@example.com"
                   value={settings.smtpReplyTo}
+                  disabled={disabled}
                   onChange={(e) => updateSetting('smtpReplyTo', e.target.value)}
                   className="border-border bg-secondary"
                 />
@@ -432,6 +478,7 @@ export function NotificationChannelConfigPanel({
               onCheckedChange={(checked) => updateSetting('notifyMultipleAddresses', checked)}
               label={t("settings.multipleRecipients")}
               description={t("settings.multipleRecipientsHelp")}
+              disabled={disabled}
             />
             <div className="grid gap-2">
               <Label htmlFor="recipientEmail">{t("settings.recipientEmail")}</Label>
@@ -440,6 +487,7 @@ export function NotificationChannelConfigPanel({
                 type={settings.notifyMultipleAddresses ? 'text' : 'email'}
                 placeholder={settings.notifyMultipleAddresses ? 'a@example.com, b@example.com' : 'user@example.com'}
                 value={settings.recipientEmail}
+                disabled={disabled}
                 onChange={(e) => updateSetting('recipientEmail', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -452,6 +500,7 @@ export function NotificationChannelConfigPanel({
               label={testChannelLabel}
               testingChannel={testingChannel}
               onTest={onTest}
+              disabled={disabled}
             />
           </div>
         </>
@@ -466,6 +515,7 @@ export function NotificationChannelConfigPanel({
                 id="barkUrl"
                 placeholder="https://api.day.app"
                 value={settings.barkServerUrl}
+                disabled={disabled}
                 onChange={(e) => updateSetting('barkServerUrl', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -479,6 +529,7 @@ export function NotificationChannelConfigPanel({
                 id="barkKey"
                 placeholder="xxxxxxxxxxxxxxxxxxxxxxxx"
                 value={settings.barkDeviceKey}
+                disabled={disabled}
                 onChange={(e) => updateSetting('barkDeviceKey', e.target.value)}
                 className="border-border bg-secondary"
               />
@@ -490,6 +541,7 @@ export function NotificationChannelConfigPanel({
               onCheckedChange={(checked) => updateSetting('barkSilentPush', checked)}
               label={t("settings.barkSilent")}
               description={t("settings.barkSilentHelp")}
+              disabled={disabled}
             />
           </div>
           <div className="mt-4 flex justify-end">
@@ -498,6 +550,7 @@ export function NotificationChannelConfigPanel({
               label={testChannelLabel}
               testingChannel={testingChannel}
               onTest={onTest}
+              disabled={disabled}
             />
           </div>
         </>
@@ -514,6 +567,7 @@ export function NotificationChannelConfigPanel({
               spellCheck={false}
               placeholder={t("settings.serverchanSendKeyPlaceholder")}
               value={settings.serverchanSendKey}
+              disabled={disabled}
               onChange={(e) => updateSetting('serverchanSendKey', e.target.value)}
               className="border-border bg-secondary"
             />
@@ -525,6 +579,7 @@ export function NotificationChannelConfigPanel({
               label={testChannelLabel}
               testingChannel={testingChannel}
               onTest={onTest}
+              disabled={disabled}
             />
           </div>
         </>

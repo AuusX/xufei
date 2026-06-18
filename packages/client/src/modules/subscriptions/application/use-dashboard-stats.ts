@@ -14,9 +14,10 @@ export function useDashboardStats(
   defaultCurrency: string,
   convert: (amount: number, from: string, to: string) => number,
   timeZone: string,
+  notificationReminderDays: number,
 ) {
   return useMemo(
-    () => buildDashboardStats({ subscriptions, defaultCurrency, convert, timeZone }),
-    [convert, defaultCurrency, subscriptions, timeZone],
+    () => buildDashboardStats({ subscriptions, defaultCurrency, convert, timeZone, notificationReminderDays }),
+    [convert, defaultCurrency, notificationReminderDays, subscriptions, timeZone],
   );
 }

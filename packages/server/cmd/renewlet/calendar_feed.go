@@ -174,6 +174,27 @@ func handleSubscriptionCalendarFeedDelete(app core.App, e *core.RequestEvent) er
 	return e.JSON(http.StatusOK, newOKResponse())
 }
 
+func handleSubscriptionCalendarICSDownload(app core.App, e *core.RequestEvent) error {
+	locale := requestLocale(e.Request)
+	subscriptionID := strings.TrimSpace(e.Request.PathValue("id"))
+	subscription, err := findCalendarFeedSubscriptionByID(app, e.Auth.Id, subscriptionID)
+	if err != nil || calendarFeedSubscriptionIsBuyout(subscription) {
+		return e.NotFoundError(serverText(locale, "subscription.notFound"), err)
+	}
+	body, err := renderSubscriptionCalendarICSDownload(app, e.Auth.Id, subscription)
+	if err != nil {
+		return e.InternalServerError(serverText(locale, "calendarFeed.renderFailed"), err)
+	}
+	headers := e.Response.Header()
+	headers.Set("Content-Type", "text/calendar; charset=utf-8")
+	headers.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="renewlet-%s.ics"`, safeCalendarFeedFilename(subscription.ID)))
+	headers.Set("Cache-Control", "no-store")
+	headers.Set("X-Content-Type-Options", "nosniff")
+	e.Response.WriteHeader(http.StatusOK)
+	_, writeErr := e.Response.Write([]byte(body))
+	return writeErr
+}
+
 func handleCalendarFeedICS(app core.App, e *core.RequestEvent) error {
 	locale := requestLocale(e.Request)
 	token := strings.TrimSpace(e.Request.URL.Query().Get("token"))
@@ -220,11 +241,12 @@ func renderCalendarFeedICS(app core.App, request *http.Request, feed *core.Recor
 			return "", "", err
 		}
 		body := buildCalendarFeedICS(calendarFeedBuildOptions{
-			Name:      serverFormat(normalizeAppLocale(settings.Locale), "calendarFeed.subscriptionCalendarName", map[string]interface{}{"name": subscription.Name}),
-			SourceURL: sourceURL,
-			Now:       time.Now().UTC(),
-			Settings:  settings,
-			Events:    subscriptionCalendarFeedEvents(subscription, settings, labels),
+			Name:              serverFormat(normalizeAppLocale(settings.Locale), "calendarFeed.subscriptionCalendarName", map[string]interface{}{"name": subscription.Name}),
+			SourceURL:         sourceURL,
+			Now:               time.Now().UTC(),
+			Settings:          settings,
+			Events:            subscriptionCalendarFeedEvents(subscription, settings, labels),
+			RefreshableSource: true,
 		})
 		return body, "renewlet-subscription.ics", nil
 	case calendarFeedScopeAll:
@@ -233,16 +255,36 @@ func renderCalendarFeedICS(app core.App, request *http.Request, feed *core.Recor
 			return "", "", err
 		}
 		body := buildCalendarFeedICS(calendarFeedBuildOptions{
-			Name:      serverText(normalizeAppLocale(settings.Locale), "calendarFeed.calendarName"),
-			SourceURL: sourceURL,
-			Now:       time.Now().UTC(),
-			Settings:  settings,
-			Events:    globalCalendarFeedEvents(subscriptions, settings, time.Now().UTC(), labels),
+			Name:              serverText(normalizeAppLocale(settings.Locale), "calendarFeed.calendarName"),
+			SourceURL:         sourceURL,
+			Now:               time.Now().UTC(),
+			Settings:          settings,
+			Events:            globalCalendarFeedEvents(subscriptions, settings, time.Now().UTC(), labels),
+			RefreshableSource: true,
 		})
 		return body, "renewlet-renewals.ics", nil
 	default:
 		return "", "", sql.ErrNoRows
 	}
+}
+
+func renderSubscriptionCalendarICSDownload(app core.App, userID string, subscription calendarFeedSubscription) (string, error) {
+	settings, err := calendarFeedSettingsForUser(app, userID)
+	if err != nil {
+		return "", err
+	}
+	labels, err := newCalendarFeedLabelResolver(app, userID, settings)
+	if err != nil {
+		return "", err
+	}
+	// 登录态下载是一次性 .ics 文件，不写 SOURCE/TTL，避免外部日历把它误当成可刷新的订阅 feed。
+	return buildCalendarFeedICS(calendarFeedBuildOptions{
+		Name:              serverFormat(normalizeAppLocale(settings.Locale), "calendarFeed.subscriptionCalendarName", map[string]interface{}{"name": subscription.Name}),
+		Now:               time.Now().UTC(),
+		Settings:          settings,
+		Events:            subscriptionCalendarFeedEvents(subscription, settings, labels),
+		RefreshableSource: false,
+	}), nil
 }
 
 func findGlobalCalendarFeedForUser(app core.App, userID string) (*core.Record, error) {
@@ -392,13 +434,7 @@ func newCalendarFeedToken() (string, error) {
 }
 
 func calendarFeedURL(request *http.Request, token string) string {
-	u := url.URL{
-		Scheme: externalRequestProto(request),
-		Host:   request.Host,
-		Path:   "/calendar/renewals.ics",
-	}
-	u.RawQuery = url.Values{"token": []string{token}}.Encode()
-	return u.String()
+	return externalRequestURL(request, "/calendar/renewals.ics", url.Values{"token": []string{token}})
 }
 
 func listCalendarFeedSubscriptions(app core.App, userID string) ([]calendarFeedSubscription, error) {
@@ -530,11 +566,12 @@ func calendarFeedBuiltInPaymentMethodLabelKey(value string) (string, bool) {
 }
 
 type calendarFeedBuildOptions struct {
-	Name      string
-	SourceURL string
-	Now       time.Time
-	Settings  appSettings
-	Events    []calendarFeedEvent
+	Name              string
+	SourceURL         string
+	Now               time.Time
+	Settings          appSettings
+	Events            []calendarFeedEvent
+	RefreshableSource bool
 }
 
 func buildCalendarFeedICS(options calendarFeedBuildOptions) string {
@@ -545,9 +582,11 @@ func buildCalendarFeedICS(options calendarFeedBuildOptions) string {
 	cal.SetCalscale("GREGORIAN")
 	cal.SetMethod(ics.MethodPublish)
 	cal.SetName(options.Name)
-	cal.SetRefreshInterval("PT1H")
-	cal.SetXPublishedTTL("PT1H")
-	addCalendarFeedSource(cal, options.SourceURL)
+	if options.RefreshableSource {
+		cal.SetRefreshInterval("PT1H")
+		cal.SetXPublishedTTL("PT1H")
+		addCalendarFeedSource(cal, options.SourceURL)
+	}
 	for _, event := range events {
 		start, err := time.Parse("2006-01-02", event.Date)
 		if err != nil {
@@ -724,4 +763,21 @@ func addCalendarFeedSource(cal *ics.Calendar, sourceURL string) {
 			Value:          sourceURL,
 		},
 	})
+}
+
+func safeCalendarFeedFilename(value string) string {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		return "subscription"
+	}
+	var builder strings.Builder
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			builder.WriteRune(char)
+		}
+	}
+	if builder.Len() == 0 {
+		return "subscription"
+	}
+	return builder.String()
 }

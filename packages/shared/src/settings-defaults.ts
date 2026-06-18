@@ -42,7 +42,7 @@ export function createDefaultAppSettings(options: DefaultSettingsOptions = {}): 
     wechatAddModeTag: false,
     wechatAtPhones: "",
     wechatAtAll: false,
-    // 空 SMTP 表示走部署侧 fallback；Docker 和 Cloudflare 必须共享这套设置语义。
+    // 空 SMTP 表示通知邮件未配置；Cloudflare 版不会读取 wrangler 部署级 SMTP secrets 作为 fallback。
     smtpHost: "",
     smtpPort: "",
     smtpSecure: false,

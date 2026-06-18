@@ -1,3 +1,8 @@
+/**
+ * Cloudflare AI 识别 diagnostics 构造与脱敏。
+ *
+ * diagnostics 只允许随当前认证响应返回；prompt、raw 输出、usage/provider metadata 必须在这里截断和脱敏。
+ */
 import { NoObjectGeneratedError } from "ai";
 import {
   AI_RECOGNITION_DIAGNOSTIC_JSON_MAX_CHARS,
@@ -12,6 +17,8 @@ import {
   AI_RECOGNITION_PROMPT_VERSION,
   AI_RECOGNITION_SCHEMA_NAME,
 } from "@renewlet/shared/ai-recognition-prompt";
+import { providerResponseFromError } from "./ai-provider-response";
+import type { UpstreamProviderResponse } from "./upstream-response";
 
 const AI_SECRET_PATTERN = /(sk-[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{8,}|sk-ant-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|(?:api[_-]?key|authorization|cookie|set-cookie|access[_-]?token|refresh[_-]?token)["'\s:=]+[A-Za-z0-9._~+/=-]{8,})/gi;
 
@@ -65,6 +72,7 @@ export function buildAIRecognitionDiagnostics({
       thinkingControl,
       maxOutputTokens,
       textCharCount: [...input.text].length,
+      // 图片诊断只暴露类型和大小，绝不返回 bytes/data URL，避免浏览器日志保存用户上传原图。
       images: input.images.map((image) => ({ mediaType: image.mediaType, sizeBytes: image.data.byteLength })),
     },
     response: {
@@ -79,11 +87,15 @@ export function safeAIRecognitionError(error: unknown): string {
   return redactAIRecognitionSecrets(error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
-export function aiRecognitionErrorDetails(reason: string, error: unknown, diagnostics: AiRecognitionDiagnostics) {
+export function aiRecognitionErrorDetails(
+  reason: string,
+  error: unknown,
+  _diagnostics: AiRecognitionDiagnostics,
+  providerResponse: UpstreamProviderResponse | null = providerResponseFromError(error),
+) {
+  const providerBody = providerResponse?.body ? redactAIRecognitionSecrets(providerResponse.body) : "";
   return aiRecognitionErrorDetailsSchema.parse({
-    reason,
-    providerMessage: error === null ? null : safeAIRecognitionError(error),
-    diagnostics,
+    rawResponseText: providerBody || (error === null ? reason : safeAIRecognitionError(error)),
   });
 }
 
@@ -156,7 +168,7 @@ function safeJsonStringify(value: unknown): string {
   }
 }
 
-function redactAIRecognitionSecrets(value: string): string {
+export function redactAIRecognitionSecrets(value: string): string {
   return value.replace(AI_SECRET_PATTERN, "[redacted]");
 }
 

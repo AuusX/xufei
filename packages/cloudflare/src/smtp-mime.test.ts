@@ -35,6 +35,7 @@ describe("composeEmail", () => {
 
 describe("dotStuff", () => {
   it("normalizes CRLF and escapes smtp data terminator lines", () => {
+    // SMTP DATA 以单点行结束；正文里的点行必须 dot-stuff，否则邮件会在传输层被截断。
     expect(dotStuff("one\n.two\r\nthree")).toBe("one\r\n..two\r\nthree");
   });
 });

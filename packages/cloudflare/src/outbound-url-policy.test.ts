@@ -1,7 +1,18 @@
+// SSRF 策略测试覆盖 URL 解析怪异输入和 DNS 解析到内网的场景，保护通知外部请求边界。
 import { describe, expect, it } from "vitest";
+import { outboundUrlPolicyFixtures } from "@renewlet/shared/contract-fixtures";
 import { assertSafeOutboundUrl } from "./outbound-url-policy";
 
 describe("outbound URL policy", () => {
+  it.each(outboundUrlPolicyFixtures)("matches shared fixture $name", async (fixture) => {
+    const result = assertSafeOutboundUrl(fixture.url, "en-US", async () => fixture.resolvedIps);
+    if (!fixture.safe) {
+      await expect(result).rejects.toThrow();
+      return;
+    }
+    await expect(result).resolves.toMatchObject({ href: fixture.expectedUrl ?? fixture.url });
+  });
+
   it.each([
     "http://example.com/webhook",
     "https://user:pass@example.com/webhook",

@@ -2,14 +2,21 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 
 	appstatic "github.com/zhiyingzzhou/renewlet/packages/server/internal/static"
 )
 
 type mediaResolverConfig struct {
 	BuiltInProviders []struct {
-		Provider          string   `json:"provider"`
-		CDNBase           string   `json:"cdnBase"`
+		Provider string `json:"provider"`
+		CDNBase  string `json:"cdnBase"`
+		GitHub   struct {
+			Owner         string `json:"owner"`
+			Repo          string `json:"repo"`
+			Branch        string `json:"branch"`
+			LatestRelease bool   `json:"latestRelease"`
+		} `json:"github"`
 		PreferredVariants []string `json:"preferredVariants"`
 	} `json:"builtInProviders"`
 	Auto struct {
@@ -84,6 +91,18 @@ func mediaResolverBuiltInProviderBase(provider string) string {
 		}
 	}
 	return ""
+}
+
+func mediaResolverBuiltInProviderPinnedBase(provider string, ref string) string {
+	for _, item := range mediaResolverCfg.BuiltInProviders {
+		if item.Provider == provider && item.GitHub.Owner != "" && item.GitHub.Repo != "" && ref != "" {
+			if !strings.Contains(item.CDNBase, "/gh/") {
+				return item.CDNBase
+			}
+			return "https://testingcf.jsdelivr.net/gh/" + item.GitHub.Owner + "/" + item.GitHub.Repo + "@" + ref
+		}
+	}
+	return mediaResolverBuiltInProviderBase(provider)
 }
 
 func mediaResolverPreferredVariants(provider string) []string {

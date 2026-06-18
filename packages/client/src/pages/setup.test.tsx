@@ -28,9 +28,11 @@ function renderSetup() {
 
 describe("Setup page", () => {
   beforeEach(() => {
+    mocks.apiFetch.mockReset();
     mocks.useSetupStatus.mockReturnValue({
       setupRequired: true,
       setupEnabled: true,
+      demoMode: false,
       isLoading: false,
     });
   });
@@ -41,7 +43,7 @@ describe("Setup page", () => {
 
     expect(container.querySelector("form")).toHaveAttribute("novalidate");
 
-    await user.type(screen.getByLabelText("邮箱"), "admin@example.com");
+    await user.type(screen.getByLabelText("登录邮箱"), "admin@example.com");
     await user.type(screen.getByLabelText("密码"), "12");
     await user.click(screen.getByRole("button", { name: "创建管理员" }));
 
@@ -55,14 +57,13 @@ describe("Setup page", () => {
   });
 
   it("uses mobile-friendly autofill and keyboard metadata", () => {
-    renderSetup();
+    const { container } = renderSetup();
 
-    const nameInput = screen.getByLabelText("名称");
-    const emailInput = screen.getByLabelText("邮箱");
+    const labels = Array.from(container.querySelectorAll("label")).map((label) => label.textContent);
+    expect(labels).toEqual(["登录邮箱", "密码", "显示名称"]);
+    const emailInput = screen.getByLabelText("登录邮箱");
+    const nameInput = screen.getByLabelText("显示名称");
     const passwordInput = screen.getByLabelText("密码");
-    expect(nameInput).toHaveAttribute("name", "name");
-    expect(nameInput).toHaveAttribute("autocomplete", "name");
-    expect(nameInput).toHaveAttribute("enterkeyhint", "next");
     expect(emailInput).toHaveAttribute("name", "email");
     expect(emailInput).toHaveAttribute("inputmode", "email");
     expect(emailInput).toHaveAttribute("autocomplete", "email");
@@ -71,6 +72,27 @@ describe("Setup page", () => {
     expect(emailInput).toHaveAttribute("spellcheck", "false");
     expect(passwordInput).toHaveAttribute("name", "password");
     expect(passwordInput).toHaveAttribute("autocomplete", "new-password");
-    expect(passwordInput).toHaveAttribute("enterkeyhint", "done");
+    expect(passwordInput).toHaveAttribute("enterkeyhint", "next");
+    expect(nameInput).toHaveAttribute("name", "name");
+    expect(nameInput).toHaveAttribute("autocomplete", "name");
+    expect(nameInput).toHaveAttribute("enterkeyhint", "done");
+    expect(nameInput).toHaveAttribute("spellcheck", "false");
+  });
+
+  it("submits the display name together with the login email", async () => {
+    mocks.apiFetch.mockResolvedValue({ ok: true });
+    const user = userEvent.setup();
+    renderSetup();
+
+    await user.type(screen.getByLabelText("登录邮箱"), "admin@example.com");
+    await user.type(screen.getByLabelText("密码"), "password123");
+    await user.clear(screen.getByLabelText("显示名称"));
+    await user.type(screen.getByLabelText("显示名称"), "Root Admin");
+    await user.click(screen.getByRole("button", { name: "创建管理员" }));
+
+    expect(mocks.apiFetch).toHaveBeenCalledWith("/api/app/setup", expect.anything(), {
+      method: "POST",
+      body: JSON.stringify({ name: "Root Admin", email: "admin@example.com", password: "password123" }),
+    });
   });
 });

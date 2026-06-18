@@ -1,9 +1,12 @@
 package main
 
+// AI 识别端到端单测保护 Go provider runner、SSE contract、multipart 输入和 diagnostics 脱敏。
+// 测试里的 fake model 只模拟第三方 SDK 边界，不替代 shared schema 与 Cloudflare Worker 的契约覆盖。
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -86,7 +89,13 @@ func TestAIRecognitionProviderOptions(t *testing.T) {
 
 func TestAIRecognitionConnectionUsesMinimalTextGeneration(t *testing.T) {
 	fake := &aiConnectionTestModel{
-		err: &goai.APIError{Message: "rate limited", StatusCode: http.StatusTooManyRequests, IsRetryable: true},
+		err: &goai.APIError{
+			Message:         "rate limited",
+			StatusCode:      http.StatusTooManyRequests,
+			IsRetryable:     true,
+			ResponseBody:    `{"error":"invalid sk-test-secret"}`,
+			ResponseHeaders: map[string]string{"retry-after": "5"},
+		},
 	}
 	previousModelFactory := newAIRecognitionModelForConnection
 	newAIRecognitionModelForConnection = func(settings aiRecognitionSettings) (provider.LanguageModel, error) {
@@ -107,6 +116,16 @@ func TestAIRecognitionConnectionUsesMinimalTextGeneration(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected raw API error from zero-retry connection test, got %#v", err)
 	}
+	providerResponse := aiProviderResponseFromError(err)
+	if providerResponse == nil || providerResponse.Body == nil || *providerResponse.Body != `{"error":"invalid [redacted]"}` {
+		t.Fatalf("provider response body not captured: %#v", providerResponse)
+	}
+	if providerResponse.Status == nil || *providerResponse.Status != http.StatusTooManyRequests {
+		t.Fatalf("provider response status not captured: %#v", providerResponse)
+	}
+	if providerResponse.Headers["retry-after"] != "5" {
+		t.Fatalf("provider response headers not captured: %#v", providerResponse.Headers)
+	}
 	if fake.calls != 1 {
 		t.Fatalf("connection test should disable retries, got %d model calls", fake.calls)
 	}
@@ -118,6 +137,25 @@ func TestAIRecognitionConnectionUsesMinimalTextGeneration(t *testing.T) {
 	}
 	if len(fake.params.Messages) != 1 || len(fake.params.Messages[0].Content) != 1 || fake.params.Messages[0].Content[0].Text != aiRecognitionTestPrompt {
 		t.Fatalf("connection test prompt mismatch: %#v", fake.params.Messages)
+	}
+}
+
+func TestAIProviderResponseFromWrappedAPIError(t *testing.T) {
+	err := fmt.Errorf("stream result: %w", &goai.APIError{
+		Message:         "provider failed",
+		StatusCode:      http.StatusUnauthorized,
+		ResponseBody:    `{"code":"INVALID_API_KEY","message":"bad key"}`,
+		ResponseHeaders: map[string]string{"content-type": "application/json"},
+	})
+	providerResponse := aiProviderResponseFromError(err)
+	if providerResponse == nil || providerResponse.Body == nil || *providerResponse.Body != `{"code":"INVALID_API_KEY","message":"bad key"}` {
+		t.Fatalf("wrapped provider body not captured: %#v", providerResponse)
+	}
+	if providerResponse.Status == nil || *providerResponse.Status != http.StatusUnauthorized {
+		t.Fatalf("wrapped provider status not captured: %#v", providerResponse)
+	}
+	if providerResponse.Headers["content-type"] != "application/json" {
+		t.Fatalf("wrapped provider headers not captured: %#v", providerResponse.Headers)
 	}
 }
 
@@ -398,6 +436,24 @@ func TestAIRecognitionStreamErrorCodeForTimeout(t *testing.T) {
 	streamErr := aiRecognitionStreamErrorForError(localeZhCN, context.DeadlineExceeded)
 	if streamErr.Code != "AI_RECOGNITION_TIMEOUT" {
 		t.Fatalf("timeout code mismatch: %#v", streamErr)
+	}
+}
+
+func TestAIRecognitionStreamErrorIncludesRawResponseText(t *testing.T) {
+	streamErr := aiRecognitionStreamErrorForError(localeZhCN, &aiRecognitionRunError{
+		cause: fmt.Errorf("stream result: %w", &goai.APIError{
+			Message:         "provider failed",
+			StatusCode:      http.StatusUnauthorized,
+			ResponseBody:    `{"code":"INVALID_API_KEY","message":"bad sk-testsecret123"}`,
+			ResponseHeaders: map[string]string{"content-type": "application/json"},
+		}),
+		diagnostics: testAIRecognitionDiagnostics(),
+	})
+	if streamErr.Details == nil || streamErr.Details.RawResponseText == nil {
+		t.Fatalf("stream error should include raw response text: %#v", streamErr)
+	}
+	if *streamErr.Details.RawResponseText != `{"code":"INVALID_API_KEY","message":"bad [redacted]"}` {
+		t.Fatalf("raw response mismatch: %#v", streamErr.Details.RawResponseText)
 	}
 }
 

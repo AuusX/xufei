@@ -1,5 +1,9 @@
 package main
 
+// ai_recognition_diagnostics.go 构造 AI 识别的临时排障信息。
+//
+// diagnostics 只随当前认证 API 响应返回，不入库、不导出；prompt、raw 输出、provider metadata 和图片信息
+// 必须在这里统一脱敏/截断，避免第三方 key、Bearer、JWT、cookie 或 base64 图片泄漏到浏览器日志。
 import (
 	"encoding/json"
 	"errors"
@@ -87,6 +91,7 @@ func (err *aiRecognitionRunError) Unwrap() error {
 func buildAIRecognitionDiagnostics(settings aiRecognitionSettings, input aiRecognitionInput, systemPrompt string, userPrompt string, rawModelText string, rawObject interface{}, usage interface{}, finishReason string, providerMetadata interface{}) aiRecognitionDiagnostics {
 	images := make([]aiRecognitionDiagnosticImage, 0, len(input.Images))
 	for _, image := range input.Images {
+		// 图片诊断只暴露类型和大小，绝不返回 data URL/base64；用户可据此排查输入规模而不泄漏内容。
 		images = append(images, aiRecognitionDiagnosticImage{MediaType: image.MediaType, SizeBytes: image.SizeBytes})
 	}
 	diagnostics := aiRecognitionDiagnostics{
@@ -153,6 +158,7 @@ func sanitizeAIRecognitionDiagnosticJSON(value interface{}) interface{} {
 	}
 	text := diagnosticAIRecognitionText(aiRecognitionJSONText(value), aiRecognitionDiagnosticJSONMaxChars)
 	if text.Truncated {
+		// JSON 超限时保持文本形态，避免截断后的半截 JSON 被误解析成可信 provider metadata。
 		return text
 	}
 	var parsed interface{}

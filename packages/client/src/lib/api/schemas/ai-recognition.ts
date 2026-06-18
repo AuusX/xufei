@@ -4,6 +4,7 @@ export {
   AI_RECOGNITION_MAX_IMAGE_BYTES,
   AI_RECOGNITION_MAX_SUBSCRIPTIONS,
   AI_RECOGNITION_MAX_TEXT_CHARS,
+  AI_PROVIDER_RESPONSE_BODY_MAX_CHARS,
   aiRecognizedSubscriptionDraftSchema,
   aiModelListErrorDetailsSchema,
   aiModelListItemSchema,

@@ -1,3 +1,8 @@
+/**
+ * 媒体候选 resolver 配置由 JSON 数据驱动。
+ *
+ * 图标 provider、CDN、预算、降词和限流都必须在这里收敛，避免前端、Go embedded static 和 Worker 各自排序。
+ */
 import { z } from "zod";
 import { BUILT_IN_ICON_PROVIDERS } from "./built-in-icons";
 import mediaResolverConfigJson from "../data/media-resolver-config.json";
@@ -6,6 +11,12 @@ const mediaResolverConfigSchema = z.object({
   builtInProviders: z.array(z.object({
     provider: z.enum(BUILT_IN_ICON_PROVIDERS),
     cdnBase: z.string().url(),
+    github: z.object({
+      owner: z.string().min(1),
+      repo: z.string().min(1),
+      branch: z.string().min(1),
+      latestRelease: z.boolean(),
+    }).strict(),
     preferredVariants: z.array(z.string().min(1)).min(1),
   }).strict()).length(BUILT_IN_ICON_PROVIDERS.length).refine((providers) => {
     const seen = new Set(providers.map((item) => item.provider));

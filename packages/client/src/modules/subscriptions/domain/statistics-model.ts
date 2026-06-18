@@ -13,11 +13,13 @@
  * ```
  */
 import { toMonthlyAmount } from "@/lib/subscription-billing";
-import { isSameMonthDateOnly, todayDateOnlyInTimeZone } from "@/lib/time/date-only";
+import { compareDateOnly, fromPlainDate, isSameMonthDateOnly, todayDateOnlyInTimeZone, toPlainDate, type DateOnly } from "@/lib/time/date-only";
 import { localizedLabel, type Locale } from "@/i18n/locales";
 import { translate } from "@/i18n/messages";
 import type { CustomConfig } from "@/types/config";
 import type { Subscription } from "@/types/subscription";
+import { addBillingCycles } from "@renewlet/shared/subscription-renewal";
+import { calculateCostSharingSummary } from "@renewlet/shared/cost-sharing";
 import { isEffectivelyActiveSubscription, isEffectivelyInactiveSubscription } from "./subscription-status";
 
 /** 统计图表固定色板；保持跨图表颜色稳定，避免同一分类在不同渲染中频繁换色。 */
@@ -36,6 +38,21 @@ function chartColorAt(index: number): string {
   return STATISTICS_CHART_COLORS[index % STATISTICS_CHART_COLORS.length] ?? "hsl(200 80% 50%)";
 }
 
+const STATISTICS_TREND_MONTHS = 12;
+const MAX_TREND_CASHFLOW_OCCURRENCES = 730;
+
+export interface StatisticsTrendDatum {
+  monthKey: string;
+  label: string;
+  cashflow: number;
+  amortized: number;
+}
+
+interface StatisticsTrendBucket extends StatisticsTrendDatum {
+  startDate: DateOnly;
+  endDate: DateOnly;
+}
+
 interface BuildStatisticsModelInput {
   subscriptions: readonly Subscription[];
   config: CustomConfig;
@@ -45,6 +62,116 @@ interface BuildStatisticsModelInput {
   now?: Date;
   timeZone?: string;
   locale?: Locale;
+  costBasis?: "total" | "personal";
+}
+
+function roundTrendAmount(amount: number): number {
+  return Math.round(amount * 1000) / 1000;
+}
+
+function toMonthKey(date: DateOnly | string): string {
+  const value = toPlainDate(date);
+  return `${value.year}-${String(value.month).padStart(2, "0")}`;
+}
+
+function buildTrendBuckets(today: DateOnly, locale: Locale): StatisticsTrendBucket[] {
+  const startMonth = toPlainDate(today).with({ day: 1 });
+  return Array.from({ length: STATISTICS_TREND_MONTHS }, (_, index) => {
+    const monthStart = startMonth.add({ months: index });
+    const monthEnd = monthStart.add({ months: 1 });
+    return {
+      monthKey: `${monthStart.year}-${String(monthStart.month).padStart(2, "0")}`,
+      label: translate(locale, "statistics.trendMonthLabel", { year: monthStart.year, month: monthStart.month }),
+      cashflow: 0,
+      amortized: 0,
+      startDate: fromPlainDate(monthStart),
+      endDate: fromPlainDate(monthEnd),
+    };
+  });
+}
+
+function addCashflowTrend(
+  bucketsByMonth: Map<string, StatisticsTrendBucket>,
+  buckets: readonly StatisticsTrendBucket[],
+  subscription: Subscription,
+  amountInDefault: number,
+) {
+  if (subscription.billingCycle === "one-time" || buckets.length === 0) return;
+
+  const windowStart = buckets[0]!.startDate;
+  const windowEnd = buckets[buckets.length - 1]!.endDate;
+  let dueDate: DateOnly = subscription.nextBillingDate;
+
+  // autoRenew 只控制 Renewlet 是否后台推进日期，不代表第三方账单会停止；趋势按当前周期配置预测未来扣费。
+  for (let occurrences = 0; compareDateOnly(dueDate, windowEnd) < 0 && occurrences < MAX_TREND_CASHFLOW_OCCURRENCES; occurrences += 1) {
+    if (compareDateOnly(dueDate, windowStart) >= 0) {
+      const bucket = bucketsByMonth.get(toMonthKey(dueDate));
+      if (bucket) {
+        bucket.cashflow += amountInDefault;
+      }
+    }
+
+    const nextDueDate = addBillingCycles(
+      dueDate,
+      subscription.billingCycle,
+      1,
+      subscription.customDays,
+      subscription.customCycleUnit ?? "day",
+    ) as DateOnly;
+    if (compareDateOnly(nextDueDate, dueDate) <= 0) break;
+    dueDate = nextDueDate;
+  }
+}
+
+function addAmortizedTrend(
+  buckets: readonly StatisticsTrendBucket[],
+  subscription: Subscription,
+  monthlyAmount: number,
+) {
+  if (monthlyAmount <= 0) return;
+
+  if (subscription.billingCycle !== "one-time") {
+    for (const bucket of buckets) {
+      bucket.amortized += monthlyAmount;
+    }
+    return;
+  }
+
+  // 固定服务期 one-time 的到期日是权益结束边界，不是下一次扣费；只把服务覆盖月份计入摊销。
+  if (!subscription.oneTimeTermCount) return;
+  for (const bucket of buckets) {
+    const overlapsServiceWindow =
+      compareDateOnly(subscription.startDate, bucket.endDate) < 0 &&
+      compareDateOnly(subscription.nextBillingDate, bucket.startDate) >= 0;
+    if (overlapsServiceWindow) {
+      bucket.amortized += monthlyAmount;
+    }
+  }
+}
+
+function buildTrendData(
+  activeSubscriptions: readonly Subscription[],
+  today: DateOnly,
+  locale: Locale,
+  convertToDefault: (price: number, currency: string) => number,
+  amountForStats: (subscription: Subscription) => number,
+  calculateMonthlyAmount: (subscription: Subscription) => number,
+): StatisticsTrendDatum[] {
+  const buckets = buildTrendBuckets(today, locale);
+  const bucketsByMonth = new Map(buckets.map((bucket) => [bucket.monthKey, bucket]));
+
+  for (const subscription of activeSubscriptions) {
+    const amountInDefault = convertToDefault(amountForStats(subscription), subscription.currency);
+    addCashflowTrend(bucketsByMonth, buckets, subscription, amountInDefault);
+    addAmortizedTrend(buckets, subscription, calculateMonthlyAmount(subscription));
+  }
+
+  return buckets.map(({ monthKey, label, cashflow, amortized }) => ({
+    monthKey,
+    label,
+    cashflow: roundTrendAmount(cashflow),
+    amortized: roundTrendAmount(amortized),
+  }));
 }
 
 /** 构建统计页视图模型。 */
@@ -57,6 +184,7 @@ export function buildStatisticsModel({
   now = new Date(),
   timeZone = "UTC",
   locale = "zh-CN",
+  costBasis = "total",
 }: BuildStatisticsModelInput) {
   const today = todayDateOnlyInTimeZone(now, timeZone);
   const categoryByValue = new Map(config.categories.map((category) => [category.value, category]));
@@ -65,10 +193,18 @@ export function buildStatisticsModel({
   const activeSubscriptions = subscriptions.filter((subscription) => isEffectivelyActiveSubscription(subscription, today));
   const inactiveSubscriptions = subscriptions.filter((subscription) => isEffectivelyInactiveSubscription(subscription, today));
 
+  // costBasis 是统计页的金额口径开关；一旦选 personal，月均、当月现金流、分类和趋势都必须使用个人份额。
+  const amountForStats = (subscription: Subscription): number =>
+    costBasis === "personal"
+      ? calculateCostSharingSummary(subscription.costSharing, subscription.price, {
+          baseCurrency: subscription.currency,
+          convert,
+        }).yourShare
+      : subscription.price;
   const convertToDefault = (price: number, currency: string) => convert(price, currency, defaultCurrency);
   const calculateMonthlyAmount = (subscription: Subscription): number => {
     // 先换算币种再折算周期，保证所有图表都以用户当前统计货币为唯一口径。
-    const amountInDefault = convertToDefault(subscription.price, subscription.currency);
+    const amountInDefault = convertToDefault(amountForStats(subscription), subscription.currency);
     return toMonthlyAmount(
       amountInDefault,
       subscription.billingCycle,
@@ -90,7 +226,7 @@ export function buildStatisticsModel({
   }, null as Subscription | null);
   const thisMonthDue = activeSubscriptions
     .filter((subscription) => subscription.billingCycle !== "one-time" && isSameMonthDateOnly(subscription.nextBillingDate, today))
-    .reduce((sum, subscription) => sum + convertToDefault(subscription.price, subscription.currency), 0);
+    .reduce((sum, subscription) => sum + convertToDefault(amountForStats(subscription), subscription.currency), 0);
   const budgetUsedPercent = monthlyBudget > 0 ? (totalMonthly / monthlyBudget) * 100 : 0;
   const budgetRemaining = monthlyBudget - totalMonthly;
   const inactiveSavings = inactiveSubscriptions.reduce(
@@ -130,6 +266,7 @@ export function buildStatisticsModel({
     { name: translate(locale, "statistics.budgetUsed"), value: Math.min(totalMonthly, monthlyBudget), color: "hsl(350 75% 55%)" },
     { name: translate(locale, "statistics.budgetRemaining"), value: Math.max(budgetRemaining, 0), color: "hsl(200 80% 50%)" },
   ];
+  const trendData = buildTrendData(activeSubscriptions, today, locale, convertToDefault, amountForStats, calculateMonthlyAmount);
 
   // TODO：若未来支持多预算周期，可把 monthlyBudget 和 budgetChartData 抽成独立预算 domain。
   return {
@@ -147,5 +284,6 @@ export function buildStatisticsModel({
     categoryData,
     paymentData,
     budgetChartData,
+    trendData,
   };
 }

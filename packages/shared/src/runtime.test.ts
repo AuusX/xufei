@@ -1,3 +1,4 @@
+// runtime 测试保护 reminderDays 哨兵值；Go、D1、前端和导入导出都依赖这组三态语义。
 import { describe, expect, it } from "vitest";
 import {
   DISABLED_REMINDER_DAYS,

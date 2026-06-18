@@ -1,5 +1,7 @@
 package main
 
+// AI provider endpoint 测试保护 base URL 规范化、no-auto-version 逃生阀和 SDK transport 改写。
+// 私有网关经常使用非官方路径；这些样例是避免后续“自动补 /v1”把网关拼坏的回归网。
 import (
 	"net/http"
 	"net/http/httptest"

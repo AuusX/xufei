@@ -38,16 +38,17 @@ func mediaCandidates(e *core.RequestEvent) error {
 	if err != nil {
 		return e.BadRequestError(validationErrorMessage(locale, "notification.settingsInvalid", err), err)
 	}
+	resolver := activeBuiltInResolver(e.App)
 
 	items := make([]mediaCandidateResolveItemResponse, 0, len(body.Items))
 	for _, item := range body.Items {
-		items = append(items, resolveMediaCandidateItem(body.Kind, body.Mode, item, limit, settings.BuiltInIconSources))
+		items = append(items, resolveMediaCandidateItem(resolver, body.Kind, body.Mode, item, limit, settings.BuiltInIconSources))
 	}
 	setPrivateShortCache(e)
 	return e.JSON(http.StatusOK, mediaCandidateResolveResponse{Items: items})
 }
 
-func resolveMediaCandidateItem(kind string, mode string, item mediaCandidateResolveItem, limit int, sources builtInIconSourceSettings) mediaCandidateResolveItemResponse {
+func resolveMediaCandidateItem(resolver builtInResolverIndex, kind string, mode string, item mediaCandidateResolveItem, limit int, sources builtInIconSourceSettings) mediaCandidateResolveItemResponse {
 	group := mediaCandidateGroup{
 		BuiltIn: []mediaCandidate{},
 		Favicon: []mediaCandidate{},
@@ -56,7 +57,7 @@ func resolveMediaCandidateItem(kind string, mode string, item mediaCandidateReso
 
 	if mode == "auto" {
 		// 导入自动分配只接受内置 provider 的高置信命中；favicon/domain 弱候选必须留给用户手动选择。
-		if candidate := resolveBuiltInAutoCandidate(kind, item.Name, sources); candidate != nil && candidate.AutoAssignable {
+		if candidate := resolveBuiltInAutoCandidate(resolver, kind, item.Name, sources); candidate != nil && candidate.AutoAssignable {
 			group.BuiltIn = append(group.BuiltIn, *candidate)
 			group.Best = candidate
 			autoCandidate = candidate
@@ -65,7 +66,7 @@ func resolveMediaCandidateItem(kind string, mode string, item mediaCandidateReso
 	}
 
 	// 搜索模式为 favicon 预留预算，避免多 provider/variants 把弱备用候选挤出；自动分配仍只返回内置高置信候选。
-	builtInSearch := searchBuiltInCandidates(kind, item.Name, searchBuiltInCandidateLimit(limit), sources)
+	builtInSearch := searchBuiltInCandidates(resolver, kind, item.Name, searchBuiltInCandidateLimit(limit), sources)
 	group.BuiltIn = builtInSearch.candidates
 	remaining := limit - len(group.BuiltIn)
 	if remaining > 0 {

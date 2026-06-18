@@ -18,6 +18,7 @@ export interface AccountSettingsSectionProps {
   id?: string;
   className?: string;
   accountEmail: string | null;
+  canManageUsers: boolean;
   canAccessPocketBaseAdmin: boolean;
   passwordResetEnabled: boolean;
   passwordDialogOpen: boolean;
@@ -31,12 +32,14 @@ export interface AccountSettingsSectionProps {
   setConfirmPassword: (value: string) => void;
   isUpdatingPassword: boolean;
   updatePassword: () => void | Promise<void>;
+  passwordDisabled?: boolean;
 }
 
 export function AccountSettingsSection({
   id,
   className,
   accountEmail,
+  canManageUsers,
   canAccessPocketBaseAdmin,
   passwordResetEnabled,
   passwordDialogOpen,
@@ -50,6 +53,7 @@ export function AccountSettingsSection({
   setConfirmPassword,
   isUpdatingPassword,
   updatePassword,
+  passwordDisabled = false,
 }: AccountSettingsSectionProps) {
   const { t } = useI18n();
 
@@ -69,12 +73,14 @@ export function AccountSettingsSection({
                         />
                         <p className="text-xs text-muted-foreground">{t("settings.usernameHelp")}</p>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                          <Link
-                            href="/admin/users"
-                            className="inline-flex text-xs text-primary hover:underline"
-                          >
-                            {t("settings.manageUsers")}
-                          </Link>
+                          {canManageUsers ? (
+                            <Link
+                              href="/admin/users"
+                              className="inline-flex text-xs text-primary hover:underline"
+                            >
+                              {t("settings.manageUsers")}
+                            </Link>
+                          ) : null}
                           {canAccessPocketBaseAdmin ? (
                             <a
                               href="/_/"
@@ -104,6 +110,7 @@ export function AccountSettingsSection({
                             variant="outline"
                             className="border-primary/40 text-primary hover:bg-primary/10"
                             onClick={() => setPasswordDialogOpen(true)}
+                            disabled={passwordDisabled}
                           >
                             {t("settings.changePassword")}
                           </Button>

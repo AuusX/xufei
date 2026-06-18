@@ -1,6 +1,6 @@
 package main
 
-// 本文件测试服务端 locale 选择和 catalog 占位符，确保通知/错误文案不依赖前端运行时。
+// 服务端 locale 测试保护 X-Renewlet-Locale 优先级和 catalog placeholder；通知/错误文案不能依赖前端 Lingui runtime。
 
 import (
 	"net/http"

@@ -1,6 +1,6 @@
 // Worker 认证测试保护账号生命周期边界；D1 细节用 mock 固定，测试只关心 route 安全决策。
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { adminPatchUser } from "./auth";
+import { adminPatchUser, appStatus } from "./auth";
 import type { Env, UserRow } from "./types";
 
 const mocks = vi.hoisted(() => ({
@@ -65,6 +65,23 @@ describe("Cloudflare admin password reset boundary", () => {
   });
 });
 
+describe("Cloudflare app status", () => {
+  beforeEach(() => {
+    mocks.enabledAdminCount.mockReset().mockResolvedValue(0);
+  });
+
+  it("returns setup capability with demo mode fixed off", async () => {
+    const response = await appStatus(new Request("https://renewlet.example/api/app/status"), envFixture(vi.fn()));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      setupRequired: true,
+      setupEnabled: true,
+      demoMode: false,
+    });
+  });
+});
+
 function requestFixture(body: unknown): Request {
   return new Request("https://renewlet.example/api/app/admin/users/usr_user", {
     method: "PATCH",
@@ -82,6 +99,7 @@ function envFixture(updateRun: ReturnType<typeof vi.fn>): Env {
   return {
     DB: {
       prepare: vi.fn((sql: string) => ({
+        first: vi.fn().mockResolvedValue(sql.includes("SELECT id FROM users") ? null : undefined),
         bind: vi.fn(() => {
           if (sql.includes("FROM sessions JOIN users")) {
             return { first: vi.fn().mockResolvedValue(authRow()) };
@@ -93,6 +111,7 @@ function envFixture(updateRun: ReturnType<typeof vi.fn>): Env {
         }),
       })),
     } as unknown as D1Database,
+    ASSETS: {} as Fetcher,
     ASSETS_BUCKET: {} as R2Bucket,
   };
 }

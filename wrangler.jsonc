@@ -3,21 +3,31 @@
   "name": "renewlet",
   "main": "packages/cloudflare/src/index.ts",
   "compatibility_date": "2026-05-20",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "dev": {
+    "ip": "0.0.0.0",
+    "port": 8787,
+    "local_protocol": "http"
+  },
   "assets": {
     "directory": "./packages/client/dist",
-    // 静态资源使用 SPA fallback；产品 API 和公开 ICS 必须先交给 Worker 做认证/Token 校验。
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    // 只让精确 ICS feed 路径进 Worker；React 的 /calendar 页面继续走静态资源 SPA fallback。
-    "run_worker_first": ["/api/*", "/calendar/renewals.ics", "/__scheduled"]
+    "run_worker_first": [
+      "/api/*",
+      "/calendar/renewals.ics",
+      "/__scheduled"
+    ]
   },
   "triggers": {
-    // Worker Cron 每分钟 tick；真正的用户本地时间窗口和幂等由 notification_jobs 控制。
-    "crons": ["* * * * *"]
+    "crons": [
+      "* * * * *"
+    ]
   },
   "d1_databases": [
     {
-      // DB 是结构化数据事实源；部署前必须先应用 packages/cloudflare/migrations。
       "binding": "DB",
       "database_name": "renewlet",
       "database_id": "85a8640a-f685-4ad1-bcc5-453ee5ea5938",
@@ -26,13 +36,11 @@
   ],
   "r2_buckets": [
     {
-      // ASSETS_BUCKET 只存对象；读取权限必须先经过 D1 assets metadata 的 owner 校验。
       "binding": "ASSETS_BUCKET",
       "bucket_name": "renewlet-assets"
     }
   ],
   "vars": {
-    // Deploy Button 会把模板 vars 暴露给用户填写；构建元信息只允许 CI 写入生成配置。
     "SETUP_ENABLED": "true"
   }
 }

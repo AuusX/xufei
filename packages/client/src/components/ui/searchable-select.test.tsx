@@ -7,9 +7,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SearchableSelect, type SearchableSelectOption } from "./searchable-select";
 
 const options: SearchableSelectOption[] = [
-  { value: "CNY", label: "人民币 (¥)", keywords: ["人民币", "china", "yuan"] },
-  { value: "USD", label: "美元 ($)", keywords: ["美元", "$", "US Dollar"] },
-  { value: "EUR", label: "欧元 (€)", keywords: ["欧元", "Euro"], disabled: true },
+  { value: "CNY", label: "¥ 人民币 (CNY)", keywords: ["人民币", "china", "yuan"] },
+  { value: "USD", label: "$ 美元 (USD)", keywords: ["美元", "$", "US Dollar"] },
+  { value: "EUR", label: "€ 欧元 (EUR)", keywords: ["欧元", "Euro"], disabled: true },
 ];
 
 function renderWithTooltipProvider(ui: ReactNode) {
@@ -42,7 +42,7 @@ describe("SearchableSelect", () => {
 
     await user.click(screen.getByRole("combobox"));
     await user.type(screen.getByPlaceholderText("搜索货币"), "usd");
-    await user.click(await screen.findByText("美元 ($)"));
+    await user.click(await screen.findByText("$ 美元 (USD)"));
 
     expect(onValueChange).toHaveBeenCalledWith("USD");
   });
@@ -73,10 +73,10 @@ describe("SearchableSelect", () => {
   it("filters short currency code queries without loose subsequence matches", async () => {
     const user = userEvent.setup();
     const currencyOptions: SearchableSelectOption[] = [
-      { value: "HKD", label: "港元 (HK$)", keywords: ["Hong Kong dollar"] },
-      { value: "AFN", label: "阿富汗尼 (AFN)", keywords: ["Afghan Afghani"] },
-      { value: "NGN", label: "尼日利亚奈拉 (NGN)", keywords: ["Nigerian Naira"] },
-      { value: "NIO", label: "尼加拉瓜科多巴 (NIO)", keywords: ["Nicaraguan Córdoba"] },
+      { value: "HKD", label: "HK$ 港元 (HKD)", keywords: ["Hong Kong dollar"] },
+      { value: "AFN", label: "AFN 阿富汗尼", keywords: ["Afghan Afghani"] },
+      { value: "NGN", label: "₦ 尼日利亚奈拉 (NGN)", keywords: ["Nigerian Naira"] },
+      { value: "NIO", label: "NIO 尼加拉瓜科多巴", keywords: ["Nicaraguan Córdoba"] },
     ];
 
     renderWithTooltipProvider(
@@ -92,11 +92,11 @@ describe("SearchableSelect", () => {
     await user.type(screen.getByPlaceholderText("搜索货币"), "ngn");
 
     const listbox = screen.getByRole("listbox");
-    expect(await within(listbox).findByText("尼日利亚奈拉 (NGN)")).toBeInTheDocument();
+    expect(await within(listbox).findByText("₦ 尼日利亚奈拉 (NGN)")).toBeInTheDocument();
     await waitFor(() => {
-      expect(within(listbox).queryByText("港元 (HK$)")).not.toBeInTheDocument();
-      expect(within(listbox).queryByText("阿富汗尼 (AFN)")).not.toBeInTheDocument();
-      expect(within(listbox).queryByText("尼加拉瓜科多巴 (NIO)")).not.toBeInTheDocument();
+      expect(within(listbox).queryByText("HK$ 港元 (HKD)")).not.toBeInTheDocument();
+      expect(within(listbox).queryByText("AFN 阿富汗尼")).not.toBeInTheDocument();
+      expect(within(listbox).queryByText("NIO 尼加拉瓜科多巴")).not.toBeInTheDocument();
     });
   });
 
@@ -115,7 +115,7 @@ describe("SearchableSelect", () => {
 
     await user.click(screen.getByRole("combobox"));
     await user.type(screen.getByPlaceholderText("搜索货币"), "euro");
-    fireEvent.click(await screen.findByText("欧元 (€)"));
+    fireEvent.click(await screen.findByText("€ 欧元 (EUR)"));
 
     expect(onValueChange).not.toHaveBeenCalled();
   });
@@ -128,8 +128,8 @@ describe("SearchableSelect", () => {
         value="CNY"
         onValueChange={vi.fn()}
         options={[
-          { value: "CNY", label: "人民币 (¥)", disabled: false },
-          { value: "USD", label: "美元 ($)", disabled: true },
+          { value: "CNY", label: "¥ 人民币 (CNY)", disabled: false },
+          { value: "USD", label: "$ 美元 (USD)", disabled: true },
         ]}
         searchPlaceholder="搜索货币"
       />,
@@ -138,8 +138,8 @@ describe("SearchableSelect", () => {
     await user.click(screen.getByRole("combobox"));
 
     const listbox = screen.getByRole("listbox");
-    expect(within(listbox).getByText("人民币 (¥)").closest("[cmdk-item]")).toHaveAttribute("data-disabled", "false");
-    expect(within(listbox).getByText("美元 ($)").closest("[cmdk-item]")).toHaveAttribute("data-disabled", "true");
+    expect(within(listbox).getByText("¥ 人民币 (CNY)").closest("[cmdk-item]")).toHaveAttribute("data-disabled", "false");
+    expect(within(listbox).getByText("$ 美元 (USD)").closest("[cmdk-item]")).toHaveAttribute("data-disabled", "true");
   });
 
   it("shows empty state when no option matches", async () => {

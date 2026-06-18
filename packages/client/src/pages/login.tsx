@@ -15,6 +15,7 @@ import Link from '@/components/router-link';
 import { useRouter } from '@/lib/router';
 import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { FieldError } from "@/components/ui/field-error";
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -29,8 +30,34 @@ import { useSetupStatus } from '@/hooks/use-setup-status';
 import { useI18n } from '@/i18n/I18nProvider';
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REMEMBERED_LOGIN_EMAIL_STORAGE_KEY = "renewlet_login_email";
 
 type LoginErrors = Partial<Record<"email" | "password", string>>;
+
+function readRememberedLoginEmail(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(REMEMBERED_LOGIN_EMAIL_STORAGE_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberLoginEmail(email: string) {
+  try {
+    window.localStorage.setItem(REMEMBERED_LOGIN_EMAIL_STORAGE_KEY, email);
+  } catch {
+    // 邮箱缓存只是表单便利，不参与认证；隐私模式或存储受限时静默退化为不记住账号。
+  }
+}
+
+function forgetRememberedLoginEmail() {
+  try {
+    window.localStorage.removeItem(REMEMBERED_LOGIN_EMAIL_STORAGE_KEY);
+  } catch {
+    // 同上，清理失败不应阻断登录流程。
+  }
+}
 
 const Login = () => {
   const router = useRouter();
@@ -38,8 +65,9 @@ const Login = () => {
   const passwordInputRef = useRef<HTMLInputElement>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(readRememberedLoginEmail);
   const [password, setPassword] = useState('');
+  const [rememberEmail, setRememberEmail] = useState(true);
   const [errors, setErrors] = useState<LoginErrors>({});
   const passwordResetEnabled = usePasswordResetAvailability();
   const setupStatus = useSetupStatus();
@@ -105,6 +133,11 @@ const Login = () => {
           description: getAuthDisplayMessage(error),
         });
         return;
+      }
+      if (rememberEmail) {
+        rememberLoginEmail(trimmedEmail);
+      } else {
+        forgetRememberedLoginEmail();
       }
       toast.success(t("auth.loginSuccess"));
       // 登录成功后只跳转 sanitize 后的站内路径，避免 next 参数把 token/session 状态带到外站。
@@ -244,6 +277,21 @@ const Login = () => {
                   </button>
                 </div>
                 <FieldError id="login-password-error" message={errors.password} />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="remember-login-email"
+                  checked={rememberEmail}
+                  onCheckedChange={(checked) => {
+                    const nextRememberEmail = checked === true;
+                    setRememberEmail(nextRememberEmail);
+                    if (!nextRememberEmail) forgetRememberedLoginEmail();
+                  }}
+                />
+                <Label htmlFor="remember-login-email" className="cursor-pointer text-sm font-normal text-muted-foreground">
+                  {t("auth.rememberEmail")}
+                </Label>
               </div>
 
               <div className="pt-3">

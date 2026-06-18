@@ -2,7 +2,7 @@
   "name": "@renewlet/cloudflare",
   "private": true,
   "license": "MIT",
-  "version": "0.1.1",
+  "version": "0.1.8",
   "type": "module",
   "scripts": {
     "test:run": "vitest run",
@@ -13,8 +13,16 @@
     "@ai-sdk/google": "3.0.80",
     "@ai-sdk/openai": "3.0.68",
     "@ai-sdk/openai-compatible": "2.0.48",
+    "@aws-sdk/client-s3": "^3.1064.0",
+    "@aws-sdk/middleware-flexible-checksums": "3.974.28",
+    "@aws-sdk/s3-request-presigner": "^3.1064.0",
     "@renewlet/shared": "workspace:*",
+    "@smithy/fetch-http-handler": "^5.4.6",
+    "@smithy/protocol-http": "^5.4.6",
+    "@smithy/types": "^4.14.3",
     "ai": "6.0.197",
+    "fast-xml-parser": "5.7.3",
+    "webdav": "5.10.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

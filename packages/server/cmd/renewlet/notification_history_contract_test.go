@@ -1,6 +1,6 @@
 package main
 
-// 本文件测试通知历史响应契约，尤其是空数组、legacy null 归一和 effectiveReminderDays 展示字段。
+// 通知历史契约测试保护前端审计事实源；legacy null 必须归一为空数组，effectiveReminderDays 不能丢。
 
 import (
 	"encoding/json"

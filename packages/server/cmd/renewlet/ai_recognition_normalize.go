@@ -1,5 +1,9 @@
 package main
 
+// ai_recognition_normalize.go 是模型输出进入 import preview 之前的清洗层。
+//
+// 第三方模型输出不可信：这里把宽松生成 schema、raw JSON 恢复结果和结构化 SDK 对象统一收敛到 shared API 契约，
+// 只保留可解释 warning，不把猜测或识别过程文本写进长期订阅字段。
 import (
 	"errors"
 	"regexp"
@@ -57,6 +61,7 @@ type aiGeneratedNotesField struct {
 }
 
 func normalizeAIGeneratedRecognizeResponse(raw aiGeneratedRecognizeResponse, providerType string, transportProtocol string, model string, diagnostics aiRecognitionDiagnostics, configContext aiRecognitionConfigContext) (aiRecognizeResponse, error) {
+	// generated schema 允许模型输出字符串数字和宽松枚举；进入前端前必须再走标准 RecognizeResponse 归一化。
 	response := aiRecognizeResponse{
 		Warnings:      raw.Warnings,
 		Subscriptions: make([]aiRecognizedSubscriptionDraft, 0, len(raw.Subscriptions)),
@@ -135,6 +140,7 @@ func normalizeAIRecognizeResponse(raw aiRecognizeResponse, providerType string, 
 	raw.Model = model
 	raw.Warnings = compactAIWarnings(raw.Warnings, 20)
 	if len(raw.Subscriptions) > aiRecognitionMaxSubscriptions {
+		// 截断发生在导入草稿边界；超过预算的模型输出不能让 preview/apply 处理无界列表。
 		raw.Subscriptions = raw.Subscriptions[:aiRecognitionMaxSubscriptions]
 		raw.Warnings = append(raw.Warnings, "AI_WARNING_TOO_MANY_SUBSCRIPTIONS_TRUNCATED")
 	}
@@ -271,6 +277,7 @@ func normalizeAITags(tags []string, subscriptionName string, existingTags []stri
 		} else if !isUsefulAIGeneratedTag(value, key, serviceKey) {
 			continue
 		}
+		// AI 生成标签只允许稳定复用维度；价格、地区、套餐等一次性属性不能污染用户长期筛选。
 		seen[key] = true
 		out = append(out, value)
 		if len(out) >= 3 {

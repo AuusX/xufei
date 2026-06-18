@@ -1,5 +1,8 @@
 package main
 
+// ai_recognition_stream.go 实现 AI 识别 SSE contract。
+//
+// progress/partial/text/reasoning 事件只服务前端状态反馈；真正可进入导入草稿的结果只能来自 recognition/final。
 import (
 	"context"
 	"encoding/json"
@@ -68,6 +71,7 @@ func handleAIRecognizeSubscriptionsStream(app core.App, e *core.RequestEvent) er
 	}
 	writer := aiRecognitionSSEWriter{response: e.Response, controller: http.NewResponseController(e.Response)}
 	writer.prepareHeaders()
+	// 识别请求可能被代理缓冲或长时间等待模型首包；心跳只写 SSE comment，避免污染 shared event union。
 	stopHeartbeat := writer.startHeartbeat(e.Request.Context())
 	defer stopHeartbeat()
 	if err := writer.Progress(aiRecognitionStreamStageInputRead); err != nil {
@@ -159,6 +163,7 @@ func (writer *aiRecognitionSSEWriter) write(event interface{}) error {
 func (writer *aiRecognitionSSEWriter) writeFrame(frame string) error {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
+	// 模型流、心跳和错误可能来自不同 goroutine；写帧必须串行，否则 SSE 边界会被交错破坏。
 	if _, err := fmt.Fprint(writer.response, frame); err != nil {
 		return err
 	}
@@ -183,10 +188,9 @@ func aiRecognitionStreamErrorForError(locale appLocale, err error) aiRecognition
 
 	var details *aiRecognitionErrorDetails
 	if diagnostics := aiRecognitionDiagnosticsFromError(err); diagnostics != nil {
+		cause := aiRecognitionCauseError(err)
 		details = &aiRecognitionErrorDetails{
-			Reason:          reason,
-			ProviderMessage: safeAIRecognitionProviderMessage(aiRecognitionCauseError(err)),
-			Diagnostics:     *diagnostics,
+			RawResponseText: optionalUpstreamBody(firstNonBlank(aiProviderResponseBody(aiProviderResponseFromError(cause)), optionalStringValue(safeAIRecognitionProviderMessage(cause)), reason)),
 		}
 	}
 	return aiRecognitionStreamErrorEvent{

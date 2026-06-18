@@ -1,6 +1,6 @@
 package main
 
-// 本文件测试公开展示页登录态管理 API、公开最小字段投影和私有资产代理，防止 Go 后端与 Worker 行为分叉。
+// 公开展示页测试保护公开 token 生命周期、最小字段投影和私有资产代理，防止 Go 后端与 Worker 行为分叉。
 
 import (
 	"encoding/json"
@@ -182,6 +182,7 @@ func TestPublicStatusPageLifecycleAndPublicRoute(t *testing.T) {
 
 func createPublicStatusTestAsset(t *testing.T, app core.App, token string, userID string, filename string) string {
 	t.Helper()
+	// 公开资产代理的前提是资产先作为私有 /api/app/assets 写入；测试必须复刻 owner 关系，不能直接伪造 URL。
 	res := serveMultipartTestRequest(
 		t,
 		app,

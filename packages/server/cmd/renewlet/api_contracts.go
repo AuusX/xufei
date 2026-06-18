@@ -27,8 +27,10 @@ import (
 )
 
 const maxJSONBodyBytes = 1 << 20
+const maxEmptyRequestBodyBytes = 1024
 
 var errEmptyJSONBody = errors.New("empty JSON body")
+var errNonEmptyRequestBody = errors.New("request body must be empty")
 
 // localizedValidator 是请求体的本地化校验约定。
 // Validate 在 JSON 结构通过后执行，用于枚举、邮箱、密码长度等产品语义校验。
@@ -59,8 +61,16 @@ type healthResponse struct {
 	Time string `json:"time"`
 }
 
-// setupStatusResponse 描述初始化入口是否可用。
-// 前端会据此展示 setup 流程，因此字段缺失必须被 schema 拒绝。
+// appStatusResponse 是认证前 capability 真相源。
+// 登录页、setup 页和设置页 demo 限制都从这里读取；真正写入仍由各 route/hook 再次校验。
+type appStatusResponse struct {
+	SetupRequired bool `json:"setupRequired"`
+	SetupEnabled  bool `json:"setupEnabled"`
+	DemoMode      bool `json:"demoMode"`
+}
+
+// setupStatusResponse 描述旧 setup 入口是否可用。
+// 注意：新前端读取 /api/app/status；保留两字段响应，避免旧探针被 demoMode 额外字段打破。
 type setupStatusResponse struct {
 	SetupRequired bool `json:"setupRequired"`
 	SetupEnabled  bool `json:"setupEnabled"`
@@ -213,6 +223,7 @@ type systemVersionResponse struct {
 	ReleaseInfo       *systemReleaseInfoDTO `json:"releaseInfo"`
 	Cached            bool                  `json:"cached"`
 	Warning           string                `json:"warning,omitempty"`
+	ErrorDetails      *upstreamErrorDetails `json:"errorDetails,omitempty"`
 	Build             systemBuildInfo       `json:"build"`
 }
 
@@ -223,6 +234,57 @@ type systemUpdateResponse struct {
 	TargetVersion  string `json:"targetVersion"`
 	NeedsRestart   bool   `json:"needsRestart"`
 	Message        string `json:"message"`
+}
+
+type builtInIconProviderCountsResponse struct {
+	TheSVG         int `json:"thesvg"`
+	Selfhst        int `json:"selfhst"`
+	DashboardIcons int `json:"dashboardIcons"`
+}
+
+type builtInIconProviderVersionResponse struct {
+	SourceRef          string  `json:"sourceRef"`
+	DisplayVersion     string  `json:"displayVersion"`
+	CommitSHA          *string `json:"commitSha"`
+	CommitShortSHA     *string `json:"commitShortSha"`
+	CommitDate         *string `json:"commitDate"`
+	ReleaseTag         *string `json:"releaseTag"`
+	ReleasePublishedAt *string `json:"releasePublishedAt"`
+}
+
+type builtInIconIndexProviderStatusResponse struct {
+	Provider        string                              `json:"provider"`
+	Current         *builtInIconProviderVersionResponse `json:"current"`
+	Latest          *builtInIconProviderVersionResponse `json:"latest"`
+	IconCount       int                                 `json:"iconCount"`
+	CheckedAt       *string                             `json:"checkedAt"`
+	RefreshedAt     *string                             `json:"refreshedAt"`
+	LastError       *string                             `json:"lastError"`
+	Refreshing      bool                                `json:"refreshing"`
+	UpdateAvailable bool                                `json:"updateAvailable"`
+}
+
+type builtInIconIndexStatusResponse struct {
+	Source         string                                   `json:"source"`
+	Hash           *string                                  `json:"hash"`
+	IconCount      int                                      `json:"iconCount"`
+	ProviderCounts builtInIconProviderCountsResponse        `json:"providerCounts"`
+	CheckedAt      *string                                  `json:"checkedAt"`
+	UpdatedAt      *string                                  `json:"updatedAt"`
+	Refreshing     bool                                     `json:"refreshing"`
+	Providers      []builtInIconIndexProviderStatusResponse `json:"providers"`
+}
+
+type builtInIconIndexProviderCheckResponse struct {
+	Status       builtInIconIndexStatusResponse         `json:"status"`
+	Provider     builtInIconIndexProviderStatusResponse `json:"provider"`
+	ErrorDetails *upstreamErrorDetails                  `json:"errorDetails,omitempty"`
+}
+
+type builtInIconIndexProviderRefreshResponse struct {
+	Status       builtInIconIndexStatusResponse         `json:"status"`
+	Provider     builtInIconIndexProviderStatusResponse `json:"provider"`
+	ErrorDetails *upstreamErrorDetails                  `json:"errorDetails,omitempty"`
 }
 
 // rateLimitedResponse 是简单限流响应。
@@ -323,6 +385,24 @@ func decodeStrictJSONWithLimit[T interface{}](request *http.Request, locale appL
 // 手动通知运行允许空 body，因此这里把“空 body”与“非法 JSON”区分开。
 func decodeOptionalStrictJSON[T interface{}](request *http.Request, locale appLocale) (T, error) {
 	return decodeStrictJSONFromReaderWithLimit[T](request.Body, locale, true, maxJSONBodyBytes)
+}
+
+// requireEmptyRequestBody 用于显式无参数动作，避免 `{}` 这种旧 JSON 习惯继续扩大 API 契约面。
+func requireEmptyRequestBody(request *http.Request) error {
+	if request.Body == nil {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(request.Body, maxEmptyRequestBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxEmptyRequestBodyBytes {
+		return errors.New("request body too large")
+	}
+	if len(data) > 0 {
+		return errNonEmptyRequestBody
+	}
+	return nil
 }
 
 // decodeStrictJSONFromReader 限制请求体大小后再进入 JSON decoder。

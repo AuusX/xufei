@@ -1,5 +1,11 @@
 package main
 
+// subscription_renewal.go 是 Go/PocketBase 运行面的订阅续订算法。
+//
+// 架构位置：shared TypeScript 版本是事实源，Go 版通过同一组 JSON fixture 对齐，
+// 供 Docker cron、通知生成前维护和手动续订 API 使用。
+//
+// 注意：所有输入输出都是 date-only 字符串，不引入服务器本地时区；today 由调用方按用户时区生成。
 import (
 	"errors"
 	"math"
@@ -51,6 +57,7 @@ type subscriptionRecordReader interface {
 }
 
 func isAutoRenewEligible(input subscriptionRenewalInput, today string) bool {
+	// 自动续订只处理已经落后于用户本地 today 的 active/trial 周期订阅，缺省 false 不能被解释成授权。
 	return input.AutoRenew &&
 		input.BillingCycle != "one-time" &&
 		(input.Status == "active" || input.Status == "trial") &&
@@ -61,6 +68,7 @@ func isAutoRenewEligible(input subscriptionRenewalInput, today string) bool {
 }
 
 func isManualRenewEligible(input subscriptionRenewalInput) bool {
+	// 手动续订允许 expired 重新回到 active，但排除 autoRenew=true，避免和维护 cron 同时推进。
 	return !input.AutoRenew &&
 		input.BillingCycle != "one-time" &&
 		(input.Status == "active" || input.Status == "trial" || input.Status == "expired") &&
@@ -117,6 +125,7 @@ func advanceBillingDate(input subscriptionRenewalInput, today string, mode renew
 	if mode == renewalModeManual && original.After(todayDate) {
 		threshold = original
 	}
+	// 手动续订 strict=true：即使当前日期还没到，也至少推进一期，防止按钮点击后看起来“没有变化”。
 	return firstCycleDateAfter(anchor, input, threshold, mode == renewalModeManual)
 }
 
@@ -132,6 +141,7 @@ func firstCycleDateAfter(anchor time.Time, input subscriptionRenewalInput, thres
 		}
 		cycleCount++
 	}
+	// 脏数据或极端自定义周期不能让单条订阅把 cron 卡成无限循环。
 	return "", errors.New("SUBSCRIPTION_RENEWAL_ADVANCE_LIMIT_EXCEEDED")
 }
 
@@ -140,6 +150,7 @@ func initialCycleCount(anchor time.Time, input subscriptionRenewalInput, thresho
 	if dayStep <= 0 {
 		return 1
 	}
+	// 只有固定天数周期能直接跳到近似期数；月/年周期必须逐期推进以保留月末夹取语义。
 	diff := int(threshold.Sub(anchor).Hours() / 24)
 	if strict {
 		diff++

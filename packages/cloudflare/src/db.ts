@@ -1,8 +1,11 @@
 import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import { appSettingsSchema, settingsUpdateBodySchema, type ApiAppSettings } from "@renewlet/shared/schemas/settings";
 import { apiSubscriptionSchema, type ApiSubscription } from "@renewlet/shared/schemas/subscriptions";
+import { customConfigSchema } from "@renewlet/shared/schemas/custom-config";
 import { cleanBuiltInIconSourceSettingsPatch, mergeBuiltInIconSourceSettings } from "@renewlet/shared/built-in-icons";
+import { DISABLED_REMINDER_DAYS, MAX_REMINDER_DAYS } from "@renewlet/shared/runtime";
 import type { AdminUser } from "@renewlet/shared/schemas/admin";
+import type { AssetInUseDetails } from "@renewlet/shared/schemas/media";
 import type { z } from "zod";
 import type { AssetRow, Env, NotificationJobRow, SubscriptionRow, UserRow } from "./types";
 
@@ -56,6 +59,7 @@ const subscriptionColumnNames = [
   "repeat_reminder_enabled",
   "repeat_reminder_interval",
   "repeat_reminder_window",
+  "cost_sharing_json",
   "extra_json",
   "created_at",
   "updated_at",
@@ -231,6 +235,8 @@ export async function putCustomConfig(env: Env, userId: string, config: unknown)
 /** 将 D1 订阅行转换为公开 API 形状；这是 Worker 订阅响应的唯一出站契约门。 */
 export function toApiSubscription(row: SubscriptionRow): ApiSubscription {
   const tags = parseStringArray(row.tags_json);
+  // cost_sharing_json 是 D1 唯一持久化形态，出站必须重新过 shared schema，防止 Worker 与 Docker costSharing 漂移。
+  const costSharing = parseJsonObject(row.cost_sharing_json ?? "{}");
   const extra = parseJsonObject(row.extra_json);
   // D1 行使用 snake_case/整数布尔；所有出站数据都在这里重新过 shared schema，避免前端和 Worker 分叉。
   const normalized = {
@@ -260,6 +266,7 @@ export function toApiSubscription(row: SubscriptionRow): ApiSubscription {
     repeatReminderEnabled: intToBool(row.repeat_reminder_enabled),
     repeatReminderInterval: row.repeat_reminder_interval,
     repeatReminderWindow: row.repeat_reminder_window,
+    ...(Object.keys(costSharing).length > 0 ? { costSharing } : {}),
     ...(Object.keys(extra).length > 0 ? { extra } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -277,7 +284,7 @@ export async function countSubscriptions(env: Env, userId: string): Promise<numb
   return row?.count ?? 0;
 }
 
-/** listSubscriptions 用游标分页拉全量，供通知 cron/ICS 这类后台任务复用。 */
+/** listSubscriptions 用游标分页拉全量，只供用户主动列表、导出、日历和设置页概览这类显式读取场景复用。 */
 export async function listSubscriptions(env: Env, userId: string): Promise<SubscriptionRow[]> {
   const rows: SubscriptionRow[] = [];
   let cursor: string | undefined;
@@ -287,6 +294,52 @@ export async function listSubscriptions(env: Env, userId: string): Promise<Subsc
     if (page.length < 100) return rows;
     cursor = subscriptionCursor(page[page.length - 1]!);
   }
+}
+
+export async function listNotificationScheduleCandidateSubscriptions(
+  env: Env,
+  userId: string,
+  options: { scheduledLocalDate: string; includeExpired: boolean; showExpired: boolean },
+): Promise<SubscriptionRow[]> {
+  const maxDate = addDateOnlyDays(options.scheduledLocalDate, MAX_REMINDER_DAYS);
+  const selects = [
+    `SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
+      WHERE user_id = ? AND reminder_days != ? AND next_billing_date >= ? AND next_billing_date <= ?`,
+    `SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
+      WHERE user_id = ? AND reminder_days != ? AND trial_end_date >= ? AND trial_end_date <= ?`,
+  ];
+  const params: unknown[] = [
+    userId, DISABLED_REMINDER_DAYS, options.scheduledLocalDate, maxDate,
+    userId, DISABLED_REMINDER_DAYS, options.scheduledLocalDate, maxDate,
+  ];
+  if (options.includeExpired && options.showExpired) {
+    selects.push(`SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
+      WHERE user_id = ? AND reminder_days != ? AND next_billing_date < ?`);
+    params.push(userId, DISABLED_REMINDER_DAYS, options.scheduledLocalDate);
+  }
+  // scheduled cron 先用索引列缩到候选集合；精确 reminderDays、fixed-term、expired 和 repeat 语义仍由 collect* 统一过滤。
+  const result = await env.DB.prepare(`${selects.join("\nUNION\n")}\nORDER BY created_at DESC, id DESC`)
+    .bind(...params)
+    .all<SubscriptionRow>();
+  return result.results;
+}
+
+export async function listRepeatReminderCandidateSubscriptions(env: Env, userId: string, localDate: string): Promise<SubscriptionRow[]> {
+  const maxDate = addDateOnlyDays(localDate, MAX_REMINDER_DAYS);
+  const result = await env.DB.prepare(`
+    SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
+      WHERE user_id = ? AND repeat_reminder_enabled = 1 AND reminder_days != ?
+        AND next_billing_date >= ? AND next_billing_date <= ?
+    UNION
+    SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
+      WHERE user_id = ? AND repeat_reminder_enabled = 1 AND reminder_days != ?
+        AND status = 'trial' AND trial_end_date >= ? AND trial_end_date <= ?
+    ORDER BY created_at DESC, id DESC
+  `).bind(
+    userId, DISABLED_REMINDER_DAYS, localDate, maxDate,
+    userId, DISABLED_REMINDER_DAYS, localDate, maxDate,
+  ).all<SubscriptionRow>();
+  return result.results;
 }
 
 /** 分页只按当前 user_id 查询，游标不能跨用户复用或泄露其它用户订阅。 */
@@ -346,6 +399,35 @@ export async function listAssets(env: Env, userId: string, kind: string, page: n
   return { items: rows.results, total: totalRow?.count ?? 0 };
 }
 
+export async function countAssetReferences(env: Env, userId: string, assetId: string): Promise<AssetInUseDetails> {
+  const assetUrl = `/api/app/assets/${assetId}`;
+  const row = await env.DB.prepare("SELECT COUNT(*) AS count FROM subscriptions WHERE user_id = ? AND logo = ? LIMIT 1")
+    .bind(userId, assetUrl)
+    .first<{ count: number }>();
+  const subscriptionLogoCount = row?.count ?? 0;
+  const paymentMethodIconCount = await countPaymentMethodIconReferences(env, userId, assetUrl);
+  return {
+    usageCount: subscriptionLogoCount + paymentMethodIconCount,
+    subscriptionLogoCount,
+    paymentMethodIconCount,
+  };
+}
+
+async function countPaymentMethodIconReferences(env: Env, userId: string, assetUrl: string): Promise<number> {
+  const row = await env.DB.prepare("SELECT config_json FROM custom_configs WHERE user_id = ? LIMIT 1")
+    .bind(userId)
+    .first<{ config_json: string }>();
+  if (!row) return 0;
+  // 删除资产必须失败闭合；坏 custom config 不能被当作“没有引用”，否则会误删仍在 UI 使用的图标。
+  const config = customConfigSchema.parse(JSON.parse(row.config_json));
+  return config.paymentMethods.filter((item) => item.icon === assetUrl).length;
+}
+
+export async function deleteAssetMetadata(env: Env, userId: string, id: string): Promise<void> {
+  // R2 object 删除和 D1 metadata 删除不在同一事务；metadata 带 owner 条件，避免失败重试时误删他人记录。
+  await env.DB.prepare("DELETE FROM assets WHERE user_id = ? AND id = ?").bind(userId, id).run();
+}
+
 export async function listSubscriptionTags(env: Env, userId: string, limit = 200): Promise<string[]> {
   // 这些标签名会进入第三方 AI prompt；只传用户已经持久化的标签文本，不带历史订阅名称、金额或备注。
   const rows = await env.DB.prepare("SELECT tags_json FROM subscriptions WHERE user_id = ? AND tags_json != '[]' ORDER BY updated_at DESC LIMIT 1000")
@@ -393,4 +475,15 @@ export function parseJobResult(row: NotificationJobRow): unknown {
   } catch {
     return {};
   }
+}
+
+function addDateOnlyDays(value: string, days: number): string {
+  const parts = value.split("-");
+  if (parts.length !== 3) return value;
+  const year = Number.parseInt(parts[0] ?? "", 10);
+  const month = Number.parseInt(parts[1] ?? "", 10);
+  const day = Number.parseInt(parts[2] ?? "", 10);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return value;
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  return date.toISOString().slice(0, 10);
 }

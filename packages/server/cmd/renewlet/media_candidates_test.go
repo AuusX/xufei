@@ -1,6 +1,6 @@
 package main
 
-// 本文件测试媒体候选解析的认证、限流、内置 provider 配置和 favicon fallback 预算。
+// 媒体候选测试保护内置 provider 排序、用户来源开关、favicon fallback 预算和认证限流边界。
 
 import (
 	"encoding/json"
@@ -28,6 +28,7 @@ type mediaResolverFixture struct {
 
 func loadMediaResolverFixtures(t *testing.T) []mediaResolverFixture {
 	t.Helper()
+	// 这份 fixture 与 shared 包共用，锁住 Go embedded static 和 Worker resolver 对同一查询的排序语义。
 	data, err := os.ReadFile("../../../shared/data/media-resolver-fixtures.json")
 	if err != nil {
 		t.Fatal(err)
@@ -219,8 +220,7 @@ func TestMediaCandidatesSearchUsesReducedBuiltInQuery(t *testing.T) {
 }
 
 func TestMediaCandidatesSearchUsesBuiltInMatchForFaviconFallback(t *testing.T) {
-	originalResolver := builtInResolver
-	builtInResolver = buildBuiltInResolverIndex([]builtInIcon{{
+	resolver := buildBuiltInResolverIndex([]builtInIcon{{
 		Provider:  "thesvg",
 		Slug:      "acme",
 		Title:     "Acme",
@@ -228,11 +228,8 @@ func TestMediaCandidatesSearchUsesBuiltInMatchForFaviconFallback(t *testing.T) {
 		ExactKeys: []string{"acme"},
 		TokenKeys: []string{"acme"},
 	}})
-	t.Cleanup(func() {
-		builtInResolver = originalResolver
-	})
 
-	item := resolveMediaCandidateItem("logo", "search", mediaCandidateResolveItem{
+	item := resolveMediaCandidateItem(resolver, "logo", "search", mediaCandidateResolveItem{
 		ID:   "synthetic-long-plan",
 		Name: "Acme Alpha Beta Gamma",
 	}, 8, defaultBuiltInIconSourceSettings())
@@ -257,14 +254,10 @@ func TestMediaCandidatesSearchReservesFaviconFallbackBudget(t *testing.T) {
 			TokenKeys: []string{"acme"},
 		})
 	}
-	originalResolver := builtInResolver
-	builtInResolver = buildBuiltInResolverIndex(icons)
-	t.Cleanup(func() {
-		builtInResolver = originalResolver
-	})
+	resolver := buildBuiltInResolverIndex(icons)
 
 	limit := 8
-	item := resolveMediaCandidateItem("logo", "search", mediaCandidateResolveItem{
+	item := resolveMediaCandidateItem(resolver, "logo", "search", mediaCandidateResolveItem{
 		ID:   "synthetic-many-built-in",
 		Name: "Acme",
 	}, limit, defaultBuiltInIconSourceSettings())

@@ -1,5 +1,9 @@
 package main
 
+// ai_recognition_input.go 负责读取 AI 识别 multipart 输入。
+//
+// 文本、图片和 thinking control 都是用户会直接发往第三方 provider 的敏感输入；这里先做总量限制、
+// 图片类型白名单和 strict JSON control 校验，避免服务端代理成为大文件或未知配置入口。
 import (
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +20,7 @@ import (
 )
 
 func readAIRecognitionMultipart(e *core.RequestEvent, locale appLocale) (aiRecognitionInput, error) {
+	// MaxBytesReader 覆盖 multipart 头部开销，单个 part 仍单独限额；两层限制共同防止绕过图片数量预算。
 	maxBodyBytes := int64(aiRecognitionMaxTextChars*4 + aiRecognitionMaxImages*aiRecognitionMaxImageBytes + aiRecognitionMultipartOverhead)
 	e.Request.Body = http.MaxBytesReader(e.Response, e.Request.Body, maxBodyBytes)
 	reader, err := e.Request.MultipartReader()
@@ -141,6 +146,7 @@ func parseAIThinkingControl(data []byte, locale appLocale) (*aiThinkingControl, 
 }
 
 func (settings *aiRecognitionSettings) UnmarshalJSON(data []byte) error {
+	// settings 来自持久化用户配置；手写 allowed map 保留严格未知字段边界，同时兼容历史 provider 字段。
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -248,6 +254,7 @@ func sanitizeAIRecognitionSettings(settings aiRecognitionSettings) aiRecognition
 	settings.APIKey = strings.TrimSpace(settings.APIKey)
 	if settings.DefaultThinkingControl != nil {
 		if err := validateAIThinkingControl(settings.DefaultThinkingControl); err != nil || !aiThinkingControlMatchesSettings(settings, settings.DefaultThinkingControl) {
+			// 设置页保存的是“上次可用控制项”；provider/model 切换后不兼容值必须在读取边界丢弃。
 			settings.DefaultThinkingControl = nil
 		}
 	}

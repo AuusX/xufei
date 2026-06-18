@@ -306,16 +306,28 @@ func processNotificationCronUser(app core.App, options notificationCronOptions, 
 	if userID == "" {
 		return notificationCronUserResult{Action: "skipped", Reason: "missing_user"}, nil
 	}
+	if demoModePolicy.IsUserID(app, userID) {
+		// demo 账号允许浏览通知概览，但 cron 不能代表访客向真实渠道发送消息或写入历史扰动。
+		return notificationCronUserResult{UserID: userID, Action: "skipped", Reason: "demo_user"}, nil
+	}
 	settings := settingsFromRecord(row)
-	// 通知内容生成前先做一次幂等续订维护，避免自动续订项刚过期就被同一轮 cron 当成 expired 通知。
-	if _, err := renewAutoSubscriptionsForUser(app, userID, settings.Timezone, options.Now); err != nil {
-		return notificationCronUserResult{}, err
+	schedule := getLocalScheduleDecision(options.Now, settings.Timezone, settings.NotificationTimeLocal, options.WindowMinutes, options.Force)
+	if !schedule.Due && !options.Force {
+		state, err := getSubscriptionSchedulerState(app, userID)
+		if err != nil {
+			return notificationCronUserResult{}, err
+		}
+		if state.RepeatReminderCount > 0 {
+			subscriptions, err := listRepeatReminderCandidateSubscriptions(app, userID, settings, options.Now)
+			if err != nil {
+				return notificationCronUserResult{}, err
+			}
+			// 日常窗口未命中时只让 repeat 候选参与 due 判断；gate=0 时不查 subscriptions，避免每分钟空跑 I/O。
+			if repeat := getRepeatScheduleDecision(options.Now, settings, subscriptions, options.WindowMinutes); repeat.Due {
+				schedule = repeat
+			}
+		}
 	}
-	subscriptions, err := listNotificationSubscriptions(app, userID)
-	if err != nil {
-		return notificationCronUserResult{}, err
-	}
-	schedule := getNotificationScheduleDecision(options.Now, settings, subscriptions, options.WindowMinutes, options.Force)
 	if !schedule.Due {
 		return notificationCronUserResult{
 			UserID: userID,
@@ -324,6 +336,14 @@ func processNotificationCronUser(app core.App, options notificationCronOptions, 
 		}, nil
 	}
 
+	// 确认本 tick 会写历史或发送后再推进续订并读取 payload 候选，避免非 due 分钟触碰大订阅表。
+	if _, err := renewAutoSubscriptionsForUser(app, userID, settings.Timezone, options.Now); err != nil {
+		return notificationCronUserResult{}, err
+	}
+	subscriptions, err := listNotificationScheduleCandidateSubscriptions(app, userID, settings, schedule.localScheduleOccurrence, true)
+	if err != nil {
+		return notificationCronUserResult{}, err
+	}
 	due := buildDueNotificationForSchedule(schedule.localScheduleOccurrence, options.Now, settings, subscriptions, true)
 	existingJob, _ := getNotificationJob(app, userID, schedule.ScheduledLocalDate, schedule.ScheduledLocalTime, schedule.TimeZone)
 	if existingJob != nil && (existingJob.GetString("status") == notificationStatusSent || existingJob.GetString("status") == notificationStatusSkipped) {

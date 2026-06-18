@@ -1,17 +1,71 @@
 // SettingsScreen 测试保护设置页分区装配和 Cloudflare/Docker 差异入口，不验证普通控件样式。
-import { cleanup, screen, within } from "@testing-library/react";
+import { useState } from "react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_CUSTOM_CONFIG } from "@/types/config";
 import {
   DEFAULT_SETTINGS,
   WEBHOOK_HEADERS_PLACEHOLDER,
   WEBHOOK_PAYLOAD_PLACEHOLDER,
 } from "@/types/subscription";
+import { NotificationChannelConfigPanel } from "./notification-channel-config-panel";
 import {
   createControllerState,
+  createUploadedAssetsManagerState,
   mocks,
   renderSettingsScreen,
 } from "./settings-screen.test-utils";
+
+function StatefulEmailNotificationPanel({ initialPort = "" }: { initialPort?: string }) {
+  const [settings, setSettings] = useState({
+    ...DEFAULT_SETTINGS,
+    enabledChannels: ["email" as const],
+    smtpHost: "smtp.example.com",
+    smtpPort: initialPort,
+    recipientEmail: "alice@example.com",
+  });
+
+  return (
+    <NotificationChannelConfigPanel
+      channel="email"
+      settings={settings}
+      enabled
+      updateSetting={(key, value) => setSettings((previous) => ({ ...previous, [key]: value }))}
+      testingChannel={null}
+      onTest={vi.fn()}
+    />
+  );
+}
+
+function useStatefulMonthlyBudgetController(initialBudget = 10000) {
+  const [monthlyBudgetInput, setMonthlyBudgetInput] = useState(String(initialBudget));
+  const [monthlyBudget, setMonthlyBudget] = useState(initialBudget);
+  const [monthlyBudgetError, setMonthlyBudgetError] = useState<string | null>(null);
+
+  return {
+    ...createControllerState({
+      settings: { monthlyBudget },
+      hasUnsavedChanges: monthlyBudgetInput !== String(monthlyBudget) || Boolean(monthlyBudgetError),
+    }),
+    monthlyBudgetInput,
+    monthlyBudgetError,
+    handleMonthlyBudgetInputChange: (value: string) => {
+      setMonthlyBudgetInput(value);
+      if (!value.trim()) {
+        setMonthlyBudgetError("预算金额无效");
+        return;
+      }
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setMonthlyBudgetError("预算金额无效");
+        return;
+      }
+      setMonthlyBudgetError(null);
+      setMonthlyBudget(parsed);
+    },
+  };
+}
 
 describe("SettingsScreen SMTP email settings", () => {
   beforeEach(() => {
@@ -26,6 +80,7 @@ describe("SettingsScreen SMTP email settings", () => {
       dispatchEvent: vi.fn(),
     })));
     mocks.useSettingsFormController.mockReturnValue(createControllerState());
+    mocks.useUploadedAssetsManager.mockReturnValue(createUploadedAssetsManagerState());
   });
 
   afterEach(() => {
@@ -41,7 +96,11 @@ describe("SettingsScreen SMTP email settings", () => {
     expect(notificationsSection).not.toBeNull();
     expect(within(notificationsSection as HTMLElement).queryByLabelText("API Key")).not.toBeInTheDocument();
     expect(screen.getByLabelText("SMTP 服务器")).toHaveValue("smtp.example.com");
-    expect(screen.getByLabelText("SMTP 端口")).toHaveValue("587");
+    const smtpPortInput = screen.getByLabelText("SMTP 端口");
+    expect(smtpPortInput).toHaveValue("587");
+    expect(smtpPortInput).toHaveAttribute("type", "text");
+    expect(smtpPortInput).toHaveAttribute("inputmode", "numeric");
+    expect(screen.queryByRole("spinbutton", { name: "SMTP 端口" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("SMTP 用户名")).toHaveValue("smtp-user");
     expect(screen.getByLabelText("SMTP 密码")).toHaveValue("smtp-password");
     expect(screen.getByLabelText("发件人")).toHaveValue("Renewlet <noreply@example.com>");
@@ -49,9 +108,66 @@ describe("SettingsScreen SMTP email settings", () => {
     expect(screen.getByRole("button", { name: "测试邮件通知" })).toBeInTheDocument();
   });
 
-  it("shows the PocketBase admin link for admins", () => {
+  it("disables external integration controls in demo mode while keeping ordinary settings editable", () => {
+    mocks.useSettingsFormController.mockReturnValue(createControllerState({
+      externalIntegrationsDisabled: true,
+    }));
     renderSettingsScreen();
 
+    expect(screen.getByRole("button", { name: "修改密码" })).toBeDisabled();
+    expect(screen.getByLabelText("SMTP 服务器")).toBeDisabled();
+    expect(screen.getByLabelText("SMTP 端口")).toBeDisabled();
+    expect(screen.getByLabelText("收件人邮箱")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "测试邮件通知" })).toBeDisabled();
+    expect(screen.getByLabelText("第三方 API 测试号码")).toBeDisabled();
+    expect(screen.getByLabelText("Base URL")).toBeDisabled();
+    expect(screen.getByLabelText("API Key")).toBeDisabled();
+    for (const button of screen.getAllByRole("button", { name: "测试连接" })) {
+      expect(button).toBeDisabled();
+    }
+    expect(screen.getByRole("button", { name: "保存配置" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "立即备份" })).toBeDisabled();
+    expect(screen.getByLabelText("月度预算金额")).toBeEnabled();
+  });
+
+  it("keeps the SMTP port as a bounded NumericInput string", async () => {
+    const user = userEvent.setup();
+    render(<StatefulEmailNotificationPanel />);
+
+    const input = screen.getByLabelText("SMTP 端口") as HTMLInputElement;
+    expect(input).toHaveAttribute("type", "text");
+    expect(input).toHaveAttribute("inputmode", "numeric");
+    expect(screen.queryByRole("spinbutton", { name: "SMTP 端口" })).not.toBeInTheDocument();
+
+    await user.type(input, "587");
+    expect(input).toHaveValue("587");
+
+    await user.clear(input);
+    expect(input).toHaveValue("");
+
+    await user.type(input, "0");
+    expect(input).toHaveValue("");
+
+    await user.type(input, "65535");
+    expect(input).toHaveValue("65535");
+
+    await user.clear(input);
+    await user.type(input, "65536");
+    expect(input).not.toHaveValue("65536");
+
+    await user.clear(input);
+    await user.type(input, "01");
+    expect(input).toHaveValue("1");
+
+    await user.clear(input);
+    await user.type(input, "-1.5e3");
+    expect(input.value).not.toMatch(/[.\-eE]/);
+  });
+
+  it("shows admin account links for Docker admins", () => {
+    renderSettingsScreen();
+
+    expect(screen.getByRole("link", { name: "管理用户" })).toHaveAttribute("href", "/admin/users");
     const link = screen.getByRole("link", { name: "PocketBase 后台" });
     expect(link).toHaveAttribute("href", "/_/");
     expect(link).toHaveAttribute("target", "_blank");
@@ -71,13 +187,27 @@ describe("SettingsScreen SMTP email settings", () => {
     expect(screen.getByTestId("route-path")).toHaveTextContent("/forgot-password");
   });
 
-  it("hides the PocketBase admin link for non-admin users", () => {
+  it("hides admin-only account links for non-admin users", () => {
     mocks.useSettingsFormController.mockReturnValue(createControllerState({
+      canManageUsers: false,
       canAccessPocketBaseAdmin: false,
     }));
 
     renderSettingsScreen();
 
+    expect(screen.queryByRole("link", { name: "管理用户" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "PocketBase 后台" })).not.toBeInTheDocument();
+  });
+
+  it("keeps user management visible for Cloudflare admins while hiding PocketBase admin", () => {
+    mocks.useSettingsFormController.mockReturnValue(createControllerState({
+      canManageUsers: true,
+      canAccessPocketBaseAdmin: false,
+    }));
+
+    renderSettingsScreen();
+
+    expect(screen.getByRole("link", { name: "管理用户" })).toHaveAttribute("href", "/admin/users");
     expect(screen.queryByRole("link", { name: "PocketBase 后台" })).not.toBeInTheDocument();
   });
 
@@ -140,6 +270,9 @@ describe("SettingsScreen SMTP email settings", () => {
     renderSettingsScreen();
 
     expect(screen.getByRole("heading", { name: "常用货币折算为 CNY" })).toBeInTheDocument();
+    const defaultCurrencySelect = screen.getByRole("combobox", { name: "统计货币" });
+    expect(defaultCurrencySelect).toHaveTextContent("¥ 人民币 (CNY)");
+    expect(defaultCurrencySelect).not.toHaveTextContent("¥ 人民币 (¥)");
     expect(screen.queryByRole("heading", { name: "汇率预览 (1 CNY = )" })).not.toBeInTheDocument();
     expect(screen.getByText("1 USD")).toBeInTheDocument();
     expect(screen.getAllByText("≈ ¥6.78 CNY").length).toBeGreaterThan(0);
@@ -173,6 +306,28 @@ describe("SettingsScreen SMTP email settings", () => {
     expect(budgetInput).toHaveAttribute("inputmode", "decimal");
     expect(budgetInput).toHaveAttribute("enterkeyhint", "done");
     expect(screen.queryByRole("spinbutton", { name: "月度预算金额" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the monthly budget empty while editing and formats the next valid value", async () => {
+    const user = userEvent.setup();
+    mocks.useSettingsFormController.mockImplementation(() => useStatefulMonthlyBudgetController());
+
+    renderSettingsScreen();
+
+    const budgetInput = screen.getByLabelText("月度预算金额") as HTMLInputElement;
+    expect(budgetInput).toHaveValue("10,000");
+
+    await user.clear(budgetInput);
+
+    expect(budgetInput).toHaveValue("");
+    expect(budgetInput).not.toHaveValue("0");
+    expect(screen.getByText("预算金额无效")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存更改" })).toBeDisabled();
+
+    await user.type(budgetInput, "10000");
+
+    expect(budgetInput).toHaveValue("10,000");
+    expect(screen.queryByText("预算金额无效")).not.toBeInTheDocument();
   });
 
   it("lets users edit the global notification reminder lead time", async () => {
@@ -296,6 +451,26 @@ describe("SettingsScreen SMTP email settings", () => {
     expect(controller.publicStatusPage.revoke).toHaveBeenCalled();
   });
 
+  it("shows an explicit public status reporting currency without duplicated symbols", () => {
+    mocks.useSettingsFormController.mockReturnValue(createControllerState({
+      settings: {
+        defaultCurrency: "USD",
+        publicStatusCurrency: "CNY",
+      },
+      publicStatusPage: {
+        enabled: true,
+        pageUrl: "https://example.com/status/secret",
+        showPrices: true,
+      },
+    }));
+
+    renderSettingsScreen();
+
+    const currencySelect = screen.getByRole("combobox", { name: "公开页统计货币" });
+    expect(currencySelect).toHaveTextContent("¥ 人民币 (CNY)");
+    expect(currencySelect).not.toHaveTextContent("¥ 人民币 (¥)");
+  });
+
   it("keeps the public status setup compact before URL generation", async () => {
     const user = userEvent.setup();
     const controller = createControllerState({
@@ -334,6 +509,19 @@ describe("SettingsScreen SMTP email settings", () => {
     expect(phoneInput).toHaveAttribute("enterkeyhint", "done");
   });
 
+  it("keeps category and payment add actions visible when default lists exceed the dialog cap", () => {
+    expect(DEFAULT_CUSTOM_CONFIG.categories.length).toBeGreaterThan(20);
+    expect(DEFAULT_CUSTOM_CONFIG.paymentMethods.length).toBeGreaterThan(20);
+
+    renderSettingsScreen();
+
+    const categoryManager = screen.getByRole("region", { name: "分类管理" });
+    const paymentManager = screen.getByRole("region", { name: "支付方式管理" });
+
+    expect(within(categoryManager).getByRole("button", { name: "添加选项" })).toBeInTheDocument();
+    expect(within(paymentManager).getByRole("button", { name: "添加选项" })).toBeInTheDocument();
+  });
+
   it("keeps AI recognition provider and model controls in the shared field grid", () => {
     renderSettingsScreen();
 
@@ -357,7 +545,7 @@ describe("SettingsScreen SMTP email settings", () => {
     await user.click(configureButton);
 
     const dialog = await screen.findByRole("dialog", { name: "配置内置图标来源" });
-    expect(within(dialog).getByText("选择 Logo 和自定义图标搜索可使用的内置 SVG 图标库，并控制是否展示上游变体。")).toBeInTheDocument();
+    expect(within(dialog).getByText("选择 Logo 和支付方式图标搜索可使用的内置 SVG 图标库，并控制是否展示上游变体。")).toBeInTheDocument();
     expect(within(dialog).getByRole("switch", { name: "切换 TheSVG 来源" })).toBeEnabled();
     expect(within(dialog).getByRole("switch", { name: "切换 selfh.st icons 来源" })).toBeEnabled();
     expect(within(dialog).getByRole("switch", { name: "切换 Dashboard Icons 来源" })).toBeEnabled();

@@ -16,21 +16,26 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
 
-var notificationHTTPClientFactory = defaultNotificationHTTPClient
+var (
+	notificationHTTPClientFactory = defaultNotificationHTTPClient
+	// outboundURLResolver 只作为 SSRF 测试注入点；生产仍使用 net.DefaultResolver，不改变 DNS 策略。
+	outboundURLResolver = defaultOutboundURLResolver
+)
 
-func postJSON[T interface{}](endpoint string, payload T, serviceLabel string, locale appLocale) (*http.Response, error) {
+func postJSON[T interface{}](endpoint string, payload T, serviceLabel string, locale appLocale, secrets ...string) (*http.Response, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	return sendHTTPRequest(http.MethodPost, endpoint, map[string]string{"content-type": "application/json"}, body, serviceLabel, locale)
+	return sendHTTPRequest(http.MethodPost, endpoint, map[string]string{"content-type": "application/json"}, body, serviceLabel, locale, secrets...)
 }
 
-func sendHTTPRequest(method, endpoint string, headers map[string]string, body []byte, serviceLabel string, locale appLocale) (*http.Response, error) {
+func sendHTTPRequest(method, endpoint string, headers map[string]string, body []byte, serviceLabel string, locale appLocale, secrets ...string) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -45,7 +50,11 @@ func sendHTTPRequest(method, endpoint string, headers map[string]string, body []
 	client := notificationHTTPClientFactory()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, errors.New(serverFormat(locale, "notification.httpRequestFailed", map[string]interface{}{"service": serviceLabel, "error": err}))
+		message := redactUpstreamSecrets(err.Error(), secrets)
+		return nil, newNotificationChannelError(
+			serverFormat(locale, "notification.httpRequestFailed", map[string]interface{}{"service": serviceLabel, "error": message}),
+			createUpstreamErrorDetails(nil, message),
+		)
 	}
 	return resp, nil
 }
@@ -62,7 +71,30 @@ func defaultNotificationHTTPClient() *http.Client {
 }
 
 func channelHTTPError(locale appLocale, channel string, statusCode int, detail string) error {
-	return errors.New(serverFormat(locale, "notification.httpSendFailed", map[string]interface{}{"channel": channel, "status": statusCode, "detail": detail}))
+	return errors.New(channelHTTPErrorMessage(locale, channel, statusCode, detail))
+}
+
+func channelHTTPErrorFromResponse(locale appLocale, channel string, resp *http.Response, secrets ...string) error {
+	providerResponse, _, err := captureUpstreamProviderResponse(resp, secrets)
+	if err != nil {
+		return err
+	}
+	statusCode := 0
+	if providerResponse != nil && providerResponse.Status != nil {
+		statusCode = *providerResponse.Status
+	}
+	detail := upstreamProviderMessage(providerResponse)
+	if detail == "" && resp != nil {
+		detail = resp.Status
+	}
+	return newNotificationChannelError(
+		channelHTTPErrorMessage(locale, channel, statusCode, detail),
+		createUpstreamErrorDetails(providerResponse, detail),
+	)
+}
+
+func channelHTTPErrorMessage(locale appLocale, channel string, statusCode int, detail string) string {
+	return serverFormat(locale, "notification.httpSendFailed", map[string]interface{}{"channel": channel, "status": statusCode, "detail": trimLongText(detail)})
 }
 
 func readResponseText(resp *http.Response) string {
@@ -173,15 +205,28 @@ func assertSafeOutboundURL(rawURL, label string, locale appLocale) (*url.URL, er
 	if parsed.Scheme != "https" {
 		return nil, errors.New(serverFormat(locale, "url.mustUseHttps", map[string]interface{}{"label": label}))
 	}
+	if parsed.User != nil {
+		// 通知 URL 不接受 userinfo，避免凭据被日志、错误文本或第三方重定向路径带出。
+		return nil, errors.New(serverFormat(locale, "url.invalid", map[string]interface{}{"label": label}))
+	}
 	host := strings.ToLower(parsed.Hostname())
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return nil, errors.New(serverFormat(locale, "url.localhostNotAllowed", map[string]interface{}{"label": label}))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if ip, ok := parseOutboundIPLiteral(host); ok {
+		// URL 解析器会接受十六进制/八进制/整数 IPv4；必须先规范化字面量，再判断私网。
+		if isUnsafeOutboundIP(ip) {
+			return nil, errors.New(serverFormat(locale, "url.privateOrLocalNotAllowed", map[string]interface{}{"label": label}))
+		}
+		return parsed, nil
+	}
+	ips, err := outboundURLResolver(host)
 	if err != nil {
 		return nil, errors.New(serverFormat(locale, "url.dnsLookupFailed", map[string]interface{}{"label": label}))
+	}
+	if len(ips) == 0 {
+		// 空解析结果不能当作安全，否则后续 HTTP client 的真实解析会绕过当前检查。
+		return nil, errors.New(serverFormat(locale, "url.privateOrLocalNotAllowed", map[string]interface{}{"label": label}))
 	}
 	for _, ip := range ips {
 		// 任何一个解析结果落到内网/本机都拒绝，避免服务端在多 A/AAAA 记录中选到危险地址。
@@ -192,9 +237,72 @@ func assertSafeOutboundURL(rawURL, label string, locale appLocale) (*url.URL, er
 	return parsed, nil
 }
 
+func defaultOutboundURLResolver(host string) ([]net.IPAddr, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
+
+func parseOutboundIPLiteral(host string) (net.IP, bool) {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip, true
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) == 4 {
+		octets := make([]byte, 4)
+		for i, part := range parts {
+			value, ok := parseIPv4Number(part)
+			if !ok || value > 255 {
+				return nil, false
+			}
+			octets[i] = byte(value)
+		}
+		return net.IPv4(octets[0], octets[1], octets[2], octets[3]), true
+	}
+	if len(parts) == 1 {
+		value, ok := parseIPv4Number(host)
+		if !ok || value > 0xffffffff {
+			return nil, false
+		}
+		return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value)), true
+	}
+	return nil, false
+}
+
+func parseIPv4Number(value string) (uint64, bool) {
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseUint(value, 0, 32)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
 func isUnsafeOutboundIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
+	if mapped := ipv4MappedIPv6(ip); mapped != nil {
+		return isUnsafeOutboundIP(mapped)
+	}
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+func ipv4MappedIPv6(ip net.IP) net.IP {
+	value := ip.To16()
+	if value == nil || ip.To4() != nil {
+		return nil
+	}
+	// ::ffff:7f00:1 这类 IPv4-mapped IPv6 需要按内嵌 IPv4 再判一次私网/本机。
+	for i := 0; i < 10; i++ {
+		if value[i] != 0 {
+			return nil
+		}
+	}
+	if value[10] != 0xff || value[11] != 0xff {
+		return nil
+	}
+	return net.IPv4(value[12], value[13], value[14], value[15])
 }

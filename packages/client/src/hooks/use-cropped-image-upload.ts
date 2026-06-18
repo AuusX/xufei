@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, RefObject } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { uploadImageDataUrl, uploadImageFile, validateImageFileForUpload } from "@/lib/upload-image";
 import { imageExtensionForMime, isIcoImageMime, isSvgImageMime, uploadMimeTypeForFile } from "@/lib/upload-constraints";
 import { getDisplayErrorMessage } from "@/lib/display-error";
@@ -25,6 +26,7 @@ import type { UploadKind } from "@/lib/api/schemas/media";
 import { getApiLocale } from "@/i18n/api-locale";
 import { translate } from "@/i18n/messages";
 import { reportClientError } from "@/lib/report-client-error";
+import { invalidateUploadedAssetsQueries } from "@/hooks/use-uploaded-assets";
 
 export type UploadStatus = "idle" | "uploading" | "error";
 
@@ -57,6 +59,7 @@ export interface UseCroppedImageUploadResult {
 /** 管理“本地文件 -> 裁剪 -> 临时预览 -> 上传资产 URL”的完整异步链路。 */
 export function useCroppedImageUpload(options: UseCroppedImageUploadOptions): UseCroppedImageUploadResult {
   const { kind, filename, onChange, onUploadStatusChange } = options;
+  const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadTokenRef = useRef(0);
   const fileReadTokenRef = useRef(0);
@@ -109,6 +112,8 @@ export function useCroppedImageUpload(options: UseCroppedImageUploadOptions): Us
 
         setPreviewUrl(undefined);
         reportUploadStatus("idle");
+        // 上传资产会被 LogoPicker、支付方式图标和设置页管理器复用；成功后按 kind 统一失效共享 Query。
+        void invalidateUploadedAssetsQueries(queryClient, kind);
         onChange(result.url);
       } catch (err: unknown) {
         reportClientError(err, { source: "image-upload.file" });
@@ -117,7 +122,7 @@ export function useCroppedImageUpload(options: UseCroppedImageUploadOptions): Us
         reportUploadStatus("error");
       }
     },
-    [filename, kind, onChange, reportUploadStatus],
+    [filename, kind, onChange, queryClient, reportUploadStatus],
   );
 
   const handleFileUpload = useCallback((e: ChangeEvent<HTMLInputElement>) => {
@@ -196,6 +201,8 @@ export function useCroppedImageUpload(options: UseCroppedImageUploadOptions): Us
 
         setPreviewUrl(undefined);
         reportUploadStatus("idle");
+        // 上传资产会被 LogoPicker、支付方式图标和设置页管理器复用；成功后按 kind 统一失效共享 Query。
+        void invalidateUploadedAssetsQueries(queryClient, kind);
         onChange(result.url);
       } catch (err: unknown) {
         reportClientError(err, { source: "image-upload.data-url" });
@@ -205,7 +212,7 @@ export function useCroppedImageUpload(options: UseCroppedImageUploadOptions): Us
         reportUploadStatus("error");
       }
     },
-    [filename, kind, onChange, reportUploadStatus],
+    [filename, kind, onChange, queryClient, reportUploadStatus],
   );
 
   const applyValue = useCallback(

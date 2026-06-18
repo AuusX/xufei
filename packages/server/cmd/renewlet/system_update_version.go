@@ -1,5 +1,8 @@
 package main
 
+// system_update_version.go 只处理版本比较和自更新文件名契约。
+//
+// stable 与 rc 通道分开比较，避免稳定版被 prerelease 提示升级，或 RC 实例被 stable 覆盖。
 import (
 	"path/filepath"
 	"runtime"
@@ -9,6 +12,7 @@ import (
 )
 
 func parseSystemVersion(rawVersion string) (string, semanticVersion, bool) {
+	// 只接受 semver 和 rc.N；其它 build metadata 只用于展示，不能参与可执行更新选择。
 	version := strings.TrimPrefix(strings.TrimSpace(rawVersion), "v")
 	mainPart := version
 	prerelease := ""

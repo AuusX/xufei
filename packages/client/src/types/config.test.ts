@@ -144,10 +144,16 @@ const legacyThirtyCurrencyOrder = [
   "EUR", "GBP", "CHF", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON",
   "ISK", "TRY", "ILS", "USD", "CAD", "MXN", "BRL", "AUD", "NZD", "ZAR",
 ];
+const previousDefaultPriority = ["CNY", "USD", "EUR", "GBP", "HKD", "JPY", "KRW"];
 const legacyThirtyPriorityOrder = [
-  "CNY", "USD", "EUR", "GBP", "HKD", "JPY", "KRW",
-  ...legacyThirtyCurrencyOrder.filter((value) => !["CNY", "USD", "EUR", "GBP", "HKD", "JPY", "KRW"].includes(value)),
+  ...previousDefaultPriority,
+  ...legacyThirtyCurrencyOrder.filter((value) => !previousDefaultPriority.includes(value)),
 ];
+const previousFullDefaultOrder = [
+  ...previousDefaultPriority,
+  ...CURRENCY_OPTIONS.map((option) => option.value).filter((value) => !previousDefaultPriority.includes(value)),
+];
+const previousFullRawOrder = CURRENCY_OPTIONS.map((option) => option.value);
 
 describe("currency config defaults", () => {
   it("defines the shared 146-currency exchange-rate scope", () => {
@@ -155,12 +161,28 @@ describe("currency config defaults", () => {
 
     expect(CURRENCY_OPTIONS).toHaveLength(146);
     expect(currencies).toHaveLength(146);
-    expect(currencies.slice(0, 7).map((currency) => currency.value)).toEqual([
-      "CNY", "USD", "EUR", "GBP", "HKD", "JPY", "KRW",
+    expect(currencies.slice(0, 9).map((currency) => currency.value)).toEqual([
+      "CNY", "USD", "EUR", "GBP", "AUD", "TRY", "NGN", "ARS", "PHP",
     ]);
     expect(currencies.every((currency) => currency.enabled === true)).toBe(true);
     expect(currencies.map((currency) => currency.value)).toContain("TWD");
     expect(currencies.map((currency) => currency.value)).toContain("VND");
+  });
+
+  it("upgrades the previous full default list to the new common-currency priority", () => {
+    const legacyItems = previousFullDefaultOrder.map((value) => legacyCurrency(value, true));
+
+    const normalized = normalizeCurrencies(legacyItems);
+
+    expect(normalized).toEqual(getDefaultCurrencies());
+  });
+
+  it("upgrades the previous raw full default list to the new common-currency priority", () => {
+    const legacyItems = previousFullRawOrder.map((value) => legacyCurrency(value, true));
+
+    const normalized = normalizeCurrencies(legacyItems);
+
+    expect(normalized).toEqual(getDefaultCurrencies());
   });
 
   it("upgrades the old 30-currency default list to the new full default", () => {
@@ -182,19 +204,42 @@ describe("currency config defaults", () => {
 
   it("preserves customized currency order and toggles while appending newly supported currencies", () => {
     const customItems = [
-      legacyCurrency("USD", true),
+      legacyCurrency("PHP", true),
+      legacyCurrency("AED", true),
       legacyCurrency("CNY", false),
-      legacyCurrency("EUR", true),
+      legacyCurrency("USD", true),
     ];
 
     const normalized = normalizeCurrencies(customItems);
 
     expect(normalized).toHaveLength(146);
-    expect(normalized.slice(0, 3).map((currency) => [currency.value, currency.enabled])).toEqual([
-      ["USD", true],
+    expect(normalized.slice(0, 4).map((currency) => [currency.value, currency.enabled])).toEqual([
+      ["PHP", true],
+      ["AED", true],
       ["CNY", false],
-      ["EUR", true],
+      ["USD", true],
     ]);
     expect(normalized.find((currency) => currency.value === "TWD")?.enabled).toBe(true);
+  });
+
+  it("preserves a customized full currency order even when every currency remains enabled", () => {
+    const customOrder = [
+      "PHP",
+      ...previousFullRawOrder.filter((value) => value !== "PHP"),
+    ];
+
+    const normalized = normalizeCurrencies(customOrder.map((value) => legacyCurrency(value, true)));
+
+    expect(normalized.map((currency) => currency.value).slice(0, 4)).toEqual(["PHP", "AED", "AFN", "ALL"]);
+    expect(normalized.every((currency) => currency.enabled === true)).toBe(true);
+  });
+
+  it("preserves the previous raw full order when the user has disabled a currency", () => {
+    const legacyItems = previousFullRawOrder.map((value) => legacyCurrency(value, value !== "USD"));
+
+    const normalized = normalizeCurrencies(legacyItems);
+
+    expect(normalized.map((currency) => currency.value).slice(0, 4)).toEqual(["AED", "AFN", "ALL", "AMD"]);
+    expect(normalized.find((currency) => currency.value === "USD")?.enabled).toBe(false);
   });
 });

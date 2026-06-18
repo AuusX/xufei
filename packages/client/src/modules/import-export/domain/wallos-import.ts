@@ -23,6 +23,11 @@ import { assetService } from "@/services/asset-service";
 
 type ImportSubscription = ImportPayload["subscriptions"][number];
 
+export interface ResolvedImportAssets {
+  payload: ImportPayload;
+  uploadedLogoCount: number;
+}
+
 type WorkerResponse =
   | { id: number; ok: true; prepared: PreparedImport }
   | { id: number; ok: false; error: string };
@@ -175,10 +180,10 @@ export async function resolveImportAssets(
   prepared: PreparedImport,
   previewItems: ImportPreviewItem[],
   onProgress?: (done: number, total: number) => void,
-): Promise<ImportPayload> {
+): Promise<ResolvedImportAssets> {
   const writableIndexes = new Set(previewItems.filter((item) => item.action === "create" || item.action === "replace").map((item) => item.index));
   const assets = prepared.assets.filter((asset) => writableIndexes.has(asset.subscriptionIndex));
-  if (assets.length === 0) return prepared.payload;
+  if (assets.length === 0) return { payload: prepared.payload, uploadedLogoCount: 0 };
   const logoOverrides = new Map<number, string | null>();
   let done = 0;
   onProgress?.(done, assets.length);
@@ -191,7 +196,10 @@ export async function resolveImportAssets(
     done += 1;
     onProgress?.(done, assets.length);
   });
-  return buildPayloadWithLogoOverrides(prepared.payload, logoOverrides);
+  return {
+    payload: buildPayloadWithLogoOverrides(prepared.payload, logoOverrides),
+    uploadedLogoCount: logoOverrides.size,
+  };
 }
 
 async function parseHeavyFileInWorker(

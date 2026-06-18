@@ -1,10 +1,16 @@
+/**
+ * Cloudflare 日历 Feed handler 管理可撤销的公开 ICS bearer URL。
+ *
+ * D1 token 是公开读取的唯一凭据；ICS 只导出下一次 date-only 全日事件，不复制续订算法或暴露登录态。
+ */
 import {
   calendarFeedCreateRequestSchema,
   calendarFeedCreateResponseSchema,
   calendarFeedStatusResponseSchema,
   subscriptionCalendarFeedCreateResponseSchema,
 } from "@renewlet/shared/schemas/calendar-feed";
-import { buildRenewalCalendarEvent, buildRenewalCalendarIcs, type RenewalCalendarEvent } from "@renewlet/shared/ics";
+import { buildRenewalCalendarIcs } from "@renewlet/shared/ics";
+import { buildRenewalCalendarEvent, type RenewalCalendarEvent } from "@renewlet/shared/calendar-events";
 import { effectiveReminderDays, isDisabledReminderDays, isValidDateOnly } from "@renewlet/shared/runtime";
 import { customConfigSchema, type ApiCustomConfig } from "@renewlet/shared/schemas/custom-config";
 import type { ApiAppSettings } from "@renewlet/shared/schemas/settings";
@@ -15,6 +21,7 @@ import { requireAuth } from "./auth";
 import { HttpError, json, ok, readJson, requestLocale } from "./http";
 import { serverFormat, serverText } from "./server-i18n";
 import { calendarFeedBuiltInCategoryLabelKey, calendarFeedBuiltInPaymentMethodLabelKey } from "./calendar-feed-built-in-labels";
+import { requestOrigin } from "./request-origin";
 import type { CalendarFeedRow, Env } from "./types";
 
 type CalendarFeedScope = CalendarFeedRow["scope"];
@@ -107,6 +114,31 @@ export async function deleteSubscriptionCalendarFeed(request: Request, env: Env,
     .bind(auth.user.id, subscriptionId)
     .run();
   return ok();
+}
+
+export async function downloadSubscriptionCalendarIcs(request: Request, env: Env, subscriptionId: string): Promise<Response> {
+  const locale = requestLocale(request);
+  const auth = await requireAuth(request, env);
+  const subscription = await getSubscription(env, auth.user.id, subscriptionId);
+  if (!subscription) throw new HttpError(404, serverText(locale, "subscription.notFound"), "NOT_FOUND");
+  const apiSubscription = toApiSubscription(subscription);
+  if (isOneTimeBuyout(apiSubscription)) throw new HttpError(404, serverText(locale, "subscription.notFound"), "NOT_FOUND");
+  const settings = await getSettings(env, auth.user.id);
+  const labels = await newCalendarFeedLabelResolver(env, auth.user.id, settings.locale);
+  // 登录态下载是一次性 .ics 文件，不写 SOURCE/TTL，避免外部日历把它误当成可刷新的订阅 feed。
+  const ics = buildRenewalCalendarIcs({
+    name: serverFormat(settings.locale, "calendarFeed.subscriptionCalendarName", { name: apiSubscription.name }),
+    generatedAt: new Date(),
+    events: subscriptionCalendarEvents(apiSubscription, settings, labels),
+  });
+  return new Response(ics, {
+    headers: {
+      "content-type": "text/calendar; charset=utf-8",
+      "content-disposition": `attachment; filename="renewlet-${safeCalendarFeedFilename(apiSubscription.id)}.ics"`,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 export async function calendarFeedIcs(request: Request, env: Env): Promise<Response> {
@@ -350,8 +382,7 @@ function calendarFeedStatus(row: CalendarFeedRow | null, request: Request) {
 }
 
 function calendarFeedUrl(request: Request, token: string): string {
-  const url = new URL(request.url);
-  return `${url.origin}/calendar/renewals.ics?token=${encodeURIComponent(token)}`;
+  return `${requestOrigin(request)}/calendar/renewals.ics?token=${encodeURIComponent(token)}`;
 }
 
 function calendarEvents(
@@ -445,4 +476,9 @@ function formatAmount(amount: number): string {
   if (!Number.isFinite(amount)) return String(amount);
   const fixed = amount.toFixed(2);
   return fixed.replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
+function safeCalendarFeedFilename(value: string): string {
+  const normalized = value.trim().replace(/[^A-Za-z0-9_-]/g, "");
+  return normalized || "subscription";
 }

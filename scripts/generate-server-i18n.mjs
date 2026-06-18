@@ -1,9 +1,15 @@
+/**
+ * 服务端文案生成器。
+ *
+ * 触发时机：维护 `packages/shared/data/server-i18n/active.*.json` 后运行；`--check` 用于 CI 守卫。
+ * 副作用：无参数会重写 Go embed catalog 和 Cloudflare Worker TS catalog。
+ *
+ * 契约：Go/PocketBase 与 Worker 共用同一服务端文案源，前端只消费稳定错误 code，不导入这里的翻译文本。
+ */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// 服务端文案生成器：把 shared/data/server-i18n/active.*.json 同步到 Go embed 和 Worker TS catalog。
-// `--check` 只比对生成结果；无参数会重写两个运行面的生成文件。
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const sourceDir = path.join(rootDir, "packages/shared/data/server-i18n");
 const serverOutDir = path.join(rootDir, "packages/server/cmd/renewlet/i18n");

@@ -15,10 +15,11 @@ interface AIRecognitionStreamPanelProps {
   textPreview: string;
   reasoningText: string;
   elapsedSeconds: number | null;
-  errorMessage?: string | null;
+  hasErrorDetails?: boolean;
   mobile?: boolean;
   actionsDisabled?: boolean;
   onDismiss?: () => void;
+  onOpenErrorDetails?: () => void;
 }
 
 const STAGE_ORDER: AiRecognitionStreamStage[] = [
@@ -30,6 +31,7 @@ const STAGE_ORDER: AiRecognitionStreamStage[] = [
   "finalizing",
 ];
 
+// 阶段顺序来自 shared SSE contract；partial/reasoning 事件只驱动进度反馈，不能当成可导入草稿。
 const STAGE_LABEL_KEYS: Record<AiRecognitionStreamStage, MessageKey> = {
   "input-read": "aiRecognition.streamStage.inputRead",
   "model-start": "aiRecognition.streamStage.modelStart",
@@ -54,16 +56,18 @@ export function AIRecognitionStreamPanel({
   textPreview,
   reasoningText,
   elapsedSeconds,
-  errorMessage = null,
+  hasErrorDetails = false,
   mobile = false,
   actionsDisabled = false,
   onDismiss,
+  onOpenErrorDetails,
 }: AIRecognitionStreamPanelProps) {
   const { t } = useI18n();
   const activeIndex = stage ? STAGE_ORDER.indexOf(stage) : -1;
   const hasReasoning = reasoningText.trim().length > 0;
   const canDismiss = status !== "running" && Boolean(onDismiss);
   const stageLabel = stage ? t(STAGE_LABEL_KEYS[stage]) : t("aiRecognition.streamWaiting");
+  // 运行中耗时对屏幕阅读器隐藏，避免每秒刷新打断用户；终态耗时再作为稳定文本暴露。
   const elapsedLabel = elapsedSeconds === null
     ? null
     : t(status === "running" ? "aiRecognition.elapsedRunning" : "aiRecognition.elapsedFinal", { seconds: elapsedSeconds });
@@ -136,10 +140,18 @@ export function AIRecognitionStreamPanel({
         <StreamMetric label={t("aiRecognition.streamWarningsSeen")} value={String(warningsSeen)} />
       </dl>
 
-      {errorMessage ? (
-        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs leading-5 text-destructive">
-          {errorMessage}
-        </p>
+      {hasErrorDetails ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 justify-start border-destructive/30 bg-destructive/10 px-2 text-xs text-destructive hover:bg-destructive/15 hover:text-destructive"
+          disabled={actionsDisabled}
+          onClick={onOpenErrorDetails}
+        >
+          <AlertTriangle className="h-3.5 w-3.5" />
+          {t("aiRecognition.errorDetailsOpen")}
+        </Button>
       ) : null}
 
       {textPreview ? (

@@ -22,7 +22,7 @@ describe("api-client", () => {
     vi.unstubAllGlobals();
   });
 
-  it("parses successful JSON responses and sends JSON content-type by default", async () => {
+  it("parses successful JSON responses without content-type on bodyless GET requests", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
@@ -32,9 +32,37 @@ describe("api-client", () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(init.credentials).toBe("include");
     expect(init.headers).toBeInstanceOf(Headers);
-    expect((init.headers as Headers).get("content-type")).toBe("application/json");
+    expect((init.headers as Headers).has("content-type")).toBe(false);
     expect((init.headers as Headers).get("Accept-Language")).toBeTruthy();
     expect((init.headers as Headers).get("X-Renewlet-Locale")).toBeTruthy();
+  });
+
+  it("sends JSON content-type when a non-FormData body is present", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    await apiFetch("/api/example", okResponseSchema, {
+      method: "POST",
+      body: JSON.stringify({ ok: true }),
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect((init.headers as Headers).get("content-type")).toBe("application/json");
+  });
+
+  it("does not set content-type for FormData bodies", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const form = new FormData();
+    form.append("file", new Blob(["x"], { type: "image/png" }), "logo.png");
+
+    await apiFetch("/api/app/assets", okResponseSchema, {
+      method: "POST",
+      body: form,
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect((init.headers as Headers).has("content-type")).toBe(false);
   });
 
   it("does not rewrite legacy API paths", async () => {
@@ -59,21 +87,42 @@ describe("api-client", () => {
 
   it("reads problem details and backend codes from non-2xx responses", async () => {
     const fetchMock = vi.mocked(fetch);
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+    const rawResponseText = JSON.stringify({
       error: "请先登录后再操作",
       code: "UNAUTHORIZED",
       title: "未登录",
       status: 401,
       detail: "请先登录后再操作",
-    }), { status: 401 }));
+    });
+    fetchMock.mockResolvedValue(new Response(rawResponseText, { status: 401 }));
 
     await expect(apiFetch("/api/example", okResponseSchema)).rejects.toMatchObject({
       name: "ApiError",
       message: "请先登录后再操作",
       status: 401,
       code: "UNAUTHORIZED",
+      rawResponseText,
     });
     expect(mocks.clearAuthSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not clear auth session for AI model list provider failures", async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      message: "无法获取模型列表，请检查 Base URL 和 API Key，或手动输入模型 ID。",
+      code: "AI_MODEL_LIST_FAILED",
+      details: {
+        rawResponseText: "{\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"}",
+      },
+    }), { status: 401 }));
+
+    await expect(apiFetch("/api/app/ai/models/list", okResponseSchema)).rejects.toMatchObject({
+      name: "ApiError",
+      message: "无法获取模型列表，请检查 Base URL 和 API Key，或手动输入模型 ID。",
+      status: 401,
+      code: "AI_MODEL_LIST_FAILED",
+    });
+    expect(mocks.clearAuthSession).not.toHaveBeenCalled();
   });
 
   it("turns legacy Zod field errors into a readable message", async () => {
@@ -102,6 +151,7 @@ describe("api-client", () => {
     await expect(apiFetch("/api/example", okResponseSchema)).rejects.toMatchObject({
       message: "Bad Gateway",
       status: 502,
+      rawResponseText: "not-json",
     });
   });
 

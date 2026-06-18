@@ -1,10 +1,11 @@
 // 统计模型测试保护金额换算、有效状态和图表分组口径，首页/统计页必须共享这些业务语义。
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CUSTOM_CONFIG } from "@/types/config";
-import type { Subscription } from "@/types/subscription";
+import { DISABLED_REMINDER_DAYS, INHERIT_REMINDER_DAYS, type Subscription } from "@/types/subscription";
 import { assertDateOnly } from "@/lib/time/date-only";
 import { buildDashboardStats } from "./dashboard-stats";
 import { buildStatisticsModel } from "./statistics-model";
+import { buildUpcomingReminderItems } from "./upcoming-reminders";
 
 type RecurringBillingCycle = Exclude<Subscription["billingCycle"], "custom" | "one-time">;
 type SubscriptionBaseFixture = Omit<Subscription, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">;
@@ -159,6 +160,7 @@ describe("subscription statistics models", () => {
       startDate: assertDateOnly("2025-07-05"),
       nextBillingDate: assertDateOnly("2026-01-05"),
       autoCalculateNextBillingDate: false,
+      reminderDays: 4,
       oneTimeTermCount: 6,
       oneTimeTermUnit: "month",
     });
@@ -245,27 +247,230 @@ describe("subscription statistics models", () => {
     expect(model.budgetRemaining).toBe(23);
   });
 
-  it("dashboard upcoming window ignores inactive rows and counts 0..7 days", () => {
-    const stats = buildDashboardStats({
+  it("builds 12-month cashflow trend from recurring billing dates", () => {
+    const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ id: "today", nextBillingDate: assertDateOnly("2026-01-01") }),
-        subscription({ id: "soon", nextBillingDate: assertDateOnly("2026-01-08") }),
-        subscription({ id: "later", nextBillingDate: assertDateOnly("2026-01-09") }),
-        subscription({ id: "paused", status: "paused", nextBillingDate: assertDateOnly("2026-01-02") }),
+        subscription({ id: "monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
+        subscription({ id: "annual", price: 120, billingCycle: "annual", nextBillingDate: assertDateOnly("2026-03-01") }),
+        subscription({ id: "custom", price: 30, billingCycle: "custom", customDays: 2, customCycleUnit: "month", nextBillingDate: assertDateOnly("2026-02-10") }),
       ],
+      config: DEFAULT_CUSTOM_CONFIG,
+      monthlyBudget: 0,
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    expect(model.trendData).toHaveLength(12);
+    expect(model.trendData.map((item) => item.monthKey)).toEqual([
+      "2026-01",
+      "2026-02",
+      "2026-03",
+      "2026-04",
+      "2026-05",
+      "2026-06",
+      "2026-07",
+      "2026-08",
+      "2026-09",
+      "2026-10",
+      "2026-11",
+      "2026-12",
+    ]);
+    expect(model.trendData.map((item) => item.cashflow)).toEqual([
+      10,
+      40,
+      130,
+      40,
+      10,
+      40,
+      10,
+      40,
+      10,
+      40,
+      10,
+      40,
+    ]);
+  });
+
+  it("builds amortized trend for recurring and fixed-term subscriptions without one-time cashflow", () => {
+    const model = buildStatisticsModel({
+      subscriptions: [
+        subscription({ id: "monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
+        subscription({
+          id: "fixedTerm",
+          price: 120,
+          billingCycle: "one-time",
+          startDate: assertDateOnly("2026-02-15"),
+          nextBillingDate: assertDateOnly("2026-04-15"),
+          oneTimeTermCount: 2,
+          oneTimeTermUnit: "month",
+        }),
+        subscription({
+          id: "buyout",
+          price: 500,
+          billingCycle: "one-time",
+          startDate: assertDateOnly("2026-01-01"),
+          nextBillingDate: assertDateOnly("2026-01-01"),
+        }),
+      ],
+      config: DEFAULT_CUSTOM_CONFIG,
+      monthlyBudget: 0,
+      defaultCurrency: "USD",
+      convert,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    expect(model.trendData.map((item) => item.cashflow)).toEqual([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]);
+    expect(model.trendData.slice(0, 5).map((item) => [item.monthKey, item.amortized])).toEqual([
+      ["2026-01", 10],
+      ["2026-02", 70],
+      ["2026-03", 70],
+      ["2026-04", 70],
+      ["2026-05", 10],
+    ]);
+  });
+
+  it("converts currency before trend aggregation", () => {
+    const model = buildStatisticsModel({
+      subscriptions: [
+        subscription({ id: "usd", price: 10, currency: "USD", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-05") }),
+        subscription({ id: "cny", price: 70, currency: "CNY", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-10") }),
+      ],
+      config: DEFAULT_CUSTOM_CONFIG,
+      monthlyBudget: 0,
+      defaultCurrency: "CNY",
+      convert,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    expect(model.trendData[0]).toEqual(expect.objectContaining({ cashflow: 140, amortized: 140 }));
+  });
+
+  it("switches statistics from total cost to personal cost basis", () => {
+    const familyPlan = subscription({
+      id: "family-plan",
+      price: 100,
+      billingCycle: "monthly",
+      nextBillingDate: assertDateOnly("2026-01-05"),
+      costSharing: {
+        enabled: true,
+        payerMemberId: "me",
+        selfMemberId: "me",
+        splitMode: "custom",
+        members: [
+          { id: "me", name: "Me", currency: "USD", included: true, customAmount: 40 },
+          { id: "partner", name: "Partner", currency: "USD", included: true, customAmount: 60 },
+        ],
+      },
+    });
+    const totalModel = buildStatisticsModel({
+      subscriptions: [familyPlan],
+      config: DEFAULT_CUSTOM_CONFIG,
+      monthlyBudget: 100,
+      defaultCurrency: "USD",
+      convert,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+      costBasis: "total",
+    });
+    const personalModel = buildStatisticsModel({
+      subscriptions: [familyPlan],
+      config: DEFAULT_CUSTOM_CONFIG,
+      monthlyBudget: 100,
+      defaultCurrency: "USD",
+      convert,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+      costBasis: "personal",
+    });
+
+    expect(totalModel.totalMonthly).toBe(100);
+    expect(totalModel.thisMonthDue).toBe(100);
+    expect(totalModel.trendData[0]).toEqual(expect.objectContaining({ cashflow: 100, amortized: 100 }));
+    expect(personalModel.totalMonthly).toBe(40);
+    expect(personalModel.thisMonthDue).toBe(40);
+    expect(personalModel.budgetUsedPercent).toBe(40);
+    expect(personalModel.categoryData).toEqual([
+      expect.objectContaining({ value: 40 }),
+    ]);
+    expect(personalModel.trendData[0]).toEqual(expect.objectContaining({ cashflow: 40, amortized: 40 }));
+  });
+
+  it("uses the configured timezone to choose the trend start month", () => {
+    const model = buildStatisticsModel({
+      subscriptions: [subscription({ id: "monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-07-01") })],
+      config: DEFAULT_CUSTOM_CONFIG,
+      monthlyBudget: 0,
+      defaultCurrency: "USD",
+      convert,
+      now: new Date("2026-06-30T16:30:00.000Z"),
+      timeZone: "Asia/Shanghai",
+    });
+
+    expect(model.trendData[0]?.monthKey).toBe("2026-07");
+  });
+
+  it("dashboard upcoming count reuses the reminder window model", () => {
+    const stats = buildDashboardStats({
+      subscriptions: [
+        subscription({ id: "explicit30", nextBillingDate: assertDateOnly("2026-07-15"), reminderDays: 30 }),
+        subscription({ id: "inherit30", nextBillingDate: assertDateOnly("2026-07-15"), reminderDays: INHERIT_REMINDER_DAYS }),
+        subscription({ id: "disabled", nextBillingDate: assertDateOnly("2026-07-15"), reminderDays: DISABLED_REMINDER_DAYS }),
+        subscription({ id: "paused", status: "paused", nextBillingDate: assertDateOnly("2026-07-15"), reminderDays: 30 }),
+      ],
+      defaultCurrency: "USD",
+      convert,
+      notificationReminderDays: 30,
+      now: new Date("2026-06-15T00:00:00.000Z"),
     });
 
     expect(stats.upcomingCount).toBe(2);
     expect(stats.activeSubscriptions).toHaveLength(3);
   });
 
+  it("builds upcoming reminder items from effective reminder days", () => {
+    const items = buildUpcomingReminderItems({
+      subscriptions: [
+        subscription({ id: "explicit30", name: "Explicit 30", nextBillingDate: assertDateOnly("2026-07-15"), reminderDays: 30 }),
+        subscription({ id: "inherit30", name: "Inherited 30", nextBillingDate: assertDateOnly("2026-07-15"), reminderDays: INHERIT_REMINDER_DAYS }),
+        subscription({ id: "disabled", name: "Disabled", nextBillingDate: assertDateOnly("2026-07-15"), reminderDays: DISABLED_REMINDER_DAYS }),
+        subscription({ id: "today", name: "Today", nextBillingDate: assertDateOnly("2026-06-15"), reminderDays: 0 }),
+        subscription({ id: "tomorrow", name: "Tomorrow", nextBillingDate: assertDateOnly("2026-06-16"), reminderDays: 0 }),
+        subscription({ id: "old14Miss", name: "Old 14 Miss", nextBillingDate: assertDateOnly("2026-06-30"), reminderDays: 30 }),
+        subscription({
+          id: "buyout",
+          name: "Buyout",
+          billingCycle: "one-time",
+          nextBillingDate: assertDateOnly("2026-06-30"),
+          autoCalculateNextBillingDate: false,
+          reminderDays: 30,
+        }),
+        subscription({
+          id: "fixedTerm",
+          name: "Fixed Term",
+          billingCycle: "one-time",
+          nextBillingDate: assertDateOnly("2026-06-30"),
+          autoCalculateNextBillingDate: false,
+          oneTimeTermCount: 12,
+          oneTimeTermUnit: "month",
+          reminderDays: 30,
+        }),
+      ],
+      notificationReminderDays: 30,
+      now: new Date("2026-06-15T00:00:00.000Z"),
+    });
+
+    expect(items.map((item) => [item.subscription.id, item.daysUntil, item.kind, item.reminderDays])).toEqual([
+      ["today", 0, "renewal", 0],
+      ["fixedTerm", 15, "expiry", 30],
+      ["old14Miss", 15, "renewal", 30],
+      ["explicit30", 30, "renewal", 30],
+      ["inherit30", 30, "renewal", 30],
+    ]);
+  });
+
   it("dashboard excludes effective expired subscriptions from active counts and upcoming renewals", () => {
     const stats = buildDashboardStats({
       subscriptions: [
-        subscription({ id: "active", status: "active", nextBillingDate: assertDateOnly("2026-01-05") }),
+        subscription({ id: "active", status: "active", nextBillingDate: assertDateOnly("2026-01-05"), reminderDays: 4 }),
         subscription({ id: "legacyExpired", status: "active", nextBillingDate: assertDateOnly("2025-12-31") }),
         subscription({ id: "storedExpired", status: "expired", nextBillingDate: assertDateOnly("2026-01-02") }),
       ],

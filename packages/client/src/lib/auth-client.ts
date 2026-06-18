@@ -6,7 +6,7 @@
  *
  * 状态链路：
  *   Cloudflare localStorage token -> shared query 校验 /session -> useSession -> AuthSync 路由/query 刷新
- *   PocketBase authStore token -> authRefresh 校验 -> toSessionData -> useSession -> AuthSync 路由/query 刷新
+ *   PocketBase authStore token -> authRefresh({ body: {} }) 校验 -> toSessionData -> useSession -> AuthSync 路由/query 刷新
  *
  * 注意： `SessionData.session.id` 使用 token 作为变化标识，只用于前端缓存失效；
  * 不要把它当成可展示或可持久化的业务 session id。
@@ -148,7 +148,8 @@ async function refreshPocketBaseSession(): Promise<SessionData | null> {
   const authEpoch = pocketBaseAuthEpoch;
   pocketBaseSessionRefreshPromise = (async () => {
     try {
-      await pb.collection("users").authRefresh();
+      // Cloudflare Tunnel 直连 origin 时空 body POST 可能不再表现为明确的 Content-Length: 0；显式 `{}` 让 PocketBase JSON 解析路径稳定。
+      await pb.collection("users").authRefresh({ body: {} });
       if (authEpoch !== pocketBaseAuthEpoch) {
         restorePocketBaseVerifiedSession();
         return null;
@@ -160,8 +161,9 @@ async function refreshPocketBaseSession(): Promise<SessionData | null> {
       return session;
     } catch {
       // PocketBase token 是无状态 bearer；数据目录重置、用户删除或禁用后必须清本地缓存，不能继续信 authStore 快照。
-      clearAuthSession(token);
-      if (!pb.authStore.token || pb.authStore.token === token) {
+      const currentToken = pb.authStore.token;
+      if (!currentToken || currentToken === token) {
+        clearAuthSession(token);
         clearPocketBaseVerifiedSession();
       }
       return null;

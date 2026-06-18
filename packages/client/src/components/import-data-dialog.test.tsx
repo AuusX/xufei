@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CUSTOM_CONFIG } from "@/types/config";
 import { DEFAULT_SETTINGS } from "@/types/subscription";
 import { ApiError } from "@/lib/api-client";
+import { uploadedAssetsQueryKeys } from "@/hooks/use-uploaded-assets";
 import { ImportDataDialog } from "./import-data-dialog";
 
 type ImportExportService = typeof import("@/services/import-export-service").importExportService;
@@ -106,7 +107,10 @@ const faviconCandidate = {
   autoAssignable: true,
 };
 
-function renderImportDialog() {
+function renderImportDialog(props: {
+  initialFile?: File | null;
+  onInitialFileConsumed?: () => void;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -114,16 +118,19 @@ function renderImportDialog() {
     },
   });
 
-  return render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <ImportDataDialog
         open
         onOpenChange={vi.fn()}
         settings={DEFAULT_SETTINGS}
         config={DEFAULT_CUSTOM_CONFIG}
+        {...("initialFile" in props ? { initialFile: props.initialFile } : {})}
+        {...(props.onInitialFileConsumed ? { onInitialFileConsumed: props.onInitialFileConsumed } : {})}
       />
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 describe("ImportDataDialog", () => {
@@ -291,6 +298,72 @@ describe("ImportDataDialog", () => {
     expect(mocks.applyChunked).not.toHaveBeenCalled();
   });
 
+  it("invalidates uploaded logo assets after a staged logo import succeeds", async () => {
+    const user = userEvent.setup();
+    const { queryClient } = renderImportDialog();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await user.click(screen.getByRole("tab", { name: "粘贴 JSON" }));
+    fireEvent.change(screen.getByPlaceholderText("粘贴 Renewlet 或 Wallos JSON..."), {
+      target: {
+        value: JSON.stringify([{
+          Name: "Uploaded Logo App",
+          "Payment Cycle": "Monthly",
+          "Next Payment": "2026-06-01",
+          Price: "$10",
+          Category: "Software",
+          "Payment Method": "Visa",
+        }]),
+      },
+    });
+    await user.click(screen.getByRole("button", { name: "生成预览" }));
+    await screen.findByRole("button", { name: "编辑 Uploaded Logo App" });
+
+    await user.click(screen.getByRole("button", { name: "编辑 Uploaded Logo App" }));
+    await user.click(screen.getByRole("button", { name: "执行导入" }));
+
+    await waitFor(() => {
+      expect(mocks.applyChunked).toHaveBeenCalledTimes(1);
+    });
+    expect(mocks.createAsset).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: uploadedAssetsQueryKeys.byKind("logo") });
+    });
+  });
+
+  it("does not invalidate uploaded assets when import apply uploaded no logos", async () => {
+    const user = userEvent.setup();
+    const { queryClient } = renderImportDialog();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await user.click(screen.getByRole("tab", { name: "粘贴 JSON" }));
+    fireEvent.change(screen.getByPlaceholderText("粘贴 Renewlet 或 Wallos JSON..."), {
+      target: {
+        value: JSON.stringify([{
+          Name: "Plain Import App",
+          "Payment Cycle": "Monthly",
+          "Next Payment": "2026-06-01",
+          Price: "$10",
+          Category: "Software",
+          "Payment Method": "Visa",
+        }]),
+      },
+    });
+    await user.click(screen.getByRole("button", { name: "生成预览" }));
+    await screen.findByText("Plain Import App");
+
+    await user.click(screen.getByRole("button", { name: "执行导入" }));
+
+    await waitFor(() => {
+      expect(mocks.applyChunked).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["custom-config"] });
+    });
+    expect(mocks.createAsset).not.toHaveBeenCalled();
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: uploadedAssetsQueryKeys.byKind("logo") });
+  });
+
   it("keeps backend apply messages visible in the dialog error state", async () => {
     mocks.applyChunked.mockRejectedValueOnce(new ApiError("NEXT_BILLING_DATE_BEFORE_START_DATE", 400, undefined, "NEXT_BILLING_DATE_BEFORE_START_DATE"));
     const user = userEvent.setup();
@@ -315,5 +388,25 @@ describe("ImportDataDialog", () => {
     await user.click(screen.getByRole("button", { name: "执行导入" }));
 
     expect(await screen.findByText("到期日期不能早于开始日期")).toBeInTheDocument();
+  });
+
+  it("loads an initial cloud restore file through the existing preview flow", async () => {
+    const onConsumed = vi.fn();
+    const initialFile = new File([JSON.stringify([{
+      Name: "Cloud Restore App",
+      "Payment Cycle": "Monthly",
+      "Next Payment": "2026-06-01",
+      Price: "$10",
+      Category: "Software",
+      "Payment Method": "Visa",
+    }])], "renewlet-export-v1-cloud.json", { type: "application/json" });
+
+    renderImportDialog({ initialFile, onInitialFileConsumed: onConsumed });
+
+    await waitFor(() => {
+      expect(mocks.preview).toHaveBeenCalledTimes(1);
+    });
+    expect(onConsumed).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("Cloud Restore App")).toBeInTheDocument();
   });
 });

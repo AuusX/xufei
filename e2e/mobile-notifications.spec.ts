@@ -101,6 +101,7 @@ test("mobile notification history opens selected details in a bounded bottom dra
   await page.goto("/");
   await createNotificationHistoryRecords(page, { count: 12 });
 
+  // 先挂响应监听再进入设置页，避免本地高速接口在 click/goto 后瞬间完成导致等待丢包。
   const historyRead = page.waitForResponse((response) => (
     response.request().method() === "GET"
     && response.status() === 200

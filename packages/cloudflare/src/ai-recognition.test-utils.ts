@@ -1,3 +1,4 @@
+/** 生成最小合法 AI 草稿；测试只覆盖 Worker 归一化边界，避免重复手写 shared schema 全字段。 */
 export function generatedDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     name: "dmit",

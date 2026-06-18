@@ -261,7 +261,7 @@ function buildEmailTemplateGroups(items: NotificationEmailItem[], copy: EmailCop
 }
 
 function emailSummaryRows(itemCount: number, groups: EmailTemplateGroup[], copy: EmailCopy): EmailSummaryRow[] {
-  if (groups.length === 0) return [{ label: copy.reminderItems, value: String(itemCount) }];
+  if (groups.length === 0) return itemCount === 0 ? [] : [{ label: copy.reminderItems, value: String(itemCount) }];
   return groups.map((group) => ({ label: group.label, value: String(group.count) }));
 }
 
@@ -288,15 +288,15 @@ function emailThemeFromSettings(settings: NotificationEmailSettings): EmailTheme
   return {
     primary,
     primaryText: contrastTextForHsl(h, s, l),
-    primarySoft: hslToHex(h, Math.min(s, 70), 94),
-    background: "#F4F7F6",
+    primarySoft: hslToHex(h, Math.min(s, 50), 95),
+    background: "#F9FAFB",
     surface: "#FFFFFF",
-    surfaceMuted: "#F8FAF9",
-    border: "#DDE6E2",
-    text: "#17211F",
-    muted: "#64748B",
-    warning: "#D97706",
-    danger: "#DC2626",
+    surfaceMuted: "#F3F5F7",
+    border: "#E3E7ED",
+    text: "#171C26",
+    muted: "#6C7993",
+    warning: "#F59F0A",
+    danger: "#DC2828",
     success: primary,
   };
 }

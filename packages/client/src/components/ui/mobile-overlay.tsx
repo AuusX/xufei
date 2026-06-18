@@ -107,6 +107,15 @@ export function useControllableOpen({
   return [currentOpen, setOpen] as const;
 }
 
+export function MobileOverlayPortalHost({ children }: { children: React.ReactNode }) {
+  // Dialog 内的 portal host 会成为 flex/grid 子项；display:contents 保留 DOM 边界，避免父级 gap 撑高 footer。
+  return (
+    <div data-mobile-overlay-portal="" className="contents">
+      {children}
+    </div>
+  );
+}
+
 /** resolveMobileSheetDetent 将调用方意图映射成实际 sheet 高度档位。 */
 export function resolveMobileSheetDetent({
   itemCount,

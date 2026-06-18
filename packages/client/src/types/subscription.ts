@@ -15,6 +15,7 @@ import { SUPPORTED_EXCHANGE_RATE_CURRENCIES, getIntlCurrencyOptionLabel } from '
 import type { ExchangeRateProvider } from '@/lib/api/schemas/exchange-rates';
 import type { DateOnly } from '@/lib/time/date-only';
 import type { LocalTime } from '@/lib/time/local-time';
+import type { CostSharing } from '@renewlet/shared/cost-sharing';
 import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import {
   CUSTOM_CYCLE_UNITS as SHARED_CUSTOM_CYCLE_UNITS,
@@ -186,9 +187,13 @@ interface SubscriptionBase {
   repeatReminderInterval: RepeatReminderInterval;
   /** 重复提醒窗口。 */
   repeatReminderWindow: RepeatReminderWindow;
+  /** 每条订阅独立的家庭共享/分摊配置。 */
+  costSharing?: CostSharing | undefined;
   /** 非展示元数据；导入幂等键等跨运行面状态保存在这里。 */
   extra?: Record<string, unknown> | undefined;
 }
+
+export type { CostSharing, CostSharingMember, CostSharingSplitMode } from '@renewlet/shared/cost-sharing';
 
 export interface CustomCycleSubscription extends SubscriptionBase {
   /** 自定义周期必须携带数量和单位；统计折算和自动续费日期计算都依赖这个不变量。 */
@@ -431,7 +436,7 @@ export type CurrencyRegion = 'asia' | 'europe' | 'americas' | 'oceania' | 'afric
 export interface CurrencyOption {
   /** 货币代码（ISO 4217），例如：CNY、USD。 */
   value: string;
-  /** UI 展示文案（可包含货币符号）。 */
+  /** 货币身份展示文案，由 currency-data 统一生成。 */
   labels: LocalizedLabels;
   /** 地区分组（用于 UI 分组/排序展示）。 */
   region: CurrencyRegion;

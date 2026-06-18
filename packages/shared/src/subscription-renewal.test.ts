@@ -1,3 +1,4 @@
+// 续订算法测试读取共享 JSON fixture；同一批样例也由 Go 后端读取，用来锁住跨运行面账单日推进语义。
 import { describe, expect, it } from "vitest";
 import fixtures from "./subscription-renewal-fixtures.json";
 import {
@@ -19,6 +20,7 @@ type Fixture = {
 };
 
 describe("subscription renewal", () => {
+  // 这份 fixture 同时被 Go 后端读取；新增续订规则时先扩展 fixture，再让两端实现追同一组期望。
   it.each(fixtures as Fixture[])("matches fixture $name", (fixture) => {
     const eligible = fixture.mode === "auto"
       ? isAutoRenewEligible(fixture.input, fixture.today)

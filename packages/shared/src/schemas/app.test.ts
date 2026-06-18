@@ -1,3 +1,4 @@
+// 系统版本 schema 测试保护 Docker 可执行更新与 Cloudflare 只读部署升级这两条前端能力分流。
 import { describe, expect, it } from "vitest";
 import { systemVersionResponseSchema } from "./app";
 

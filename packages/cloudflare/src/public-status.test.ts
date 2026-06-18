@@ -44,6 +44,7 @@ function d1Result<T = unknown>(results: T[]): D1Result<T> {
 }
 
 function createEnv(overrides: Partial<PublicStatusTestState> = {}): Env {
+  // public status 资产读取必须走 token -> owner -> 可见订阅引用 -> R2 object；mock 也保持这条链路。
   const settings = { ...createDefaultAppSettings(), locale: "en-US" as const, timezone: "UTC" };
   const state: PublicStatusTestState = {
     pages: [],
@@ -68,6 +69,7 @@ function createEnv(overrides: Partial<PublicStatusTestState> = {}): Env {
   };
   return {
     DB: new PublicStatusTestDB(state) as unknown as D1Database,
+    ASSETS: {} as Fetcher,
     ASSETS_BUCKET: {
       get: vi.fn(async (key: string) => state.objects.get(key) ?? null),
     } as unknown as R2Bucket,
@@ -75,6 +77,7 @@ function createEnv(overrides: Partial<PublicStatusTestState> = {}): Env {
 }
 
 class PublicStatusTestDB {
+  // 只模拟 handler 实际触达的 D1 查询，避免测试因“完整数据库替身”掩盖 owner/visibility 分支。
   constructor(private readonly state: PublicStatusTestState) {}
 
   prepare(sql: string) {
@@ -269,7 +272,11 @@ describe("public status worker handlers", () => {
     const disabledResponse = await readPublicStatusPage(authorizedRequest("/api/app/public-status-page"), env);
     expect(await disabledResponse.json()).toEqual({ publicStatusPage: { enabled: false, showPrices: false } });
 
-    const createResponse = await createPublicStatusPage(authorizedRequest("/api/app/public-status-page", { method: "POST", body: "{}" }), env);
+    const createResponse = await createPublicStatusPage(authorizedRequest("/api/app/public-status-page", {
+      method: "POST",
+      body: "{}",
+      headers: { "x-forwarded-host": "evil.example", "x-forwarded-proto": "http" },
+    }), env);
     const created = await createResponse.json() as { publicStatusPage: { enabled: boolean; pageUrl: string; showPrices: boolean } };
     expect(created.publicStatusPage).toMatchObject({
       enabled: true,
@@ -357,6 +364,7 @@ describe("public status worker handlers", () => {
   });
 
   it("serves only referenced owner assets through the public asset proxy", async () => {
+    // R2 里同时放可见、未引用和跨用户对象，确保公开代理不是单纯按 asset id 读取私有文件。
     const visibleAsset = assetRow();
     const unreferencedAsset = assetRow({ id: "asset_unused", r2_key: "logos/unused.svg" });
     const otherUserAsset = assetRow({ id: "asset_other", user_id: "usr_other", r2_key: "logos/other.svg" });

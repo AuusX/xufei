@@ -12,6 +12,7 @@ export interface AIThinkingOption {
   control: AiThinkingControl | null;
 }
 
+// 这些能力表跟第三方模型协议耦合；新增 provider/model 时只扩展这里，UI 继续消费统一的 thinking option。
 const OPENAI_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 const ANTHROPIC_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 const GEMINI_LEVELS = ["minimal", "low", "medium", "high"] as const;
@@ -25,6 +26,7 @@ export function getAIThinkingOptions(
 ): AIThinkingOption[] {
   const normalizedModel = normalizeAIModelIdForCapability(model);
   if (!normalizedModel) return [];
+  // transport protocol 是真实 API 形状边界，同一 provider 在兼容协议下不能复用原生 thinking 参数。
   if (providerType === "openai" && transportProtocol === "openai-chat") return getOpenAIThinkingOptions(normalizedModel);
   if (providerType === "gemini" && transportProtocol === "gemini-generate-content") return getGeminiThinkingOptions(normalizedModel);
   if (providerType === "anthropic" && transportProtocol === "anthropic-messages") return getAnthropicThinkingOptions(normalizedModel);
@@ -41,6 +43,7 @@ export function normalizeAIThinkingControl(
   model: string,
   control: AiThinkingControl | null,
 ): AiThinkingControl | null {
+  // 设置里保存的是上一次模型的 control；切换 provider/model 后必须在读取边界丢弃不兼容值。
   if (!control || !thinkingControlMatchesProvider(providerType, transportProtocol, control)) return null;
   const options = getAIThinkingOptions(providerType, transportProtocol, model);
   return options.some((option) => option.control && thinkingOptionId(option.control) === thinkingOptionId(control))
@@ -58,6 +61,7 @@ export function defaultAIThinkingControl(
 
 export function thinkingOptionId(control: AiThinkingControl | null): string {
   if (!control) return "off";
+  // id 必须编码 provider 维度，防止不同 provider 的 budget/effort 文案选项在 Select 中撞值。
   if (control.provider === "openai") return `openai:${control.effort}`;
   if (control.provider === "gemini") {
     if (control.mode === "budget") return `gemini:budget:${control.budget ?? ""}`;
@@ -110,6 +114,7 @@ function getGeminiThinkingOptions(model: string): AIThinkingOption[] {
     control: { provider: "gemini" as const, mode: "budget" as const, budget },
   }));
   if (!isGeminiBudgetToggleModel(model)) return budgetOptions;
+  // Gemini 2.5 flash 系列同时支持关闭/动态/预算，顺序决定设置页默认项和回显稳定性。
   return [
     {
       id: "gemini:off",
@@ -171,6 +176,7 @@ function claudeEffortsForModel(model: string): typeof ANTHROPIC_EFFORTS[number][
   if (!Number.isFinite(minor) || minor < 6) return [];
   const base: typeof ANTHROPIC_EFFORTS[number][] = ["low", "medium", "high", "max"];
   if (family === "opus" && minor >= 7) {
+    // xhigh 目前只对高阶 opus 4.7+ 暴露，避免给其它 Claude 4 模型展示 provider 会拒绝的选项。
     return ["low", "medium", "high", "xhigh", "max"];
   }
   return base;

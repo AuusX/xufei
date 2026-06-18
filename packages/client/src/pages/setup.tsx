@@ -51,16 +51,16 @@ export default function SetupPage() {
   };
 
   const focusFirstError = (nextErrors: SetupErrors) => {
-    if (nextErrors.name) {
-      nameInputRef.current?.focus();
-      return;
-    }
     if (nextErrors.email) {
       emailInputRef.current?.focus();
       return;
     }
     if (nextErrors.password) {
       passwordInputRef.current?.focus();
+      return;
+    }
+    if (nextErrors.name) {
+      nameInputRef.current?.focus();
     }
   };
 
@@ -132,31 +132,7 @@ export default function SetupPage() {
 
         <form onSubmit={handleSubmit} className="grid gap-4" noValidate>
           <div className="grid gap-2">
-            <Label htmlFor="name">{t("setup.name")}</Label>
-            <div className="relative">
-              <UserRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                ref={nameInputRef}
-                id="name"
-                name="name"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  clearError("name");
-                }}
-                className="pl-10"
-                autoComplete="name"
-                enterKeyHint="next"
-                aria-invalid={Boolean(errors.name)}
-                aria-describedby={errors.name ? "setup-name-error" : undefined}
-                required
-              />
-            </div>
-            <FieldError id="setup-name-error" message={errors.name} />
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="email">{t("auth.email")}</Label>
+            <Label htmlFor="email">{t("setup.loginEmail")}</Label>
             <div className="relative">
               <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -200,13 +176,38 @@ export default function SetupPage() {
                 }}
                 className="pl-10"
                 autoComplete="new-password"
-                enterKeyHint="done"
+                enterKeyHint="next"
                 aria-invalid={Boolean(errors.password)}
                 aria-describedby={errors.password ? "setup-password-error" : undefined}
                 required
               />
             </div>
             <FieldError id="setup-password-error" message={errors.password} />
+          </div>
+
+          <div className="grid gap-2">
+            <Label htmlFor="name">{t("setup.displayName")}</Label>
+            <div className="relative">
+              <UserRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                ref={nameInputRef}
+                id="name"
+                name="name"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  clearError("name");
+                }}
+                className="pl-10"
+                autoComplete="name"
+                enterKeyHint="done"
+                spellCheck={false}
+                aria-invalid={Boolean(errors.name)}
+                aria-describedby={errors.name ? "setup-name-error" : undefined}
+                required
+              />
+            </div>
+            <FieldError id="setup-name-error" message={errors.name} />
           </div>
 
           <div className="pt-3">

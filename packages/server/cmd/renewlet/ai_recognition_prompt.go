@@ -1,5 +1,9 @@
 package main
 
+// ai_recognition_prompt.go 从 shared prompt JSON 生成 Go 运行面的提示词。
+//
+// shared/data/ai-recognition-prompt.json 是 Docker 与 Cloudflare 的事实源；Go 只读取 embedded 副本，
+// 不能在运行面里手写另一套输出规则或字段解释。
 import (
 	"bytes"
 	"encoding/json"
@@ -104,6 +108,7 @@ func buildAIRecognitionUserPrompt(text string, timezone string, defaultCurrency 
 }
 
 func buildAIRecognitionRepairUserPrompt(originalUserPrompt string, previousObject interface{}, missingNoteNames []string) string {
+	// repair 只修补缺失备注，不允许引入本地品牌表或图标库；否则 Docker/Worker 会在同一输入上产生不同草稿。
 	lines := []string{
 		"Repair task:",
 		"- The previous JSON object is structurally valid but some describable subscriptions have missing or unusable notes.",
@@ -142,6 +147,7 @@ func formatAIRecognitionTags(tags []string) []string {
 		seen[key] = true
 		out = append(out, "- "+value)
 		if len(out) >= 200 {
+			// 标签上下文只提供偏好提示；过多用户历史标签会稀释订阅证据并放大 prompt 成本。
 			break
 		}
 	}

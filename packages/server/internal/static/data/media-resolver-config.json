@@ -3,16 +3,19 @@
     {
       "provider": "thesvg",
       "cdnBase": "https://testingcf.jsdelivr.net/gh/glincker/thesvg@main",
+      "github": { "owner": "glincker", "repo": "thesvg", "branch": "main", "latestRelease": true },
       "preferredVariants": ["default", "color"]
     },
     {
       "provider": "selfhst",
       "cdnBase": "https://testingcf.jsdelivr.net/gh/selfhst/icons@main",
+      "github": { "owner": "selfhst", "repo": "icons", "branch": "main", "latestRelease": false },
       "preferredVariants": ["default", "light", "dark"]
     },
     {
       "provider": "dashboardIcons",
       "cdnBase": "https://testingcf.jsdelivr.net/gh/homarr-labs/dashboard-icons@main",
+      "github": { "owner": "homarr-labs", "repo": "dashboard-icons", "branch": "main", "latestRelease": false },
       "preferredVariants": ["default", "light", "dark"]
     }
   ],

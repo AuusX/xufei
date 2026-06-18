@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { AlertTriangle, Archive, CheckCircle2, FileJson, FileUp, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -27,12 +27,16 @@ interface ImportDataDialogProps {
   settings: AppSettings;
   /** Wallos/Renewlet 导入会映射分类、状态、支付方式和货币，必须使用当前已规范化配置。 */
   config: CustomConfig;
+  /** 外部恢复入口预载的文件；仍然只进入 preview/apply，不在弹窗外写库。 */
+  initialFile?: File | null;
+  onInitialFileConsumed?: () => void;
 }
 
-export function ImportDataDialog({ open, onOpenChange, settings, config }: ImportDataDialogProps) {
+export function ImportDataDialog({ open, onOpenChange, settings, config, initialFile, onInitialFileConsumed }: ImportDataDialogProps) {
   const { t } = useI18n();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadButtonRef = useRef<HTMLButtonElement>(null);
+  const consumedInitialFileRef = useRef<File | null>(null);
   const [mode, setMode] = useState<"file" | "paste">("file");
   const [pasteValue, setPasteValue] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -79,7 +83,7 @@ export function ImportDataDialog({ open, onOpenChange, settings, config }: Impor
     onOpenChange(nextOpen);
   }
 
-  const parseFile = async (nextFile: File, wallosUserId?: string) => {
+  const parseFile = useCallback(async (nextFile: File, wallosUserId?: string) => {
     if (nextFile.size > MAX_IMPORT_FILE_BYTES) {
       throw new Error(t("import.fileTooLarge"));
     }
@@ -90,9 +94,9 @@ export function ImportDataDialog({ open, onOpenChange, settings, config }: Impor
       setSelectedWallosUser(parsed.wallosUsers[0]?.id ?? "");
     }
     await previewPrepared(parsed, conflictMode);
-  };
+  }, [config, conflictMode, previewPrepared, settings, t, today]);
 
-  const handleFileSelected = async (nextFile: File | null) => {
+  const handleFileSelected = useCallback(async (nextFile: File | null) => {
     if (!nextFile) return;
     // 文件对象只保存在弹窗生命周期内；预览失败时清掉 PreparedImport，避免应用上一次成功解析的包。
     setFile(nextFile);
@@ -106,7 +110,7 @@ export function ImportDataDialog({ open, onOpenChange, settings, config }: Impor
     } finally {
       setParsing(false);
     }
-  };
+  }, [parseFile, resetImportPreview, setError, t]);
 
   const handleFileDrop = async (event: DragEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -150,6 +154,15 @@ export function ImportDataDialog({ open, onOpenChange, settings, config }: Impor
       setParsing(false);
     }
   };
+
+  useEffect(() => {
+    if (!open || !initialFile || consumedInitialFileRef.current === initialFile) return;
+    consumedInitialFileRef.current = initialFile;
+    setMode("file");
+    void handleFileSelected(initialFile).finally(() => {
+      onInitialFileConsumed?.();
+    });
+  }, [handleFileSelected, initialFile, onInitialFileConsumed, open]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>

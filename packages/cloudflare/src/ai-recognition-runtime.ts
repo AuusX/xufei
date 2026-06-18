@@ -1,3 +1,8 @@
+/**
+ * Worker AI SDK runtime adapter。
+ *
+ * 这里把 shared provider endpoint 转成 AI SDK language model，并通过 middleware 捕获 raw text/usage，供 diagnostics 脱敏后返回。
+ */
 import { generateText, wrapLanguageModel, type JSONValue, type ModelMessage, type UserContent } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -18,6 +23,7 @@ export type AIRecognitionRuntimeInput = {
   images: Array<{ data: Uint8Array; mediaType: string }>;
 };
 
+/** 捕获 provider 响应事实供 diagnostics 使用；这里不保存 API key、请求头或图片原文。 */
 export type AIRecognitionCapture = {
   rawModelText: string | null;
   usage: unknown | null;
@@ -25,6 +31,7 @@ export type AIRecognitionCapture = {
   providerMetadata: unknown | null;
 };
 
+/** 创建带 capture middleware 的模型实例；调用方负责在响应前统一脱敏 capture 内容。 */
 export function createAIRecognitionModel(settings: AiRecognitionSettings, capture: AIRecognitionCapture) {
   const canonicalSettings = aiRecognitionSettingsSchema.parse(settings);
   const endpoint = resolveAIProviderEndpoint(canonicalSettings);
@@ -36,6 +43,7 @@ export function createAIRecognitionModel(settings: AiRecognitionSettings, captur
       specificationVersion: "v3",
       async wrapGenerate({ doGenerate }) {
         const result = await doGenerate();
+        // capture 只记录 provider 事实，真正返回前仍会经过 diagnostics 脱敏；不要在这里拼用户可见错误。
         capture.rawModelText = extractAIModelText(result.content) ?? capture.rawModelText;
         capture.usage = result.usage ?? capture.usage;
         capture.finishReason = finishReasonText(result.finishReason) ?? capture.finishReason;
@@ -46,6 +54,7 @@ export function createAIRecognitionModel(settings: AiRecognitionSettings, captur
   });
 }
 
+/** 按 canonical transport 选择 AI SDK provider，避免 providerType 与 transportProtocol 历史错配。 */
 export function createAIRecognitionLanguageModel(settings: AiRecognitionSettings, runtimeBaseUrl: string) {
   if (settings.transportProtocol === "anthropic-messages") {
     return createAnthropic({
@@ -70,6 +79,7 @@ export function createAIRecognitionLanguageModel(settings: AiRecognitionSettings
   })(settings.model);
 }
 
+/** connection test 只验证最小文本生成能力，不触发订阅 schema、图片输入或 repair 链路。 */
 export async function runAIRecognitionConnectionTest(settings: AiRecognitionSettings): Promise<void> {
   const canonicalSettings = aiRecognitionSettingsSchema.parse(settings);
   // 连接测试刻意绕开 schema/repair/thinking/retry，只验证当前协议能完成最小文本生成。
@@ -81,6 +91,7 @@ export async function runAIRecognitionConnectionTest(settings: AiRecognitionSett
   });
 }
 
+/** 判断 thinking control 是否属于当前 provider；错配值只能丢弃，不能跨 provider 复用。 */
 export function thinkingControlMatchesSettings(settings: AiRecognitionSettings, control: AiThinkingControl): boolean {
   if (settings.transportProtocol === "openai-chat") return settings.providerType === "openai" && control.provider === "openai";
   if (settings.transportProtocol === "anthropic-messages") return settings.providerType === "anthropic" && control.provider === "anthropic";
@@ -88,6 +99,7 @@ export function thinkingControlMatchesSettings(settings: AiRecognitionSettings, 
 }
 
 export function providerOptionsForThinking(settings: AiRecognitionSettings, control: AiThinkingControl | null): Record<string, Record<string, JSONValue>> | undefined {
+  // thinking options 是 provider 私有协议；不匹配当前设置时直接丢弃，避免 AI SDK 把无效参数发给第三方。
   if (!control) return undefined;
   if (control.provider === "openai") {
     if (settings.providerType !== "openai" || settings.transportProtocol !== "openai-chat") return undefined;
@@ -107,6 +119,7 @@ export function providerOptionsForThinking(settings: AiRecognitionSettings, cont
   return { anthropic: { thinking: { type: "enabled", budgetTokens: control.budgetTokens } } };
 }
 
+/** 将文本和图片组合成 AI SDK message；图片二进制只在本次请求中进入第三方 provider，不进入 diagnostics。 */
 export function buildAIRecognitionMessages(input: AIRecognitionRuntimeInput, userPrompt: string): ModelMessage[] {
   const content: UserContent = [
     { type: "text", text: userPrompt },
@@ -115,6 +128,7 @@ export function buildAIRecognitionMessages(input: AIRecognitionRuntimeInput, use
   return [{ role: "user", content }];
 }
 
+/** 识别提示词使用用户时区中的 date-only today，避免 UTC 日期让续费日推断偏一天。 */
 export function todayDateOnly(timezone: string): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone || "UTC",

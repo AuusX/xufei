@@ -1,6 +1,7 @@
 package main
 
-// 本文件测试 PocketBase schema 自愈和迁移收敛，确保 collection 字段、索引和历史 logo 数据保持当前正式契约。
+// Schema 测试保护 PocketBase collection 自愈、索引和迁移收敛。
+// 字段默认值、date-only、autoRenew 和 Logo URL 契约改动必须先在这里证明旧库能被收敛到当前形状。
 
 import (
 	"strings"
@@ -53,6 +54,7 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 		"website":                      core.FieldTypeURL,
 		"notes":                        core.FieldTypeText,
 		"tags":                         core.FieldTypeJSON,
+		"costSharing":                  core.FieldTypeJSON,
 		"extra":                        core.FieldTypeJSON,
 		"reminderDays":                 core.FieldTypeNumber,
 		"repeatReminderEnabled":        core.FieldTypeBool,
@@ -73,6 +75,14 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 		"created": core.FieldTypeAutodate,
 		"updated": core.FieldTypeAutodate,
 	})
+	assertFields(t, app, "subscription_scheduler_states", map[string]string{
+		"user":                   core.FieldTypeRelation,
+		"autoRenewCount":         core.FieldTypeNumber,
+		"repeatReminderCount":    core.FieldTypeNumber,
+		"lastAutoRenewLocalDate": core.FieldTypeText,
+		"created":                core.FieldTypeAutodate,
+		"updated":                core.FieldTypeAutodate,
+	})
 	assertFields(t, app, "assets", map[string]string{
 		"user":         core.FieldTypeRelation,
 		"kind":         core.FieldTypeSelect,
@@ -91,6 +101,7 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 	assertSelectFieldValues(t, app, "subscriptions", "oneTimeTermUnit", "day", "week", "month", "year")
 	assertSelectFieldValues(t, app, "subscriptions", "status", "trial", "active", "expired", "paused", "cancelled")
 	assertJSONFieldMaxSize(t, app, "subscriptions", "tags", maxSubscriptionTagsFieldSize)
+	assertJSONFieldMaxSize(t, app, "subscriptions", "costSharing", 65536)
 	assertFileFieldMimeTypes(t, app, "assets", "file", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon")
 	assertFields(t, app, "notification_jobs", map[string]string{
 		"user":                core.FieldTypeRelation,
@@ -122,6 +133,18 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 	})
 
 	assertIndex(t, app, "subscriptions", "idx_subscriptions_user")
+	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_logo")
+	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_auto_renew_due")
+	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_reminder_due")
+	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_trial_reminder")
+	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_repeat_reminder")
+	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_repeat_trial_reminder")
+	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_auto_renew_due", "user, autoRenew, nextBillingDate, id")
+	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_reminder_due", "user, nextBillingDate, id")
+	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_trial_reminder", "user, trialEndDate, id")
+	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_repeat_reminder", "user, repeatReminderEnabled, nextBillingDate, id")
+	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_repeat_trial_reminder", "user, repeatReminderEnabled, status, trialEndDate, id")
+	assertIndex(t, app, "subscription_scheduler_states", "idx_subscription_scheduler_states_user_unique")
 	assertIndex(t, app, "settings", "idx_settings_user_unique")
 	assertIndex(t, app, "custom_configs", "idx_custom_configs_user_unique")
 	assertIndex(t, app, "notification_jobs", "idx_notification_jobs_user_local_time_unique")
@@ -511,4 +534,19 @@ func assertIndex(t *testing.T, app core.App, collectionName string, indexName st
 		}
 	}
 	t.Fatalf("collection %s is missing index %s", collectionName, indexName)
+}
+
+func assertIndexDefinition(t *testing.T, app core.App, collectionName string, indexName string, columns string) {
+	t.Helper()
+	collection, err := app.FindCollectionByNameOrId(collectionName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "CREATE INDEX `" + indexName + "` ON `" + collectionName + "` (" + columns + ")"
+	for _, index := range collection.Indexes {
+		if index == expected {
+			return
+		}
+	}
+	t.Fatalf("collection %s index %s definition mismatch, want %q in %#v", collectionName, indexName, expected, collection.Indexes)
 }

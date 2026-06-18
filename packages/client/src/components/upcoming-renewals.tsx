@@ -2,41 +2,31 @@
  * 即将续费/到期列表（侧边栏卡片）。
  *
  * 规则：
- * - 只展示 active/trial
- * - 取未来 14 天内的续费或一次性固定服务期到期
+ * - 只展示提醒窗口内的 active/trial
+ * - 展示续费或一次性固定服务期到期
  * - 最多展示 5 条
- *
- * 注意： 这是仪表盘提示窗口，不等同于通知 Cron 的 reminderDays 规则。
  */
 
 import { Subscription } from '@/types/subscription';
 import { Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { daysBetweenDateOnly, formatDateOnlyMonthDay, todayDateOnlyInTimeZone } from '@/lib/time/date-only';
+import { formatDateOnlyMonthDay } from '@/lib/time/date-only';
 import { useI18n } from '@/i18n/I18nProvider';
-import { isEffectivelyActiveSubscription } from '@/modules/subscriptions/domain/subscription-status';
+import { buildUpcomingReminderItems } from '@/modules/subscriptions/domain/upcoming-reminders';
 
 interface UpcomingRenewalsProps {
   /** 订阅列表（前端 domain 类型）。 */
   subscriptions: Subscription[];
-  /** 用户 IANA 时区，用于“今天/未来两周”窗口。 */
+  /** 用户 IANA 时区，用于计算本地“今天”。 */
   timeZone: string;
+  /** 设置页默认提前提醒天数，用于解析继承型订阅。 */
+  notificationReminderDays: number;
 }
 
 /** 即将续费列表组件。 */
-export function UpcomingRenewals({ subscriptions, timeZone }: UpcomingRenewalsProps) {
+export function UpcomingRenewals({ subscriptions, timeZone, notificationReminderDays }: UpcomingRenewalsProps) {
   const { t, formatCurrency, locale } = useI18n();
-  const today = todayDateOnlyInTimeZone(new Date(), timeZone);
-  const upcoming = subscriptions
-    // 即将续费只看有效活跃订阅，旧 active/trial 过期记录应进入“已过期”，不能继续占用未来续费提醒位。
-    .filter(s => isEffectivelyActiveSubscription(s, today) && (s.billingCycle !== "one-time" || Boolean(s.oneTimeTermCount)))
-    .map(s => ({
-      ...s,
-      daysUntil: daysBetweenDateOnly(today, s.nextBillingDate),
-    }))
-    .filter(s => s.daysUntil >= 0 && s.daysUntil <= 14)
-    .sort((a, b) => a.daysUntil - b.daysUntil)
-    .slice(0, 5);
+  const upcoming = buildUpcomingReminderItems({ subscriptions, timeZone, notificationReminderDays }).slice(0, 5);
 
   if (upcoming.length === 0) {
     return (
@@ -51,34 +41,34 @@ export function UpcomingRenewals({ subscriptions, timeZone }: UpcomingRenewalsPr
 
   return (
     <div className="grid gap-3">
-      {upcoming.map((sub) => (
+      {upcoming.map((item) => (
         <div
-          key={sub.id}
+          key={item.subscription.id}
           className={cn(
             "flex items-center justify-between rounded-lg border border-border bg-secondary/50 p-4 transition-colors hover:bg-secondary",
-            sub.daysUntil <= 3 && "border-warning/30 bg-warning/5"
+            item.daysUntil <= 3 && "border-warning/30 bg-warning/5"
           )}
         >
           <div className="flex items-center gap-3">
             <div className={cn(
               "flex h-10 w-10 items-center justify-center rounded-lg text-sm font-bold",
-              sub.daysUntil <= 3 
-                ? "bg-warning/20 text-warning" 
+              item.daysUntil <= 3
+                ? "bg-warning/20 text-warning"
                 : "bg-muted text-muted-foreground"
             )}>
-              {sub.daysUntil === 0 ? t("upcoming.todayShort") : t("upcoming.daysShort", { days: sub.daysUntil })}
+              {item.daysUntil === 0 ? t("upcoming.todayShort") : t("upcoming.daysShort", { days: item.daysUntil })}
             </div>
             <div>
-              <p className="font-medium text-foreground">{sub.name}</p>
+              <p className="font-medium text-foreground">{item.subscription.name}</p>
               <p className="text-xs text-muted-foreground">
-                {sub.billingCycle === "one-time"
-                  ? t("upcoming.expiresOn", { date: formatDateOnlyMonthDay(sub.nextBillingDate, locale) })
-                  : t("upcoming.renewsOn", { date: formatDateOnlyMonthDay(sub.nextBillingDate, locale) })}
+                {item.kind === "expiry"
+                  ? t("upcoming.expiresOn", { date: formatDateOnlyMonthDay(item.subscription.nextBillingDate, locale) })
+                  : t("upcoming.renewsOn", { date: formatDateOnlyMonthDay(item.subscription.nextBillingDate, locale) })}
               </p>
             </div>
           </div>
           <p className="font-semibold text-foreground">
-            {formatCurrency(sub.price, sub.currency)}
+            {formatCurrency(item.subscription.price, item.subscription.currency)}
           </p>
         </div>
       ))}

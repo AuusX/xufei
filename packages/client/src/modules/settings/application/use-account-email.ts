@@ -10,16 +10,18 @@ import { authClient } from "@/lib/auth-client";
 export interface AccountIdentity {
   email: string | null;
   role: string;
+  banned: boolean;
 }
 
 /** 从认证会话读取当前账号身份，pending 时 email 返回 null 以支持 UI 展示加载态。 */
 export function useAccountIdentity(): AccountIdentity {
   const { data: session, isPending } = authClient.useSession();
 
-  if (isPending) return { email: null, role: "user" };
+  if (isPending) return { email: null, role: "user", banned: false };
   return {
     email: session?.user.email ?? "",
     role: session?.user.role ?? "user",
+    banned: session?.user.banned ?? false,
   };
 }
 

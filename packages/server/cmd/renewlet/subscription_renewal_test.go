@@ -1,5 +1,7 @@
 package main
 
+// 续订算法 Go 测试读取 shared JSON fixture；自动/手动续订的 date-only 推进语义必须追随 TypeScript 事实源。
+
 import (
 	"encoding/json"
 	"os"
@@ -17,6 +19,7 @@ type subscriptionRenewalFixture struct {
 }
 
 func TestSubscriptionRenewalMatchesSharedFixtures(t *testing.T) {
+	// Go 版算法不单独发明期望；它必须追 shared fixture，才能证明 Docker 与 Cloudflare 续订口径一致。
 	data, err := os.ReadFile("../../../shared/src/subscription-renewal-fixtures.json")
 	if err != nil {
 		t.Fatalf("read shared fixtures: %v", err)

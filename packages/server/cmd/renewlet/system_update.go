@@ -1,5 +1,11 @@
 package main
 
+// system_update.go 实现 Docker 页面内自更新。
+//
+// 状态流：版本检查 -> 选择可信 Release 资产 -> 下载 checksum 和 tar.gz -> 校验 -> 替换真实二进制
+// -> 标记 restart pending -> 管理员确认后异步退出，让 Docker restart policy 拉起新进程。
+//
+// 注意：这里永远不替换 /renewlet 稳定入口；只替换 /opt/renewlet/current/renewlet，并保留备份用于失败恢复。
 import (
 	"archive/tar"
 	"bufio"
@@ -18,6 +24,7 @@ import (
 	"time"
 )
 
+// newSystemUpdateService 注入 release client 和时钟/退出函数，便于测试覆盖下载、锁和延迟退出状态。
 func newSystemUpdateService(client systemReleaseClient) *systemUpdateService {
 	return &systemUpdateService{
 		client:      client,
@@ -27,6 +34,8 @@ func newSystemUpdateService(client systemReleaseClient) *systemUpdateService {
 	}
 }
 
+// CheckVersion 返回当前部署形态和最新可信 Release。
+// GitHub 失败时只返回 warning/cached，不把“没拿到结果”伪装成“已是最新”。
 func (service *systemUpdateService) CheckVersion(ctx context.Context, locale appLocale, force bool) (*systemVersionResponse, error) {
 	if !force {
 		if cached := service.cachedVersion(); cached != nil {
@@ -40,9 +49,11 @@ func (service *systemUpdateService) CheckVersion(ctx context.Context, locale app
 		if cached := service.cachedVersion(); cached != nil {
 			// 版本检查是管理页体验能力，不应因 GitHub 短暂失败阻断管理员查看上次可信结果。
 			cached.Warning = service.versionCheckWarning(locale, err)
+			cached.ErrorDetails = service.versionCheckDetails(err)
 			return cached, nil
 		}
 		response.Warning = service.versionCheckWarning(locale, err)
+		response.ErrorDetails = service.versionCheckDetails(err)
 		return response, nil
 	}
 	response.CheckSucceeded = true
@@ -193,51 +204,50 @@ func (service *systemUpdateService) fetchTargetRelease(ctx context.Context) (*fe
 }
 
 func (service *systemUpdateService) fetchLatestStableRelease(ctx context.Context) (*fetchedSystemRelease, error) {
-	release, err := service.client.FetchLatestRelease(ctx)
+	releases, err := service.client.FetchReleases(ctx)
 	if err != nil {
 		return nil, err
 	}
-	version, parsed, ok := parseSystemVersion(release.TagName)
-	if !ok || parsed.prerelease != "" || release.Prerelease || release.Draft {
-		return nil, nil
+	for index := range releases {
+		release := &releases[index]
+		version, parsed, ok := parseSystemVersion(release.TagName)
+		if !ok || parsed.prerelease != "" {
+			continue
+		}
+		return service.systemReleaseFromSource(ctx, release, version), nil
 	}
-	return systemReleaseFromGitHub(release, version), nil
+	return nil, nil
 }
 
 func (service *systemUpdateService) fetchLatestRCRelease(ctx context.Context) (*fetchedSystemRelease, error) {
-	var best *githubRelease
+	var best *systemRelease
 	var bestVersion string
 	var bestParsed semanticVersion
-	for page := 1; page <= systemUpdateReleaseListPages; page += 1 {
-		releases, err := service.client.FetchReleases(ctx, page, systemUpdateReleaseListSize)
-		if err != nil {
-			return nil, err
+	releases, err := service.client.FetchReleases(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for index := range releases {
+		release := &releases[index]
+		version, parsed, ok := parseSystemVersion(release.TagName)
+		if !ok || parsed.rc <= 0 {
+			continue
 		}
-		if len(releases) == 0 {
-			break
+		if !isNewerSystemRCVersion(Version, version) {
+			continue
 		}
-		for index := range releases {
-			release := &releases[index]
-			version, parsed, ok := parseSystemVersion(release.TagName)
-			if !ok || parsed.rc <= 0 || release.Draft || !release.Prerelease {
-				continue
-			}
-			if !isNewerSystemRCVersion(Version, version) {
-				continue
-			}
-			if best == nil || compareSemanticVersion(parsed, bestParsed) > 0 {
-				copyRelease := *release
-				copyRelease.Assets = append([]githubAsset(nil), release.Assets...)
-				best = &copyRelease
-				bestVersion = version
-				bestParsed = parsed
-			}
+		if best == nil || compareSemanticVersion(parsed, bestParsed) > 0 {
+			copyRelease := *release
+			copyRelease.Assets = append([]systemReleaseAsset(nil), release.Assets...)
+			best = &copyRelease
+			bestVersion = version
+			bestParsed = parsed
 		}
 	}
 	if best == nil {
 		return nil, nil
 	}
-	return systemReleaseFromGitHub(best, bestVersion), nil
+	return service.systemReleaseFromSource(ctx, best, bestVersion), nil
 }
 
 func (service *systemUpdateService) isTargetVersionNewer(version string) bool {
@@ -256,7 +266,17 @@ func currentUpdateChannel() string {
 	return systemUpdateChannelStable
 }
 
-func systemReleaseFromGitHub(release *githubRelease, version string) *fetchedSystemRelease {
+func (service *systemUpdateService) systemReleaseFromSource(ctx context.Context, release *systemRelease, version string) *fetchedSystemRelease {
+	copyRelease := *release
+	if assets := service.client.ProbeReleaseAssets(ctx, release.TagName, version); assets != nil {
+		copyRelease.Assets = assets
+	} else if copyRelease.Assets == nil {
+		copyRelease.Assets = []systemReleaseAsset{}
+	}
+	return systemReleaseFromSource(&copyRelease, version)
+}
+
+func systemReleaseFromSource(release *systemRelease, version string) *fetchedSystemRelease {
 	assets := makeSystemReleaseAssetDTOs(release.Assets)
 	return &fetchedSystemRelease{
 		dto: &systemReleaseInfoDTO{
@@ -268,11 +288,11 @@ func systemReleaseFromGitHub(release *githubRelease, version string) *fetchedSys
 			HTMLURL:     release.HTMLURL,
 			Assets:      assets,
 		},
-		assets: append([]githubAsset(nil), release.Assets...),
+		assets: append([]systemReleaseAsset(nil), release.Assets...),
 	}
 }
 
-func makeSystemReleaseAssetDTOs(source []githubAsset) []systemReleaseAssetDTO {
+func makeSystemReleaseAssetDTOs(source []systemReleaseAsset) []systemReleaseAssetDTO {
 	assets := make([]systemReleaseAssetDTO, 0, len(source))
 	for _, asset := range source {
 		assets = append(assets, systemReleaseAssetDTO{Name: asset.Name, Size: asset.Size})
@@ -292,7 +312,12 @@ func (service *systemUpdateService) cachedVersion() *systemVersionResponse {
 func (service *systemUpdateService) storeVersion(response *systemVersionResponse) {
 	service.cacheMu.Lock()
 	defer service.cacheMu.Unlock()
-	service.cacheValue = cloneSystemVersionResponse(response, false)
+	cached := cloneSystemVersionResponse(response, false)
+	if cached != nil {
+		// 上游 raw response 只随当前管理员操作返回；版本缓存只保存可信 release 结果和短 warning。
+		cached.ErrorDetails = nil
+	}
+	service.cacheValue = cached
 	service.cacheExpiry = service.now().Add(systemUpdateCacheTTL)
 }
 
@@ -304,12 +329,9 @@ func (service *systemUpdateService) clearCache() {
 }
 
 func (service *systemUpdateService) versionCheckWarning(locale appLocale, err error) string {
-	var githubErr *githubAPIError
-	if errors.As(err, &githubErr) {
-		if githubErr.rateLimited {
-			return service.versionCheckRateLimitWarning(locale, githubErr.retryAt)
-		}
-		switch githubErr.statusCode {
+	var releaseErr *systemReleaseCheckError
+	if errors.As(err, &releaseErr) {
+		switch releaseErr.statusCode {
 		case http.StatusNotFound:
 			return serverText(locale, "system.versionCheckNotFoundWarning")
 		case http.StatusForbidden, http.StatusUnauthorized:
@@ -323,11 +345,16 @@ func (service *systemUpdateService) versionCheckWarning(locale appLocale, err er
 	return serverText(locale, "system.versionCheckUnavailableWarning")
 }
 
-func (service *systemUpdateService) versionCheckRateLimitWarning(locale appLocale, retryAt time.Time) string {
-	if !retryAt.IsZero() && retryAt.After(service.now()) {
-		return serverFormat(locale, "system.versionCheckRateLimitRetryWarning", map[string]interface{}{"time": retryAt.UTC().Format(time.RFC3339)})
+func (service *systemUpdateService) versionCheckDetails(err error) *upstreamErrorDetails {
+	return systemUpstreamErrorDetails(err)
+}
+
+func systemUpstreamErrorDetails(err error) *upstreamErrorDetails {
+	var releaseErr *systemReleaseCheckError
+	if errors.As(err, &releaseErr) && releaseErr.details != nil {
+		return releaseErr.details
 	}
-	return serverText(locale, "system.versionCheckRateLimitWarning")
+	return upstreamErrorDetailsFromError(err)
 }
 
 func (service *systemUpdateService) beginUpdate() bool {
@@ -430,10 +457,10 @@ func updateModeForManualDeployment() string {
 	return "source-manual"
 }
 
-func findSystemUpdateAssets(assets []githubAsset, version string) (*githubAsset, *githubAsset) {
+func findSystemUpdateAssets(assets []systemReleaseAsset, version string) (*systemReleaseAsset, *systemReleaseAsset) {
 	archiveName := systemArchiveName(version)
-	var archiveAsset *githubAsset
-	var checksumAsset *githubAsset
+	var archiveAsset *systemReleaseAsset
+	var checksumAsset *systemReleaseAsset
 	for index := range assets {
 		asset := &assets[index]
 		switch asset.Name {
@@ -446,7 +473,7 @@ func findSystemUpdateAssets(assets []githubAsset, version string) (*githubAsset,
 	return archiveAsset, checksumAsset
 }
 
-func systemUpdateAssetsUnsupportedReason(locale appLocale, assets []githubAsset, version string) string {
+func systemUpdateAssetsUnsupportedReason(locale appLocale, assets []systemReleaseAsset, version string) string {
 	archiveAsset, checksumAsset := findSystemUpdateAssets(assets, version)
 	if archiveAsset == nil {
 		return serverFormat(locale, "system.updateUnsupportedReleaseAsset", map[string]interface{}{"asset": systemArchiveName(version)})
@@ -457,13 +484,13 @@ func systemUpdateAssetsUnsupportedReason(locale appLocale, assets []githubAsset,
 	return ""
 }
 
-func selectSystemUpdateAssets(assets []githubAsset, version string) (githubAsset, githubAsset, error) {
+func selectSystemUpdateAssets(assets []systemReleaseAsset, version string) (systemReleaseAsset, systemReleaseAsset, error) {
 	archiveAsset, checksumAsset := findSystemUpdateAssets(assets, version)
 	if archiveAsset == nil {
-		return githubAsset{}, githubAsset{}, fmt.Errorf("no compatible release asset found for %s/%s", runtime.GOOS, runtime.GOARCH)
+		return systemReleaseAsset{}, systemReleaseAsset{}, fmt.Errorf("no compatible release asset found for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	if checksumAsset == nil {
-		return githubAsset{}, githubAsset{}, errors.New("checksums.txt is missing from the release")
+		return systemReleaseAsset{}, systemReleaseAsset{}, errors.New("checksums.txt is missing from the release")
 	}
 	return *archiveAsset, *checksumAsset, nil
 }

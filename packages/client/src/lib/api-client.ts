@@ -19,7 +19,7 @@
  *   H -- 成功 --> J[返回 parse 后的数据]
  * ```
  *
- * 注意： FormData 请求不能手动设置 content-type，否则浏览器不会自动补 multipart boundary。
+ * 注意： 无 body 请求不声明 JSON content-type；FormData 请求也不能手动设置，否则浏览器不会自动补 multipart boundary。
  * 注意： 不要恢复 `apiFetch<T>` 式的纯类型断言；本文件是前端拒绝异常 API 响应的唯一运行时边界。
  */
 import { getAuthHeader } from "@/lib/pocketbase";
@@ -29,22 +29,25 @@ import { translate } from "@/i18n/messages";
 import { z } from "zod";
 
 export class ApiError extends Error {
-  // status/details/code 是 UI 错误展示和表单字段定位的唯一结构化通道。
+  // rawResponseText 只服务当前错误详情回显；不要把它持久化或拿来驱动业务分支。
   status: number;
   details: unknown;
   code: "timeout" | "aborted" | "network" | (string & {}) | undefined;
+  rawResponseText: string;
 
   constructor(
     message: string,
     status: number,
     details?: unknown,
     code?: "timeout" | "aborted" | "network" | (string & {}),
+    rawResponseText = "",
   ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.details = details;
     this.code = code;
+    this.rawResponseText = rawResponseText;
   }
 }
 
@@ -181,13 +184,13 @@ function responseWithStreamActivity(response: Response, onChunk: () => void, sig
   });
 }
 
-async function parseJsonSafely(response: Response): Promise<unknown> {
+async function readResponsePayload(response: Response): Promise<{ json: unknown; text: string }> {
   const text = await response.text();
-  if (!text) return null;
+  if (!text) return { json: null, text };
   try {
-    return JSON.parse(text) as unknown;
+    return { json: JSON.parse(text) as unknown, text };
   } catch {
-    return null;
+    return { json: null, text };
   }
 }
 
@@ -263,6 +266,13 @@ function getErrorCode(payload: unknown): string | undefined {
   return getStringField(payload, ["code"]);
 }
 
+function shouldClearAuthSession(status: number, payload: unknown): boolean {
+  if (status !== 401) return false;
+  const code = getErrorCode(payload);
+  // 模型列表代理会透传 provider 401；它是业务错误，只展示，不应清 Renewlet 登录态。
+  return code !== "AI_MODEL_LIST_FAILED";
+}
+
 function getClientTimeZoneHeader(): string | null {
   try {
     const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -275,8 +285,9 @@ function getClientTimeZoneHeader(): string | null {
 function buildApiHeaders(headersInit: HeadersInit | undefined, body: BodyInit | null | undefined): Headers {
   const headers = new Headers(headersInit);
   const isFormDataBody = typeof FormData !== "undefined" && body instanceof FormData;
-  // 默认 JSON；FormData 必须让浏览器自己补 multipart boundary。
-  if (!headers.has("content-type") && !isFormDataBody) {
+  const hasBody = body !== null && body !== undefined;
+  // 业务 GET/DELETE 统一走产品 API，不带伪 JSON body；POST/PUT/PATCH 的普通对象才默认声明 JSON。
+  if (!headers.has("content-type") && hasBody && !isFormDataBody) {
     headers.set("content-type", "application/json");
   }
   if (!headers.has("x-client-time-zone")) {
@@ -323,10 +334,10 @@ async function fetchWithApiBoundary(input: RequestInfo, init?: ApiFetchInit): Pr
 }
 
 /**
- * 带运行时 schema 校验的 fetch 封装（默认 JSON）。
+ * 带运行时 schema 校验的 fetch 封装。
  *
  * 约定：
- * - 自动加 JSON content-type，但 FormData 保留浏览器 multipart boundary
+ * - 有普通 body 时自动加 JSON content-type；无 body 和 FormData 保持浏览器默认边界
  * - 自动携带 Cookie 和当前运行面的 Bearer token
  * - 非 2xx 时抛出 `ApiError`
  * - 2xx 响应必须通过调用方传入的 Zod schema，否则抛出 `ApiError`
@@ -338,14 +349,15 @@ export async function apiFetch<Schema extends z.ZodType>(
 ): Promise<z.infer<Schema>> {
   const { abort, response: res } = await fetchWithApiBoundary(input, init);
   try {
-    const json = await parseJsonSafely(res);
+    const payload = await readResponsePayload(res);
+    const json = payload.json;
 
     if (!res.ok) {
       const message = getErrorMessage(json) || res.statusText || "Request failed";
-      if (res.status === 401) {
+      if (shouldClearAuthSession(res.status, json)) {
         clearAuthSession();
       }
-      throw new ApiError(message, res.status, json, getErrorCode(json));
+      throw new ApiError(message, res.status, json, getErrorCode(json), payload.text);
     }
 
     const parsed = responseSchema.safeParse(json);
@@ -357,10 +369,30 @@ export async function apiFetch<Schema extends z.ZodType>(
         res.status,
         parsed.error.flatten(),
         "invalid_response",
+        payload.text,
       );
     }
 
     return parsed.data;
+  } finally {
+    abort.cleanup();
+  }
+}
+
+/** 二进制下载也复用 API 认证/错误边界；调用方只接收已经通过 HTTP ok 校验的 Blob。 */
+export async function apiFetchBlob(input: RequestInfo, init?: ApiFetchInit): Promise<Blob> {
+  const { abort, response } = await fetchWithApiBoundary(input, init);
+  try {
+    if (!response.ok) {
+      const payload = await readResponsePayload(response);
+      const json = payload.json;
+      const message = getErrorMessage(json) || response.statusText || "Request failed";
+      if (shouldClearAuthSession(response.status, json)) {
+        clearAuthSession();
+      }
+      throw new ApiError(message, response.status, json, getErrorCode(json), payload.text);
+    }
+    return await response.blob();
   } finally {
     abort.cleanup();
   }
@@ -377,12 +409,13 @@ export async function apiFetchStream<T>(
   const idleWatchdog = createStreamIdleWatchdog(abort, init.streamIdleTimeoutMs);
   try {
     if (!response.ok) {
-      const json = await parseJsonSafely(response);
+      const payload = await readResponsePayload(response);
+      const json = payload.json;
       const message = getErrorMessage(json) || response.statusText || "Request failed";
-      if (response.status === 401) {
+      if (shouldClearAuthSession(response.status, json)) {
         clearAuthSession();
       }
-      throw new ApiError(message, response.status, json, getErrorCode(json));
+      throw new ApiError(message, response.status, json, getErrorCode(json), payload.text);
     }
     idleWatchdog.reset();
     const responseForConsume = responseWithStreamActivity(response, idleWatchdog.reset, abort.signal);
