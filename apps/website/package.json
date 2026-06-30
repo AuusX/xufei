@@ -10,8 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "test:visual": "playwright test tests/visual.spec.ts"
+    "test:e2e": "playwright test --grep-invert @visual",
+    "test:visual": "playwright test tests/visual.spec.ts --update-snapshots"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

@@ -1,8 +1,9 @@
 import { lazy, Suspense } from 'react'
-import { ArrowDown } from 'lucide-react'
+import { ArrowDown, CirclePlay } from 'lucide-react'
 import { motion } from 'framer-motion'
 
-import { copy, text, type Locale } from '../content/site'
+import { copy, links, text, type Locale } from '../content/site'
+import { externalLinkProps } from '../lib/external-link'
 import { responsiveScreenshotAsset, screenshotName } from '../lib/renewlet-image-assets'
 import { GridPattern } from './icons'
 import { GlowButton } from './ui/GlowButton'
@@ -59,13 +60,33 @@ export function Hero({ locale, onDeployClick }: HeroProps) {
             >
               {text(copy.hero.body, locale)}
             </motion.p>
-            <div className="mt-10 flex flex-col items-center justify-center gap-y-8">
+            <div className="mt-10 flex flex-col items-center justify-center gap-y-7">
               <motion.div
                 animate={{ opacity: 1, y: 0 }}
+                className="flex flex-col items-center"
                 initial={{ opacity: 0, y: 10 }}
                 transition={{ duration: 0.6, delay: 0.4 }}
               >
-                <GlowButton onClick={onDeployClick}>{text(copy.hero.secondaryCta, locale)}</GlowButton>
+                <div className="flex w-full flex-col items-center justify-center gap-3 sm:w-auto sm:flex-row">
+                  <GlowButton innerClassName="flex min-h-11 items-center px-5 py-2.5" onClick={onDeployClick}>
+                    {text(copy.hero.secondaryCta, locale)}
+                  </GlowButton>
+                  <a
+                    aria-describedby="hero-demo-note"
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-zinc-950/50 px-5 py-2.5 text-sm/6 font-medium text-zinc-300 transition hover:border-emerald-300/35 hover:bg-white/[0.045] hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/45"
+                    href={links.demo}
+                    {...externalLinkProps}
+                  >
+                    <CirclePlay aria-hidden="true" className="h-4 w-4 text-emerald-300" strokeWidth={1.7} />
+                    {text(copy.hero.demoCta, locale)}
+                  </a>
+                </div>
+                <p
+                  className={`mt-4 max-w-2xl text-xs leading-5 text-zinc-500 sm:text-sm sm:leading-6 ${isChinese ? '' : 'max-w-[39rem]'}`}
+                  id="hero-demo-note"
+                >
+                  {text(copy.hero.demoNote, locale)}
+                </p>
               </motion.div>
               <motion.div
                 animate={{ opacity: 1 }}

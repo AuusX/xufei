@@ -9,6 +9,7 @@ import {
   type DateOnly,
   type LocalTime,
 } from "../runtime";
+import { apiSuccessResponseSchema } from "./api";
 import { okResponseSchema } from "./common";
 import { settingsUpdateBodySchema } from "./settings";
 import { upstreamErrorDetailsSchema } from "./upstream";
@@ -118,7 +119,7 @@ export const notificationHistoryJobResponseSchema = z.object({
   updatedAt: z.string(),
 }).strict();
 
-export const notificationHistoryResponseSchema = z.object({
+export const notificationHistoryPayloadSchema = z.object({
   summary: z.object({
     nextCheck: localScheduleOccurrenceResponseSchema,
     nextContentBatch: upcomingNotificationBatchResponseSchema.nullable(),
@@ -137,25 +138,25 @@ export const notificationHistoryResponseSchema = z.object({
     hasMore: z.boolean(),
   }).strict(),
 }).strict();
+export const notificationHistoryResponseSchema = apiSuccessResponseSchema(notificationHistoryPayloadSchema);
 
 export const notificationsTestResponseSchema = okResponseSchema;
-export const notificationRunSkippedResponseSchema = z.object({
-  ok: z.literal(true),
+export const notificationRunSkippedPayloadSchema = z.object({
   sent: z.literal(false),
   reason: z.literal("no_due_items"),
 }).strict();
-export const notificationRunSentResponseSchema = z.object({
-  ok: z.literal(true),
+export const notificationRunSentPayloadSchema = z.object({
   sent: z.literal(true),
   summary: jobChannelsResponseSchema,
 }).strict();
-export const notificationRunResponseSchema = z.discriminatedUnion("sent", [
-  notificationRunSkippedResponseSchema,
-  notificationRunSentResponseSchema,
+export const notificationRunPayloadSchema = z.discriminatedUnion("sent", [
+  notificationRunSkippedPayloadSchema,
+  notificationRunSentPayloadSchema,
 ]);
+export const notificationRunResponseSchema = apiSuccessResponseSchema(notificationRunPayloadSchema);
 
 export type NotificationHistoryStatusFilter = z.infer<typeof notificationHistoryStatusSchema>;
 export type NotificationHistoryJob = z.infer<typeof notificationHistoryJobResponseSchema>;
 export type UpcomingNotificationBatch = z.infer<typeof upcomingNotificationBatchResponseSchema>;
-export type NotificationHistoryResponse = z.infer<typeof notificationHistoryResponseSchema>;
+export type NotificationHistoryResponse = z.infer<typeof notificationHistoryPayloadSchema>;
 export type NotificationJobResult = z.infer<typeof notificationJobResultResponseSchema>;

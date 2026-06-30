@@ -12,7 +12,7 @@ function settings(overrides: Partial<NotificationEmailSettings> = {}): Notificat
 }
 
 describe("buildNotificationEmail", () => {
-  it("renders zh-CN reminder groups with the branded table template", () => {
+  it("renders zh-CN reminder groups with the modern light-only template", () => {
     const email = buildNotificationEmail(settings({ themeVariant: "ocean" }), {
       title: "Renewlet 订阅提醒",
       content: "即将续费：Renewlet",
@@ -30,52 +30,94 @@ describe("buildNotificationEmail", () => {
     expect(email.text).toContain("即将续费：Renewlet");
     expect(email.html).toContain('<table role="presentation"');
     expect(email.html).toContain('width="600"');
+    expect(email.html).toContain('class="email-container" width="600"');
+    expect(email.html).toContain("style=\"width:100%; max-width:600px;");
     expect(email.html).toContain('<html lang="zh-CN">');
     expect(email.html).toContain("<title>Renewlet 订阅提醒</title>");
+    expect(email.html).toContain('<meta name="color-scheme" content="light only">');
+    expect(email.html).toContain('<meta name="supported-color-schemes" content="light">');
+    expectEmailBrand(email.html);
+    expect(email.html).toContain("class=\"email-summary-panel\"");
+    expect(email.html).toContain('class="email-summary-panel" style="width:100%; border-collapse:separate; border-spacing:0; background:#F8FAF9; border:1px solid #E6EAE8; border-radius:12px;"');
+    expect(email.html).toContain("class=\"email-group-card\"");
+    expect(email.html).toContain("今日提醒");
+    expect(email.html).toContain("提醒项目");
+    expect(email.html.match(/font-size:13px; line-height:20px;">你有 4 项订阅提醒需要查看。<\/div>/g)).toHaveLength(1);
     expect(email.html).toContain("即将续费");
     expect(email.html).toContain("即将到期");
     expect(email.html).toContain("到期日期");
+    expect(email.html).toContain("到期日期 · 2026-05-18 · 提前 4 天提醒");
     expect(email.html).toContain("试用结束");
     expect(email.html).toContain("已过期");
-    expect(email.html).toContain("18 CNY");
+    expect(email.html).toContain("18</p>");
+    expect(email.html).toContain(">CNY</p>");
+    expect(email.html).toContain('width="96"');
     expect(email.html).toContain('href="https://renewlet.example/app/subscriptions"');
-    expect(email.html).toContain('class="email-container email-card email-ledger"');
-    expect(email.html).toContain("class=\"email-ledger-summary email-rule\"");
-    expect(email.html).toContain("class=\"email-panel email-ledger-table\"");
-    expect(email.html).toContain('colspan="2"');
-    expect(email.html).toContain("#F9FAFB");
+    expect(email.html).toContain("#F5F7F6");
     expect(email.html).toContain("#FFFFFF");
-    expect(email.html).toContain("#E3E7ED");
-    expect(email.html).toContain("#171C26");
-    expect(email.html).toContain("#6C7993");
-    expect(email.html).toContain("#0C0E12");
-    expect(email.html).toContain("#13161B");
-    expect(email.html).toContain("#23272E");
-    expect(email.html).toContain("#1F2229");
-    expect(email.html).toContain("#F0F2F5");
-    expect(email.html).toContain("#9AA6B8");
+    expect(email.html).toContain("#F8FAF9");
+    expect(email.html).toContain("#E6EAE8");
+    expect(email.html).toContain("#0F172A");
+    expect(email.html).toContain("#64748B");
+    expect(email.html).toContain("border-radius:20px");
     expect(email.html).toContain("border-radius:12px");
-    expect(email.html).toContain("border-left:2px solid");
-    expect(email.html).toContain("line-height:38px");
-    expect(email.html).not.toContain("今日提醒");
-    expect(email.html).not.toContain("<h1");
-    expect(email.html).not.toContain("font-size:18px; font-weight:700; line-height:24px");
-    expect(email.html).not.toContain("class=\"email-panel email-ledger-section\"");
+    expect(email.html).toContain(".email-outer-pad { padding:28px 0 !important; }");
+    expect(email.html).toContain(".email-main-card { border-left:0 !important; border-right:0 !important; border-radius:0 !important; }");
+    expect(email.html).toContain("class=\"email-main-card\"");
+    expect(email.html).toContain("line-height:48px");
+    expect(email.html).not.toContain('<h1 class="email-h1"');
+    expect(email.html).not.toContain('class="email-px email-muted"');
+    expect(email.html.match(/Renewlet 订阅提醒/g)).toHaveLength(1);
+    expect(email.html).not.toContain("class=\"email-message-panel\"");
+    expect(email.html).not.toContain("class=\"email-stack\"");
+    expect(email.html).not.toContain("class=\"email-amount\"");
+    expect(email.html).not.toContain("padding:4px 8px; border-radius:6px;");
+    expect(email.html).not.toContain("padding-bottom:36px");
+    expect(email.html).not.toContain("email-card-bottom-safe-area");
+    expect(email.html).not.toContain('class="email-container email-card email-ledger"');
+    expect(email.html).not.toContain("email-ledger");
+    expect(email.html).not.toContain("light dark");
+    expect(email.html).not.toContain("@media (prefers-color-scheme: dark)");
+    expect(email.html).not.toContain("#0C0E12");
+    expect(email.html).not.toContain("#13161B");
+    expect(email.html).not.toContain("#23272E");
+    expect(email.html).not.toContain("#1F2229");
     expect(email.html).not.toContain("display:flex");
     expect(email.html).not.toContain("display: flex");
     expect(email.html).not.toContain("display:grid");
     expect(email.html).not.toContain("display: grid");
-    expect(email.html).not.toContain("class=\"email-chip\"");
-    expect(email.html).not.toContain('bgcolor="#111720"');
-    expect(email.html).not.toContain("background-color:#111720");
-    expect(email.html).not.toContain("width:36px; height:36px; border-radius:10px");
-    expect(email.html).not.toContain('<td height="4" style="height:4px; font-size:0; line-height:0; background-color:');
-    expect(email.html).not.toContain('font-size:14px; font-weight:800; line-height:28px;">R</td>');
-    expect(email.html).not.toContain("font-size:20px; font-weight:700; line-height:26px");
-    expect(email.html).not.toContain("font-weight:800");
     expect(email.html).not.toContain("<img");
     expect(email.html).not.toContain("<svg");
     expect(email.html).not.toContain("background-image");
+    expect(email.html).not.toContain("logo.svg");
+    expect(email.html).not.toContain("cid:");
+  });
+
+  it("renders long reminder lists as compact ledger rows without item badges", () => {
+    const items = Array.from({ length: 43 }, (_, index) => item("renewal", `Ledger Subscription ${index + 1}`, index + 1, "CNY", "2026-05-17", 3));
+    const email = buildNotificationEmail(settings(), {
+      title: "Renewlet 订阅提醒",
+      content: "即将续费：Renewlet",
+      timestamp: "2026-05-14 08:00:00 Asia/Shanghai",
+      hasPayload: true,
+      items,
+    });
+
+    expect(new TextEncoder().encode(email.html).length).toBeLessThan(EMAIL_MAX_HTML_BYTES);
+    expect(email.html.match(/Ledger Subscription/g)).toHaveLength(43);
+    expect(email.html.match(/font-size:13px; line-height:20px;">你有 43 项订阅提醒需要查看。<\/div>/g)).toHaveLength(1);
+    expect(email.html).toContain("Ledger Subscription 43");
+    expect(email.html).toContain("扣费日期 · 2026-05-17 · 提前 3 天提醒");
+    expect(email.html).toContain(">43</p>");
+    expect(email.html).toContain(">CNY</p>");
+    expect(email.html).toContain('class="email-group-card"');
+    expect(email.html).toContain('width="96"');
+    expect(email.html).not.toContain('class="email-message-panel"');
+    expect(email.html).not.toContain("内容较长");
+    expect(email.html).not.toContain("class=\"email-stack\"");
+    expect(email.html).not.toContain("class=\"email-amount\"");
+    expect(email.html).not.toContain("padding:4px 8px; border-radius:6px;");
+    expect(email.html).not.toContain("email-card-bottom-safe-area");
   });
 
   it("renders en-US test notifications and settings CTA", () => {
@@ -89,14 +131,57 @@ describe("buildNotificationEmail", () => {
 
     expect(email.html).toContain('<html lang="en-US">');
     expect(email.html).toContain("<title>Renewlet test notification</title>");
-    expect(email.html).toContain("Message");
+    expect(email.html).toContain("Channel check");
     expect(email.html).toContain("If you received this message");
     expect(email.html).toContain("Generated at");
     expect(email.html).toContain('href="https://renewlet.example/settings"');
-    expect(email.html).not.toContain("Channel check");
-    expect(email.html).not.toContain("<h1");
-    expect(email.html).not.toContain("Reminder items");
-    expect(email.html).not.toContain("class=\"email-ledger-summary email-rule\"");
+    expectEmailBrand(email.html);
+    expect(email.html).not.toContain('<h1 class="email-h1"');
+    expect(email.html).not.toContain("class=\"email-message-panel\"");
+    expect(email.html).not.toContain("class=\"email-group-card\"");
+    expect(email.html).not.toContain("padding-bottom:36px");
+    expect(email.html).not.toContain("email-card-bottom-safe-area");
+    expect(email.html).not.toContain("email-ledger");
+  });
+
+  it("keeps card bottom spacing without rendering placeholder content when CTA is unavailable", () => {
+    const reminder = buildNotificationEmail(settings(), {
+      title: "Renewlet 订阅提醒",
+      content: "即将续费：Renewlet",
+      timestamp: "2026-05-14 08:00:00 Asia/Shanghai",
+      hasPayload: true,
+      items: [item("renewal", "Renewal", 18, "CNY", "2026-05-17", 3)],
+    });
+    const testStatus = buildNotificationEmail(settings(), testMessage());
+    const empty = buildNotificationEmail(settings({ locale: "en-US" }), {
+      title: "Renewlet subscription reminder",
+      content: "No subscriptions need reminders today.",
+      timestamp: "2026-05-14 08:00:00 UTC",
+      hasPayload: false,
+      items: [],
+    });
+
+    for (const html of [reminder.html, testStatus.html, empty.html]) {
+      expect(html).toContain("padding-bottom:36px");
+      expect(html).not.toContain("email-card-bottom-safe-area");
+    }
+  });
+
+  it("keeps the message panel for empty reminder notifications", () => {
+    const email = buildNotificationEmail(settings({ locale: "en-US" }), {
+      title: "Renewlet subscription reminder",
+      content: "No subscriptions need reminders today.",
+      timestamp: "2026-05-14 08:00:00 UTC",
+      hasPayload: false,
+      items: [],
+    });
+
+    expect(email.html).toContain("No reminders");
+    expect(email.html).toContain("class=\"email-message-panel\"");
+    expect(email.html).toContain("Message");
+    expect(email.html).toContain("No subscriptions need reminders today.");
+    expectEmailBrand(email.html);
+    expect(email.html).not.toContain("class=\"email-group-card\"");
   });
 
   it("escapes user content and omits item logo urls", () => {
@@ -119,16 +204,16 @@ describe("buildNotificationEmail", () => {
     expect(email.html).not.toContain("https://cdn.example.com/private-logo.png");
   });
 
-  it("maps custom theme colors and dark-mode client css", () => {
+  it("maps custom theme colors and renders light-only client css", () => {
     const email = buildNotificationEmail(settings({
       themeVariant: "custom",
       themeCustomColor: { h: 210, s: 90, l: 45 },
     }), testMessage(), { appUrl: "https://renewlet.example" });
 
     expect(email.html).toContain("#0B73DA");
-    expect(email.html).toContain("@media (prefers-color-scheme: dark)");
-    expect(email.html).toContain("#13161B");
-    expect(email.html).toContain("#23272E");
+    expect(email.html).toContain("color-scheme: light only");
+    expect(email.html).not.toContain("@media (prefers-color-scheme: dark)");
+    expect(email.html).not.toContain("light dark");
     expect(email.html).not.toContain("ZgotmplZ");
   });
 
@@ -147,8 +232,28 @@ describe("buildNotificationEmail", () => {
     expect(email.html).toContain("内容较长");
     expect(email.html).toContain("提醒项目");
     expect(email.html).toContain(">800</strong>");
+    expect(email.html).toContain("class=\"email-message-panel\"");
+    expect(email.html).toContain("padding-bottom:36px");
+    expect(email.html).not.toContain("email-card-bottom-safe-area");
+    expectEmailBrand(email.html);
+    expect(email.html).not.toContain("class=\"email-group-card\"");
   });
 });
+
+function expectEmailBrand(html: string) {
+  expect(html).toContain("class=\"email-brand-lockup\"");
+  expect(html).toContain("class=\"email-brand-lockup-mark\"");
+  expect(html).not.toContain("class=\"email-brand-mark\"");
+  expect(html).toContain("Renewlet");
+  expect(html).toContain("#111720");
+  expect(html).toContain("#26313D");
+  expect(html).toContain("#F8FAFC");
+  expect(html).toContain("#10B981");
+  expect(html).not.toContain(">R</td>");
+  expect(html).not.toContain(">R</div>");
+  expect(html).not.toContain("logo.svg");
+  expect(html).not.toContain("cid:");
+}
 
 function testMessage(): NotificationEmailMessage {
   return {

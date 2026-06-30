@@ -71,9 +71,31 @@ export interface EmailTheme {
   border: string;
   text: string;
   muted: string;
-  warning: string;
-  danger: string;
-  success: string;
+}
+
+export interface EmailBrand {
+  name: string;
+  headerMark: EmailBrandMark;
+}
+
+export interface EmailBrandMark {
+  size: number;
+  radius: number;
+  background: string;
+  border: string;
+  foreground: string;
+  accent: string;
+  topWidth: number;
+  topHeight: number;
+  topRadius: number;
+  dotSize: number;
+  dotRadius: number;
+  gap: number;
+  rowGap: number;
+  bottomWidth: number;
+  bottomHeight: number;
+  bottomRadius: number;
+  bottomInset: number;
 }
 
 export interface EmailCopy {
@@ -105,22 +127,40 @@ export interface EmailCopy {
 }
 
 export interface EmailTemplateData {
+  layoutMode: EmailLayoutMode;
   lang: Locale;
   title: string;
   preheader: string;
   statusLabel: string;
-  contentLines: string[];
+  summary: EmailSummaryPanel;
+  messagePanel: EmailMessagePanel | null;
   groups: EmailTemplateGroup[];
-  summaryRows: EmailSummaryRow[];
   cta: EmailCta | null;
+  showCardBottomPadding: boolean;
   timestamp: string;
   copy: EmailCopy;
   theme: EmailTheme;
+  brand: EmailBrand;
+}
+
+export type EmailLayoutMode = "reminder-list" | "test-status" | "empty-message" | "compact-message";
+
+export interface EmailSummaryPanel {
+  eyebrow: string;
+  value: string;
+  label: string;
+  detail: string;
+  rows: EmailSummaryRow[];
 }
 
 export interface EmailSummaryRow {
   label: string;
   value: string;
+}
+
+export interface EmailMessagePanel {
+  label: string;
+  lines: string[];
 }
 
 export interface EmailTemplateGroup {
@@ -136,7 +176,6 @@ export interface EmailTemplateItem {
   amount: string;
   currency: string;
   detail: string;
-  accentText: string;
 }
 
 export interface EmailCta {
@@ -176,30 +215,39 @@ function buildEmailTemplateData(
   const copy = loadEmailCopy(locale);
   const itemCount = input.items.length;
   const hasReminderItems = itemCount > 0;
+  const layoutMode = emailLayoutMode(input, compact);
   const message = compact
     ? { ...input, items: [], content: compactEmailContent(input.content, copy) }
     : input;
   const theme = emailThemeFromSettings(settings);
-  const groups = message.items.length > 0 ? buildEmailTemplateGroups(message.items, copy, theme) : [];
-  let statusLabel = copy.generated;
-  if (itemCount === 0 && !input.hasPayload) {
-    statusLabel = copy.noReminders;
-  } else if (itemCount === 0) {
-    statusLabel = copy.testNotification;
-  }
+  const groups = message.items.length > 0 ? buildEmailTemplateGroups(message.items, copy) : [];
+  const statusLabel = emailStatusLabel(itemCount, input.hasPayload, copy);
+  const messagePanel = layoutMode === "empty-message" || layoutMode === "compact-message"
+    ? { label: copy.message, lines: splitEmailContentLines(message.content, copy) }
+    : null;
+  const cta = emailCtaFromAppUrl(options.appUrl ?? "", hasReminderItems, copy);
   return {
+    layoutMode,
     lang: locale,
     title: input.title,
     preheader: emailPreheader(input, copy),
     statusLabel,
-    contentLines: groups.length === 0 ? splitEmailContentLines(message.content, copy) : [],
+    summary: emailSummaryPanel(itemCount, groups, statusLabel, message, copy),
+    messagePanel,
     groups,
-    summaryRows: emailSummaryRows(itemCount, groups, copy),
-    cta: emailCtaFromAppUrl(options.appUrl ?? "", hasReminderItems, copy),
+    cta,
+    showCardBottomPadding: cta === null,
     timestamp: input.timestamp,
     copy,
     theme,
+    brand: emailBrand(),
   };
+}
+
+function emailLayoutMode(input: NotificationEmailMessage, compact: boolean): EmailLayoutMode {
+  if (compact) return "compact-message";
+  if (input.items.length > 0) return "reminder-list";
+  return input.hasPayload ? "test-status" : "empty-message";
 }
 
 function loadEmailCopy(locale: Locale): EmailCopy {
@@ -233,7 +281,7 @@ function loadEmailCopy(locale: Locale): EmailCopy {
   };
 }
 
-function buildEmailTemplateGroups(items: NotificationEmailItem[], copy: EmailCopy, theme: EmailTheme): EmailTemplateGroup[] {
+function buildEmailTemplateGroups(items: NotificationEmailItem[], copy: EmailCopy): EmailTemplateGroup[] {
   const grouped: Record<string, NotificationEmailItem[]> = { renewal: [], expiry: [], trial: [], expired: [] };
   for (const item of items) {
     // 邮件不会渲染 logo URL；外链图片会让邮件客户端暴露私有资产或第三方请求痕迹。
@@ -253,11 +301,33 @@ function buildEmailTemplateGroups(items: NotificationEmailItem[], copy: EmailCop
           amount: formatAmount(item.price),
           currency: item.currency,
           detail: emailItemDetail(item, copy),
-          accentText: emailItemAccent(item.type, theme),
         })),
       };
     })
     .filter((group) => group.count > 0);
+}
+
+function emailStatusLabel(itemCount: number, hasPayload: boolean, copy: EmailCopy): string {
+  if (itemCount === 0 && !hasPayload) return copy.noReminders;
+  if (itemCount === 0) return copy.testNotification;
+  return copy.generated;
+}
+
+function emailSummaryPanel(
+  itemCount: number,
+  groups: EmailTemplateGroup[],
+  statusLabel: string,
+  message: NotificationEmailMessage,
+  copy: EmailCopy,
+): EmailSummaryPanel {
+  const hasReminderItems = itemCount > 0;
+  return {
+    eyebrow: statusLabel,
+    value: String(itemCount),
+    label: hasReminderItems ? copy.reminderItems : statusLabel,
+    detail: hasReminderItems ? formatCatalogCopy(copy.preheaderItems, { count: itemCount }) : firstNonEmptyLine(message.content) || message.title,
+    rows: emailSummaryRows(itemCount, groups, copy),
+  };
 }
 
 function emailSummaryRows(itemCount: number, groups: EmailTemplateGroup[], copy: EmailCopy): EmailSummaryRow[] {
@@ -289,15 +359,40 @@ function emailThemeFromSettings(settings: NotificationEmailSettings): EmailTheme
     primary,
     primaryText: contrastTextForHsl(h, s, l),
     primarySoft: hslToHex(h, Math.min(s, 50), 95),
-    background: "#F9FAFB",
+    background: "#F5F7F6",
     surface: "#FFFFFF",
-    surfaceMuted: "#F3F5F7",
-    border: "#E3E7ED",
-    text: "#171C26",
-    muted: "#6C7993",
-    warning: "#F59F0A",
-    danger: "#DC2828",
-    success: primary,
+    surfaceMuted: "#F8FAF9",
+    border: "#E6EAE8",
+    text: "#0F172A",
+    muted: "#64748B",
+  };
+}
+
+function emailBrand(): EmailBrand {
+  const base = {
+    background: "#111720",
+    border: "#26313D",
+    foreground: "#F8FAFC",
+    accent: "#10B981",
+  };
+  return {
+    name: "Renewlet",
+    headerMark: {
+      ...base,
+      size: 28,
+      radius: 7,
+      topWidth: 13,
+      topHeight: 4,
+      topRadius: 2,
+      dotSize: 4,
+      dotRadius: 2,
+      gap: 3,
+      rowGap: 6,
+      bottomWidth: 15,
+      bottomHeight: 3,
+      bottomRadius: 2,
+      bottomInset: 2,
+    },
   };
 }
 
@@ -325,12 +420,6 @@ function validEmailCustomColor(color: NotificationEmailSettings["themeCustomColo
     && color.h >= 0 && color.h <= 360
     && color.s >= 0 && color.s <= 100
     && color.l >= 0 && color.l <= 100;
-}
-
-function emailItemAccent(itemType: string, theme: EmailTheme): string {
-  if (itemType === "trial" || itemType === "expiry") return theme.warning;
-  if (itemType === "expired") return theme.danger;
-  return theme.success;
 }
 
 function emailPreheader(message: NotificationEmailMessage, copy: EmailCopy): string {
@@ -401,12 +490,13 @@ function formatAmount(amount: number): string {
 
 function normalizeEmailLocale(value: string): Locale {
   const normalized = value.trim().replaceAll("_", "-").toLowerCase();
+  if (normalized === "zh" || normalized === "zh-cn") return "zh-CN";
   if (normalized === "en" || normalized === "en-us") return "en-US";
-  return "zh-CN";
+  return "en-US";
 }
 
 function serverText(locale: Locale, key: string): string {
-  return SERVER_CATALOGS[locale]?.[key] ?? SERVER_CATALOGS["zh-CN"][key] ?? key;
+  return SERVER_CATALOGS[locale]?.[key] ?? SERVER_CATALOGS["en-US"][key] ?? key;
 }
 
 function utf8ByteLength(value: string): number {

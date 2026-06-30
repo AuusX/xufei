@@ -18,6 +18,8 @@ import {
   aiRecognizeResponseSchema,
 } from "./ai-recognition";
 
+const success = <T>(data: T) => ({ ok: true, data });
+
 function generatedDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   // generated fixture 故意模拟模型原始对象，而不是最终导入草稿；nullable 和 notes 决策在这里被重点覆盖。
   return {
@@ -122,6 +124,31 @@ describe("AI recognition prompt contract", () => {
     expect(promptText).toContain("website: null");
     expect(promptText).toContain("never output {\"value\": null, \"source\": \"suggested\"}");
   });
+
+  it("tells models not to infer unknown recurring start dates", () => {
+    const promptText = aiRecognitionPromptSpec.fieldRules.join("\n");
+
+    expect(promptText).toContain("Recurring subscriptions may use startDate: null");
+    expect(promptText).toContain("If startDate is null, set autoCalculateNextBillingDate to false");
+  });
+
+  it("requires strict JSON and nulls for unknown billing facts", () => {
+    const promptText = [
+      ...aiRecognitionPromptSpec.system,
+      ...aiRecognitionPromptSpec.outputContract,
+      ...aiRecognitionPromptSpec.fieldRules,
+    ].join("\n");
+
+    expect(aiRecognitionPromptSpec.version).toBe("2026-06-24.strict-null-json");
+    expect(promptText).toContain("parseable by JSON.parse");
+    expect(promptText).toContain("Every field listed above must be present exactly once");
+    expect(promptText).toContain("If a billing fact is absent, hidden, unreadable, ambiguous, or inferred only from context, output null");
+    expect(promptText).toContain("Never invent price, currency, billing cycle, dates, status, payment method, or reminder fields");
+    expect(promptText).toContain("If the amount itself is uncertain or unreadable, set both price and currency to null");
+    expect(promptText).toContain("If the cycle is not explicit, output billingCycle: null");
+    expect(promptText).toContain("Do not calculate nextBillingDate unless the input explicitly provides enough billing anchor evidence");
+    expect(promptText).toContain("Do not default to active unless the input clearly shows the subscription is currently active");
+  });
 });
 
 describe("AI recognition diagnostics schema", () => {
@@ -217,14 +244,14 @@ describe("AI recognition final response schema", () => {
       },
     };
 
-    expect(aiRecognizeResponseSchema.safeParse({
+    expect(aiRecognizeResponseSchema.safeParse(success({
       providerType: "openai",
       transportProtocol: "openai-chat",
       model: "gpt-5.1",
       subscriptions: [generatedDraft({ website: { value: null, source: "suggested" } })],
       warnings: [],
       diagnostics,
-    }).success).toBe(false);
+    })).success).toBe(false);
   });
 });
 
@@ -301,7 +328,7 @@ describe("AI model list schema", () => {
       apiKey: "AIza-test-key",
     });
 
-    expect(aiModelListResponseSchema.safeParse({
+    expect(aiModelListResponseSchema.safeParse(success({
       providerType: "gemini",
       transportProtocol: "gemini-generate-content",
       models: [{
@@ -319,7 +346,7 @@ describe("AI model list schema", () => {
         },
       }],
       truncated: false,
-    }).success).toBe(true);
+    })).success).toBe(true);
   });
 
   it("rejects model list payloads with unexpected fields", () => {
@@ -330,7 +357,7 @@ describe("AI model list schema", () => {
       model: "gpt-5.1",
     }).success).toBe(false);
 
-    expect(aiModelListResponseSchema.safeParse({
+    expect(aiModelListResponseSchema.safeParse(success({
       providerType: "openai",
       transportProtocol: "openai-chat",
       models: [{
@@ -349,7 +376,7 @@ describe("AI model list schema", () => {
         },
       }],
       truncated: false,
-    }).success).toBe(false);
+    })).success).toBe(false);
   });
 });
 

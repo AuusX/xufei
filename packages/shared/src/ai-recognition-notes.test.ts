@@ -38,6 +38,9 @@ describe("AI recognition notes", () => {
     expect(prompt).toContain("notes must always be an object");
     expect(prompt).toContain("notes.value must be non-null for describable services");
     expect(prompt).toContain("dynamic evidence from this request");
+    expect(prompt).toContain("Generated user-facing metadata must follow User locale");
+    expect(prompt).toContain("use English for en-US and Simplified Chinese for zh-CN");
+    expect(prompt).toContain("Do not translate source=input text, Existing user tags");
     expect(prompt).toContain("Runtime context:");
     expect(prompt).toContain("User context:");
     expect(prompt).toContain("Task:");

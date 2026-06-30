@@ -21,6 +21,7 @@ export const locales: Record<Locale, { label: string; ariaLabel: string }> = {
 }
 
 export const links = {
+  demo: 'https://demo.renewlet.cc/',
   github: 'https://github.com/zhiyingzzhou/renewlet',
   docs: 'https://github.com/zhiyingzzhou/renewlet#readme',
   docsZh: 'https://github.com/zhiyingzzhou/renewlet/blob/main/README.zh-CN.md',
@@ -48,6 +49,11 @@ export const copy = {
       en: 'Renewlet is a small self-hosted ledger for subscriptions. Add items with AI, track renewal dates, and share a public status page when you need one.',
     },
     secondaryCta: { zh: '选择部署方式', en: 'Choose deployment' },
+    demoCta: { zh: '尝试在线演示', en: 'Try live demo' },
+    demoNote: {
+      zh: '演示账号 demo@renewlet.local / renewlet-demo。数据会定期重置，请勿放真实个人信息或真实凭据。',
+      en: 'Demo account: demo@renewlet.local / renewlet-demo. The demo resets regularly; do not enter real personal data or credentials.',
+    },
     learnMore: { zh: '看看它能管住什么', en: 'See what it tracks' },
     imageAlt: {
       zh: 'Renewlet 中文仪表盘，展示月度支出、近期订阅和支出分布',

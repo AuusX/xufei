@@ -17,6 +17,7 @@ import {
   type LocalTime,
 } from "../runtime";
 import { aiRecognitionSettingsSchema } from "./ai-recognition";
+import { apiSuccessResponseSchema } from "./api";
 import { exchangeRateProviderSchema } from "./exchange-rates";
 
 const hhmmSchema = z.string().refine(isValidLocalTime, "时间格式必须为 HH:mm").transform((value) => value as LocalTime);
@@ -43,6 +44,8 @@ export const publicStatusCurrencySchema = z.union([
   z.literal("inherit"),
   z.string().trim().regex(/^[A-Z]{3}$/),
 ]);
+// Telegram 菜单命令描述不支持富文本；这个枚举只控制 sendMessage 正文，默认值在 shared defaults 固定为 plain。
+export const telegramMessageFormatSchema = z.enum(["plain", "html"]);
 
 const builtInIconSourceSettingSchema = z.object({
   enabled: z.boolean(),
@@ -85,6 +88,7 @@ const appSettingsShape = {
   testPhone: z.string().trim().max(80),
   telegramBotToken: z.string().trim().max(256),
   telegramChatId: z.string().trim().max(128),
+  telegramMessageFormat: telegramMessageFormatSchema,
   notifyxApiKey: z.string().trim().max(256),
   // 所有用户可配置回调地址都收敛到 https，避免通知渠道成为明文或内网探测入口。
   webhookUrl: optionalHttpsUrlSchema,
@@ -113,6 +117,10 @@ const appSettingsShape = {
   barkDeviceKey: z.string().trim().max(256),
   barkSilentPush: z.boolean(),
   serverchanSendKey: z.string().trim().max(256),
+  discordWebhookUrl: optionalHttpsUrlSchema,
+  discordBotUsername: z.string().trim().max(80),
+  discordBotAvatarUrl: optionalHttpsUrlSchema,
+  pushplusToken: z.string().trim().max(256),
   aiRecognition: aiRecognitionSettingsSchema,
 };
 
@@ -131,9 +139,10 @@ export type ApiBuiltInIconSourceSettingsPatch = BuiltInIconSourceSettingsPatch;
  */
 export const appSettingsSchema = z.object(appSettingsShape).strict();
 
-export const settingsResponseSchema = z.object({
+export const settingsPayloadSchema = z.object({
   settings: appSettingsSchema,
 }).strict();
+export const settingsResponseSchema = apiSuccessResponseSchema(settingsPayloadSchema);
 
 /**
  * 设置 PATCH 请求允许局部字段，但不允许未知字段。
@@ -145,3 +154,4 @@ export const settingsUpdateBodySchema = z.object({
   builtInIconSources: builtInIconSourcesPatchSchema,
 }).partial().strict();
 export type ApiAppSettings = z.infer<typeof appSettingsSchema>;
+export type SettingsResponse = z.infer<typeof settingsPayloadSchema>;

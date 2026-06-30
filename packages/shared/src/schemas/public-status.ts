@@ -5,6 +5,8 @@ import {
   SUBSCRIPTION_STATUSES,
   isValidDateOnly,
 } from "../runtime";
+import { apiSuccessResponseSchema } from "./api";
+import { okResponseSchema } from "./common";
 
 const publicStatusTokenSchema = z.string().trim().regex(/^[A-Za-z0-9_-]{43}$/);
 
@@ -21,13 +23,14 @@ export const publicStatusPageSchema = z.object({
   updatedAt: z.string().optional(),
 }).strict();
 
-export const publicStatusPageResponseSchema = z.object({
+export const publicStatusPagePayloadSchema = z.object({
   publicStatusPage: publicStatusPageSchema,
 }).strict();
+export const publicStatusPageResponseSchema = apiSuccessResponseSchema(publicStatusPagePayloadSchema);
 
 export const publicStatusPageCreateRequestSchema = z.object({}).strict();
 
-export const publicStatusPageCreateResponseSchema = z.object({
+export const publicStatusPageCreatePayloadSchema = z.object({
   publicStatusPage: z.object({
     enabled: z.literal(true),
     createdAt: z.string().trim().min(1),
@@ -36,14 +39,13 @@ export const publicStatusPageCreateResponseSchema = z.object({
     updatedAt: z.string().trim().min(1),
   }).strict(),
 }).strict();
+export const publicStatusPageCreateResponseSchema = apiSuccessResponseSchema(publicStatusPageCreatePayloadSchema);
 
 export const publicStatusPageUpdateRequestSchema = z.object({
   showPrices: z.boolean(),
 }).strict();
 
-export const publicStatusPageDeleteResponseSchema = z.object({
-  ok: z.literal(true),
-}).strict();
+export const publicStatusPageDeleteResponseSchema = okResponseSchema;
 
 const publicStatusLogoSchema = z.string().trim().max(4096).refine((value) => {
   try {
@@ -68,7 +70,7 @@ const publicStatusSubscriptionSchema = z.object({
     color: z.string().trim().max(80).optional(),
   }).strict(),
   status: z.enum(SUBSCRIPTION_STATUSES),
-  startDate: z.string().refine(isValidDateOnly),
+  startDate: z.string().refine(isValidDateOnly).nullable(),
   nextBillingDate: z.string().refine(isValidDateOnly),
   updatedAt: z.string().trim().min(1),
   price: z.number().finite().nonnegative().max(1_000_000_000).optional(),
@@ -86,7 +88,7 @@ const publicStatusSubscriptionSchema = z.object({
   message: "Billing cycle is required when price is exposed",
 });
 
-export const publicStatusResponseSchema = z.object({
+export const publicStatusPayloadSchema = z.object({
   page: z.object({
     title: z.literal("Renewlet"),
     showPrices: z.boolean(),
@@ -141,10 +143,11 @@ export const publicStatusResponseSchema = z.object({
     }
   });
 });
+export const publicStatusResponseSchema = apiSuccessResponseSchema(publicStatusPayloadSchema);
 
 export type PublicStatusPage = z.infer<typeof publicStatusPageSchema>;
-export type PublicStatusPageResponse = z.infer<typeof publicStatusPageResponseSchema>;
-export type PublicStatusPageCreateResponse = z.infer<typeof publicStatusPageCreateResponseSchema>;
+export type PublicStatusPageResponse = z.infer<typeof publicStatusPagePayloadSchema>;
+export type PublicStatusPageCreateResponse = z.infer<typeof publicStatusPageCreatePayloadSchema>;
 export type PublicStatusPageUpdateRequest = z.infer<typeof publicStatusPageUpdateRequestSchema>;
-export type PublicStatusResponse = z.infer<typeof publicStatusResponseSchema>;
+export type PublicStatusResponse = z.infer<typeof publicStatusPayloadSchema>;
 export type PublicStatusToken = z.infer<typeof publicStatusTokenSchema>;

@@ -11,15 +11,17 @@ import {
   replaceWebsiteMetadataPlaceholders,
   resolveWebsiteDeployment,
 } from './src/lib/website-metadata'
+import { latestStableReleaseVersion } from './scripts/release-version'
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url))
 const deployment = resolveWebsiteDeployment(process.env)
+const websiteSoftwareVersion = latestStableReleaseVersion()
 
 function websiteMetadataPlugin(): Plugin {
   return {
     name: 'renewlet-website-metadata',
     transformIndexHtml(html) {
-      return replaceWebsiteMetadataPlaceholders(html, deployment)
+      return replaceWebsiteMetadataPlaceholders(html, deployment, { softwareVersion: websiteSoftwareVersion })
     },
     generateBundle() {
       // GitHub Pages 当前发布 URL 是官网路径事实来源；不要再把仓库名或自定义域写进静态文件。

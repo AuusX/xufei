@@ -14,6 +14,8 @@ import {
 } from "./cloud-backup";
 import { renewletExportV1Schema } from "./import-export";
 
+const success = <T>(data: T) => ({ ok: true, data });
+
 describe("cloud backup schemas", () => {
   it("accepts WebDAV updates and normalizes remote paths", () => {
     const parsed = cloudBackupConfigUpdateSchema.parse({
@@ -149,7 +151,7 @@ describe("cloud backup schemas", () => {
   });
 
   it("keeps config responses provider-scoped, redacted and rejects credential echo", () => {
-    expect(cloudBackupConfigResponseSchema.parse({
+    expect(cloudBackupConfigResponseSchema.parse(success({
       config: {
         provider: "s3",
         webdav: {
@@ -186,9 +188,9 @@ describe("cloud backup schemas", () => {
         },
         updatedAt: "2026-06-09T00:00:00.000Z",
       },
-    }).config.credentialSet).toBe(true);
+    })).data.config.credentialSet).toBe(true);
 
-    expect(cloudBackupConfigResponseSchema.parse({
+    expect(cloudBackupConfigResponseSchema.parse(success({
       config: {
         provider: "webdav",
         webdav: {
@@ -225,9 +227,9 @@ describe("cloud backup schemas", () => {
         },
         updatedAt: null,
       },
-    }).config.s3?.bucket).toBe("renewlet");
+    })).data.config.s3?.bucket).toBe("renewlet");
 
-    expect(cloudBackupConfigResponseSchema.safeParse({
+    expect(cloudBackupConfigResponseSchema.safeParse(success({
       config: {
         provider: "s3",
         credentialSet: true,
@@ -253,12 +255,13 @@ describe("cloud backup schemas", () => {
         },
         updatedAt: null,
       },
-    }).success).toBe(false);
+    })).success).toBe(false);
+    expect(cloudBackupConfigResponseSchema.safeParse({ config: { provider: "s3" } }).success).toBe(false);
   });
 
   it("validates multi-target create snapshot responses", () => {
     const id = "renewlet-export-v1-20260609T000000Z-abcd1234";
-    const parsed = cloudBackupCreateSnapshotResponseSchema.parse({
+    const parsed = cloudBackupCreateSnapshotResponseSchema.parse(success({
       snapshots: [
         {
           id,
@@ -277,7 +280,7 @@ describe("cloud backup schemas", () => {
           sha256: "a".repeat(64),
         },
       ],
-    });
+    })).data;
 
     expect(parsed.snapshots.map((snapshot) => snapshot.provider)).toEqual(["webdav", "s3"]);
   });

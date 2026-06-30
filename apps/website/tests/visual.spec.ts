@@ -69,7 +69,7 @@ async function expectSectionScreenshot(locator: Locator, name: string) {
   })
 }
 
-test.describe('website visual coverage', () => {
+test.describe('website visual coverage @visual', () => {
   test('captures stable Renewlet website surfaces', async ({ page }, testInfo) => {
     await page.goto('/#intro')
     await stabilizePage(page)

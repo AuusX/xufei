@@ -280,7 +280,7 @@ Change `WORKER_NAME` in GitHub Secrets, then rerun the workflow.
 
 **Calendar feed says `no such table: calendar_feeds`?**
 
-Your Worker was updated before the remote D1 migrations finished or ran. The calendar feed table now stores scoped tokens for both the global feed and per-subscription feeds, so the D1 migration must run before relying on calendar subscription links. Re-run the `Cloudflare Worker` workflow, or run:
+This means the Worker was updated before the remote D1 migrations finished or ran. Re-run the `Cloudflare Worker` workflow, or run:
 
 ```bash
 pnpm cloudflare:config:ci

@@ -3,6 +3,8 @@ import {
   UPSTREAM_RAW_RESPONSE_TEXT_MAX_CHARS,
   upstreamErrorDetailsSchema,
 } from "./upstream";
+import { apiSuccessResponseSchema } from "./api";
+import { okPayloadSchema, okResponseSchema } from "./common";
 
 export const CLOUD_BACKUP_DEFAULT_RETENTION = 7;
 export const CLOUD_BACKUP_MAX_RETENTION = 30;
@@ -148,20 +150,21 @@ export const cloudBackupConfigUpdateSchema = z.object({
 });
 export type CloudBackupConfigUpdate = z.infer<typeof cloudBackupConfigUpdateSchema>;
 
-export const cloudBackupConfigResponseSchema = z.object({
+export const cloudBackupConfigPayloadSchema = z.object({
   config: cloudBackupConfigSchema,
 }).strict();
-export type CloudBackupConfigResponse = z.infer<typeof cloudBackupConfigResponseSchema>;
+export const cloudBackupConfigResponseSchema = apiSuccessResponseSchema(cloudBackupConfigPayloadSchema);
+export type CloudBackupConfigResponse = z.infer<typeof cloudBackupConfigPayloadSchema>;
 
 export const cloudBackupTestRequestSchema = cloudBackupConfigUpdateSchema;
 export type CloudBackupTestRequest = z.infer<typeof cloudBackupTestRequestSchema>;
 
-export const cloudBackupTestResponseSchema = z.object({
-  ok: z.literal(true),
+export const cloudBackupTestPayloadSchema = z.object({
   checkedAt: z.string(),
   message: z.string().optional(),
 }).strict();
-export type CloudBackupTestResponse = z.infer<typeof cloudBackupTestResponseSchema>;
+export const cloudBackupTestResponseSchema = apiSuccessResponseSchema(cloudBackupTestPayloadSchema);
+export type CloudBackupTestResponse = z.infer<typeof cloudBackupTestPayloadSchema>;
 
 export const cloudBackupSnapshotManifestSchema = z.object({
   kind: z.literal("renewlet-cloud-backup-snapshot"),
@@ -186,25 +189,25 @@ export const cloudBackupSnapshotSchema = z.object({
 }).strict();
 export type CloudBackupSnapshot = z.infer<typeof cloudBackupSnapshotSchema>;
 
-export const cloudBackupSnapshotsResponseSchema = z.object({
+export const cloudBackupSnapshotsPayloadSchema = z.object({
   snapshots: z.array(cloudBackupSnapshotSchema),
 }).strict();
-export type CloudBackupSnapshotsResponse = z.infer<typeof cloudBackupSnapshotsResponseSchema>;
+export const cloudBackupSnapshotsResponseSchema = apiSuccessResponseSchema(cloudBackupSnapshotsPayloadSchema);
+export type CloudBackupSnapshotsResponse = z.infer<typeof cloudBackupSnapshotsPayloadSchema>;
 
 export const cloudBackupCreateSnapshotRequestSchema = z.object({
   provider: cloudBackupProviderSchema,
 }).strict();
 export type CloudBackupCreateSnapshotRequest = z.infer<typeof cloudBackupCreateSnapshotRequestSchema>;
 
-export const cloudBackupCreateSnapshotResponseSchema = z.object({
+export const cloudBackupCreateSnapshotPayloadSchema = z.object({
   snapshots: z.array(cloudBackupSnapshotSchema).min(1),
 }).strict();
-export type CloudBackupCreateSnapshotResponse = z.infer<typeof cloudBackupCreateSnapshotResponseSchema>;
+export const cloudBackupCreateSnapshotResponseSchema = apiSuccessResponseSchema(cloudBackupCreateSnapshotPayloadSchema);
+export type CloudBackupCreateSnapshotResponse = z.infer<typeof cloudBackupCreateSnapshotPayloadSchema>;
 
-export const cloudBackupDeleteSnapshotResponseSchema = z.object({
-  ok: z.literal(true),
-}).strict();
-export type CloudBackupDeleteSnapshotResponse = z.infer<typeof cloudBackupDeleteSnapshotResponseSchema>;
+export const cloudBackupDeleteSnapshotResponseSchema = okResponseSchema;
+export type CloudBackupDeleteSnapshotResponse = z.infer<typeof okPayloadSchema>;
 
 export const cloudBackupErrorDetailsSchema = upstreamErrorDetailsSchema;
 export type CloudBackupErrorDetails = z.infer<typeof cloudBackupErrorDetailsSchema>;

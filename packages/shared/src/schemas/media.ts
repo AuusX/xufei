@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { BUILT_IN_ICON_PROVIDERS } from "../built-in-icons";
+import { apiSuccessResponseSchema } from "./api";
 import { upstreamErrorDetailsSchema } from "./upstream";
 
 export const uploadKindSchema = z.enum(["logo", "icon"]);
 
-export const uploadImageResponseSchema = z.object({
+export const uploadImagePayloadSchema = z.object({
   url: z.string().min(1),
 }).strict();
+export const uploadImageResponseSchema = apiSuccessResponseSchema(uploadImagePayloadSchema);
 
 export const uploadedAssetSchema = z.object({
   id: z.string().min(1),
@@ -24,6 +26,7 @@ export const uploadedAssetsPageSchema = z.object({
   page: z.number().int().positive(),
   totalPages: z.number().int().nonnegative(),
 }).strict();
+export const uploadedAssetsPageResponseSchema = apiSuccessResponseSchema(uploadedAssetsPageSchema);
 
 export const assetInUseDetailsSchema = z.object({
   usageCount: z.number().int().positive(),
@@ -88,9 +91,10 @@ export const mediaCandidateResolveItemResponseSchema = z.object({
   candidates: mediaCandidateGroupSchema,
 }).strict();
 
-export const mediaCandidateResolveResponseSchema = z.object({
+export const mediaCandidateResolvePayloadSchema = z.object({
   items: z.array(mediaCandidateResolveItemResponseSchema),
 }).strict();
+export const mediaCandidateResolveResponseSchema = apiSuccessResponseSchema(mediaCandidateResolvePayloadSchema);
 
 export const builtInIconIndexSourceSchema = z.enum(["embedded", "runtime"]);
 
@@ -149,21 +153,24 @@ export const builtInIconIndexStatusSchema = z.object({
   (value) => BUILT_IN_ICON_PROVIDERS.every((provider) => value.providers.some((item) => item.provider === provider)),
   "invalid provider status list",
 );
+export const builtInIconIndexStatusResponseSchema = apiSuccessResponseSchema(builtInIconIndexStatusSchema);
 
-export const builtInIconIndexProviderCheckResponseSchema = z.object({
+export const builtInIconIndexProviderCheckPayloadSchema = z.object({
   status: builtInIconIndexStatusSchema,
   provider: builtInIconIndexProviderStatusSchema,
   errorDetails: upstreamErrorDetailsSchema.optional(),
 }).strict();
+export const builtInIconIndexProviderCheckResponseSchema = apiSuccessResponseSchema(builtInIconIndexProviderCheckPayloadSchema);
 
-export const builtInIconIndexProviderRefreshResponseSchema = z.object({
+export const builtInIconIndexProviderRefreshPayloadSchema = z.object({
   status: builtInIconIndexStatusSchema,
   provider: builtInIconIndexProviderStatusSchema,
   errorDetails: upstreamErrorDetailsSchema.optional(),
 }).strict();
+export const builtInIconIndexProviderRefreshResponseSchema = apiSuccessResponseSchema(builtInIconIndexProviderRefreshPayloadSchema);
 
 export type UploadKind = z.infer<typeof uploadKindSchema>;
-export type ApiUploadImageResponse = z.infer<typeof uploadImageResponseSchema>;
+export type ApiUploadImageResponse = z.infer<typeof uploadImagePayloadSchema>;
 export type UploadedAsset = z.infer<typeof uploadedAssetSchema>;
 export type UploadedAssetsPage = z.infer<typeof uploadedAssetsPageSchema>;
 export type AssetInUseDetails = z.infer<typeof assetInUseDetailsSchema>;
@@ -176,12 +183,12 @@ export type MediaCandidate = z.infer<typeof mediaCandidateSchema>;
 export type MediaCandidateGroup = z.infer<typeof mediaCandidateGroupSchema>;
 export type MediaCandidateResolveRequest = z.infer<typeof mediaCandidateResolveRequestSchema>;
 export type MediaCandidateResolveItemResponse = z.infer<typeof mediaCandidateResolveItemResponseSchema>;
-export type MediaCandidateResolveResponse = z.infer<typeof mediaCandidateResolveResponseSchema>;
+export type MediaCandidateResolveResponse = z.infer<typeof mediaCandidateResolvePayloadSchema>;
 export type BuiltInIconIndexSource = z.infer<typeof builtInIconIndexSourceSchema>;
 export type BuiltInIconIndexProviderCounts = z.infer<typeof builtInIconIndexProviderCountsSchema>;
 export type BuiltInIconProviderVersion = z.infer<typeof builtInIconProviderVersionSchema>;
 export type BuiltInIconSeedMetadata = z.infer<typeof builtInIconSeedMetadataSchema>;
 export type BuiltInIconIndexProviderStatus = z.infer<typeof builtInIconIndexProviderStatusSchema>;
 export type BuiltInIconIndexStatus = z.infer<typeof builtInIconIndexStatusSchema>;
-export type BuiltInIconIndexProviderCheckResponse = z.infer<typeof builtInIconIndexProviderCheckResponseSchema>;
-export type BuiltInIconIndexProviderRefreshResponse = z.infer<typeof builtInIconIndexProviderRefreshResponseSchema>;
+export type BuiltInIconIndexProviderCheckResponse = z.infer<typeof builtInIconIndexProviderCheckPayloadSchema>;
+export type BuiltInIconIndexProviderRefreshResponse = z.infer<typeof builtInIconIndexProviderRefreshPayloadSchema>;

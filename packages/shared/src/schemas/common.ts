@@ -1,12 +1,12 @@
 import { z } from "zod";
+import { apiEmptySuccessResponseSchema } from "./api";
 
 /**
- * 无额外业务数据的成功响应。
+ * 无额外业务数据的成功 payload。
  *
- * 需要携带状态机结果时应新增专用 schema，避免把公共 ok 契约扩成含糊响应桶。
+ * wire response 统一由 apiSuccessResponseSchema 包裹；payload 本身不再携带 ok。
  */
-export const okResponseSchema = z.object({
-  ok: z.literal(true),
-}).strict();
+export const okPayloadSchema = z.object({}).strict();
+export const okResponseSchema = apiEmptySuccessResponseSchema;
 
-export type OkResponse = z.infer<typeof okResponseSchema>;
+export type OkResponse = z.infer<typeof okPayloadSchema>;

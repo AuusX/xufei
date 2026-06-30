@@ -7,14 +7,11 @@ export interface CostSharingMember {
   name: string;
   note?: string | undefined;
   currency?: string | undefined;
-  included: boolean;
   customAmount?: number | undefined;
 }
 
 export interface CostSharing {
   enabled: boolean;
-  payerMemberId: string;
-  selfMemberId: string;
   splitMode: CostSharingSplitMode;
   members: CostSharingMember[];
 }
@@ -23,11 +20,11 @@ export interface CostSharingSummary {
   enabled: boolean;
   total: number;
   yourShare: number;
-  /** familyContribution 是家庭其他成员承担的金额，统计页个人口径会用 total - yourShare 收敛展示。 */
-  familyContribution: number;
-  /** 只有当前用户也是付款人时，其他成员份额才属于可追回金额；非付款人不能把别人的支付义务算作应收。 */
+  /** 成员合计是共享成员金额总和；custom 模式允许它和订阅总价不一致。 */
+  memberTotal: number;
+  /** 当前用户固定是付款人，成员金额就是向其他成员应收/可回收的金额。 */
   recoverableAmount: number;
-  includedCount: number;
+  memberCount: number;
 }
 
 export type CostSharingCurrencyConverter = (amount: number, fromCurrency: string, toCurrency: string) => number;
@@ -36,8 +33,6 @@ export interface CostSharingCalculationOptions {
   baseCurrency?: string | undefined;
   convert?: CostSharingCurrencyConverter | undefined;
 }
-
-const MONEY_EPSILON = 0.01;
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -65,13 +60,12 @@ export function calculateCostSharingMemberAmount(
   total: number,
   options?: CostSharingCalculationOptions,
 ): number {
-  if (!member.included) return 0;
   if (costSharing.splitMode === "custom") {
     return roundMoney(convertMemberAmountToBase(member.customAmount ?? 0, member, options));
   }
-  const includedCount = costSharing.members.filter((item) => item.included).length;
-  if (includedCount <= 0) return 0;
-  return roundMoney(total / includedCount);
+  const participantCount = costSharing.members.length + 1;
+  if (participantCount <= 1) return 0;
+  return roundMoney(total / participantCount);
 }
 
 export function calculateCostSharingSummary(
@@ -84,40 +78,35 @@ export function calculateCostSharingSummary(
       enabled: false,
       total,
       yourShare: total,
-      familyContribution: 0,
+      memberTotal: 0,
       recoverableAmount: 0,
-      includedCount: 0,
+      memberCount: 0,
     };
   }
 
-  const includedMembers = costSharing.members.filter((member) => member.included);
-  const selfMember = costSharing.members.find((member) => member.id === costSharing.selfMemberId);
-  const yourShare = selfMember ? calculateCostSharingMemberAmount(costSharing, selfMember, total, options) : total;
-  // Summary 的金额统一回到订阅原币种，调用方再决定展示总额口径还是个人口径。
-  const familyContribution = roundMoney(Math.max(total - yourShare, 0));
-  const recoverableAmount = costSharing.payerMemberId === costSharing.selfMemberId ? familyContribution : 0;
+  // 当前用户不在 members 里：equal 按“我 + 成员”平分，custom 则把成员金额直接视作应收款，允许超过订阅总价。
+  const memberTotal = costSharing.splitMode === "equal"
+    ? roundMoney(Math.max(total - calculateCostSharingMemberAmount(costSharing, costSharing.members[0]!, total, options), 0))
+    : roundMoney(costSharing.members.reduce(
+        (sum, member) => sum + calculateCostSharingMemberAmount(costSharing, member, total, options),
+        0,
+      ));
+  const yourShare = roundMoney(Math.max(total - memberTotal, 0));
+  const recoverableAmount = memberTotal;
 
   return {
     enabled: true,
     total,
     yourShare,
-    familyContribution,
+    memberTotal,
     recoverableAmount,
-    includedCount: includedMembers.length,
+    memberCount: costSharing.members.length,
   };
 }
 
-export function costSharingCustomTotalMatches(
-  costSharing: CostSharing,
-  total: number,
-  options?: CostSharingCalculationOptions,
-): boolean {
+export function costSharingCustomAmountsAreValid(costSharing: CostSharing): boolean {
   if (costSharing.splitMode !== "custom") return true;
-  // 无基础币种时无法证明多币种 custom 总额等于订阅价格；写入层只能校验同币种总额，跨币种由前端带汇率转换器兜住。
-  if (!options?.baseCurrency && costSharing.members.some((member) => member.included && member.currency)) return true;
-  const customTotal = costSharing.members.reduce((sum, member) => {
-    if (!member.included) return sum;
-    return sum + convertMemberAmountToBase(member.customAmount ?? 0, member, options);
-  }, 0);
-  return Math.abs(roundMoney(customTotal) - roundMoney(total)) <= MONEY_EPSILON;
+  return costSharing.members.every((member) => {
+    return member.customAmount !== undefined && Number.isFinite(member.customAmount) && member.customAmount >= 0;
+  });
 }

@@ -1,18 +1,29 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "renewlet",
-  "main": "packages/cloudflare/src/index.ts",
-  "compatibility_date": "2026-05-20",
+  "main": "apps/worker/src/index.ts",
+  "compatibility_date": "2026-06-24",
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
   "dev": {
     "ip": "0.0.0.0",
     "port": 8787,
     "local_protocol": "http"
   },
   "assets": {
-    "directory": "./packages/client/dist",
+    "directory": "./apps/web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": [
@@ -31,7 +42,7 @@
       "binding": "DB",
       "database_name": "renewlet",
       "database_id": "85a8640a-f685-4ad1-bcc5-453ee5ea5938",
-      "migrations_dir": "packages/cloudflare/migrations"
+      "migrations_dir": "apps/worker/migrations"
     }
   ],
   "r2_buckets": [

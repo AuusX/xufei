@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { authenticatorMfaMethodSchema } from "./auth";
 import { okResponseSchema } from "./common";
+import { apiSuccessResponseSchema } from "./api";
 
 /**
  * 管理员角色枚举。
@@ -19,21 +21,30 @@ export const adminUserSchema = z.object({
   email: z.string(),
   role: userRoleSchema,
   banned: z.boolean(),
+  // 管理员列表只暴露可用二因素方法和数量，不返回任何 credential、challenge 或恢复码 hash。
+  mfaEnabled: z.boolean(),
+  mfaMethods: z.array(authenticatorMfaMethodSchema),
+  passkeysEnabled: z.boolean(),
+  passkeyCount: z.number().int().min(0),
   banReason: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 }).strict();
 
-export const adminUsersResponseSchema = z.object({
+export const adminUsersPayloadSchema = z.object({
   users: z.array(adminUserSchema),
 }).strict();
+export const adminUsersResponseSchema = apiSuccessResponseSchema(adminUsersPayloadSchema);
 
-export const adminUserResponseSchema = z.object({
+export const adminUserPayloadSchema = z.object({
   user: adminUserSchema,
 }).strict();
+export const adminUserResponseSchema = apiSuccessResponseSchema(adminUserPayloadSchema);
 
 export const adminPatchUserResponseSchema = okResponseSchema;
 export const adminDeleteUserResponseSchema = okResponseSchema;
+export const adminResetUserMfaResponseSchema = okResponseSchema;
+export const adminResetUserPasskeysResponseSchema = okResponseSchema;
 
 /**
  * 管理员创建用户请求契约。
@@ -61,4 +72,4 @@ export const adminPatchUserBodySchema = z.object({
 
 export type UserRole = z.infer<typeof userRoleSchema>;
 export type AdminUser = z.infer<typeof adminUserSchema>;
-export type AdminUsersResponse = z.infer<typeof adminUsersResponseSchema>;
+export type AdminUsersResponse = z.infer<typeof adminUsersPayloadSchema>;

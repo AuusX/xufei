@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { apiSuccessResponseSchema } from "./api";
 
 /**
  * 用户自定义配置项契约。
@@ -29,8 +30,10 @@ export const customConfigSchema = z.object({
   currencies: z.array(configItemSchema).max(300),
 }).strict();
 
-export const customConfigResponseSchema = z.object({
+export const customConfigPayloadSchema = z.object({
   config: customConfigSchema,
 }).strict();
+export const customConfigResponseSchema = apiSuccessResponseSchema(customConfigPayloadSchema);
 
 export type ApiCustomConfig = z.infer<typeof customConfigSchema>;
+export type CustomConfigResponse = z.infer<typeof customConfigPayloadSchema>;

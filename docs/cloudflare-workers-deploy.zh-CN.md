@@ -280,7 +280,7 @@ pnpm exec wrangler deploy --config wrangler.generated.jsonc
 
 **日历订阅提示 `no such table: calendar_feeds`？**
 
-说明 Worker 已更新，但远端 D1 migrations 没有完成或没有运行。日历订阅表现在同时保存全局 Feed 和单个订阅 Feed 的 scoped token，所以必须先完成 D1 migration 再依赖日历订阅链接。重新运行 `Cloudflare Worker` workflow，或执行：
+说明 Worker 已更新，但远端 D1 migrations 没有完成或没有运行。重新运行 `Cloudflare Worker` workflow，或执行：
 
 ```bash
 pnpm cloudflare:config:ci

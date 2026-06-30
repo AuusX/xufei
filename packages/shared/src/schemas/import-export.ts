@@ -2,6 +2,7 @@ import { z } from "zod";
 import { settingsUpdateBodySchema } from "./settings";
 import { customConfigSchema } from "./custom-config";
 import { apiSubscriptionSchema, subscriptionCreateBodySchema } from "./subscriptions";
+import { apiSuccessResponseSchema } from "./api";
 
 /**
  * 单次导入执行的订阅上限。
@@ -90,18 +91,18 @@ export const importSummarySchema = z.object({
 }).strict();
 export type ImportSummary = z.infer<typeof importSummarySchema>;
 
-export const importPreviewResponseSchema = z.object({
+export const importPreviewPayloadSchema = z.object({
   summary: importSummarySchema,
   items: z.array(importPreviewItemSchema),
   includesSettings: z.boolean(),
   includesCustomConfig: z.boolean(),
 }).strict();
-export type ImportPreviewResponse = z.infer<typeof importPreviewResponseSchema>;
+export const importPreviewResponseSchema = apiSuccessResponseSchema(importPreviewPayloadSchema);
+export type ImportPreviewResponse = z.infer<typeof importPreviewPayloadSchema>;
 
-export const importApplyResponseSchema = importPreviewResponseSchema.extend({
-  ok: z.literal(true),
-}).strict();
-export type ImportApplyResponse = z.infer<typeof importApplyResponseSchema>;
+export const importApplyPayloadSchema = importPreviewPayloadSchema;
+export const importApplyResponseSchema = apiSuccessResponseSchema(importApplyPayloadSchema);
+export type ImportApplyResponse = z.infer<typeof importApplyPayloadSchema>;
 
 const exportAssetSchema = z.object({
   id: z.string(),

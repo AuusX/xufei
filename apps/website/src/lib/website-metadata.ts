@@ -1,5 +1,5 @@
 const LOCAL_PREVIEW_BASE_URL = 'http://localhost:4173'
-const SITEMAP_LASTMOD = '2026-06-02'
+const SITEMAP_LASTMOD = '2026-06-19'
 
 export type WebsiteEnv = Record<string, string | undefined>
 
@@ -7,6 +7,10 @@ export type WebsiteDeployment = {
   basePath: string
   baseUrl: string
   viteBase: string
+}
+
+export type WebsiteMetadata = {
+  softwareVersion: string
 }
 
 function normalizeBasePath(rawBasePath: string | undefined) {
@@ -84,7 +88,7 @@ export function renderSitemapXml(deployment: WebsiteDeployment) {
 `
 }
 
-export function replaceWebsiteMetadataPlaceholders(html: string, deployment: WebsiteDeployment) {
+export function replaceWebsiteMetadataPlaceholders(html: string, deployment: WebsiteDeployment, metadata: WebsiteMetadata) {
   // HTML 模板里的占位符由构建脚本一次性替换，避免运行时 JS 才补 SEO/分享元数据。
   const replacements: Record<string, string> = {
     '%RENEWLET_WEBSITE_URL%': websiteUrl(deployment),
@@ -92,6 +96,7 @@ export function replaceWebsiteMetadataPlaceholders(html: string, deployment: Web
     '%RENEWLET_WEBSITE_LOGO_URL%': websiteUrl(deployment, 'assets/renewlet/logo.svg'),
     '%RENEWLET_WEBSITE_DASHBOARD_ZH_URL%': websiteUrl(deployment, 'assets/renewlet/images/dashboard-zh.png'),
     '%RENEWLET_WEBSITE_DASHBOARD_EN_URL%': websiteUrl(deployment, 'assets/renewlet/images/dashboard-en.png'),
+    '%RENEWLET_WEBSITE_SOFTWARE_VERSION%': metadata.softwareVersion,
   }
 
   return Object.entries(replacements).reduce((result, [placeholder, value]) => result.replaceAll(placeholder, value), html)

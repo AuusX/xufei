@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { COST_SHARING_SPLIT_MODES, costSharingCustomTotalMatches } from "../cost-sharing";
+import { COST_SHARING_SPLIT_MODES, costSharingCustomAmountsAreValid } from "../cost-sharing";
+import { apiSuccessResponseSchema } from "./api";
+import { okResponseSchema } from "./common";
 import {
   BILLING_CYCLES,
   CUSTOM_CYCLE_UNITS,
@@ -50,6 +52,7 @@ export const dateInputSchema = z
   .min(1)
   .refine(isValidDateOnly, "Invalid date")
   .describe("日期字符串：必须是 YYYY-MM-DD，不接受带时间或时区的 ISO datetime。");
+const nullableDateInputSchema = dateInputSchema.nullable();
 
 const optionalUrlSchema = z
   .string()
@@ -72,31 +75,36 @@ const optionalLogoReferenceSchema = logoReferenceSchema.nullable().optional();
 
 const tagsSchema = z.array(z.string().trim().min(1).max(40)).max(100).optional();
 const extraSchema = z.record(z.string(), z.unknown()).optional();
-// costSharing 是 shared wire shape：前端表单、Go hook 和 Worker D1 mapper 都必须按这组字段持久化。
+export const SUBSCRIPTION_PAYMENT_METHOD_NONE = "__none";
+export const SUBSCRIPTION_QUERY_RENEWALS = ["auto", "manual", "one-time"] as const;
+export const SUBSCRIPTION_REMINDER_MODES = ["disabled", "inherit", "custom"] as const;
+const queryBooleanSchema = z.preprocess((value) => {
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  return value;
+}, z.boolean());
+// costSharing 是“当前用户默认付款、成员只代表其他人”的 shared wire shape；旧身份字段必须在迁移层清理，写入层拒绝。
 const costSharingMemberSchema = z.object({
   id: z.string().trim().min(1).max(80),
   name: z.string().trim().min(1).max(80),
   note: z.string().trim().max(500).optional(),
   currency: z.string().trim().regex(/^[A-Z]{3}$/).optional(),
-  included: z.boolean(),
   customAmount: z.number().finite().nonnegative().max(1_000_000_000).optional(),
 }).strict();
 export const costSharingSchema = z.object({
   enabled: z.boolean(),
-  payerMemberId: z.string().trim().min(1).max(80),
-  selfMemberId: z.string().trim().min(1).max(80),
   splitMode: z.enum(COST_SHARING_SPLIT_MODES),
   members: z.array(costSharingMemberSchema).min(1).max(20),
 }).strict().refine((value) => {
   if (!value.enabled) return true;
   const ids = new Set(value.members.map((member) => member.id));
-  return ids.size === value.members.length && ids.has(value.selfMemberId) && ids.has(value.payerMemberId);
+  return ids.size === value.members.length;
 }, {
   path: ["members"],
   message: "Invalid cost sharing members",
-}).refine((value) => !value.enabled || value.members.some((member) => member.included), {
+}).refine((value) => !value.enabled || costSharingCustomAmountsAreValid(value), {
   path: ["members"],
-  message: "At least one member must be included",
+  message: "Invalid custom cost sharing amounts",
 });
 export const reminderDaysSchema = z
   .number()
@@ -120,13 +128,14 @@ function oneTimeTermFieldsAreConsistent(value: {
   return hasCount === hasUnit;
 }
 
-function costSharingFieldsAreConsistent(value: {
-  price?: number | undefined;
-  costSharing?: z.infer<typeof costSharingSchema> | null | undefined;
+function startDateRequirementIsSatisfied(value: {
+  billingCycle: BillingCycle;
+  startDate: string | null;
+  autoCalculateNextBillingDate: boolean;
 }): boolean {
-  if (!value.costSharing?.enabled || value.price === undefined) return true;
-  // shared schema 不读取用户汇率设置；跨币种 custom 总额只能在前端转换器或后端同币种场景下被严格证明。
-  return costSharingCustomTotalMatches(value.costSharing, value.price);
+  // 周期订阅允许未知开始日期；one-time 和自动日期锚点仍需要真实 date-only。
+  if (value.billingCycle === "one-time") return value.startDate !== null;
+  return !value.autoCalculateNextBillingDate || value.startDate !== null;
 }
 
 /**
@@ -150,7 +159,7 @@ const subscriptionWriteBodyShape = {
   pinned: z.boolean().default(false),
   publicHidden: z.boolean().default(false),
   paymentMethod: z.string().trim().min(1).max(80).nullable().optional(),
-  startDate: dateInputSchema,
+  startDate: nullableDateInputSchema,
   nextBillingDate: dateInputSchema,
   // autoRenew 默认关闭；缺省数据不能被解释成用户同意后台自动推进下一期。
   autoRenew: z.boolean().default(false),
@@ -174,9 +183,9 @@ export const subscriptionCreateBodySchema = z.object(subscriptionWriteBodyShape)
     path: ["oneTimeTermCount"],
     message: "Invalid one-time term",
   })
-  .refine(costSharingFieldsAreConsistent, {
-    path: ["costSharing"],
-    message: "Invalid cost sharing",
+  .refine(startDateRequirementIsSatisfied, {
+    path: ["startDate"],
+    message: "Start date is required for one-time subscriptions and automatic billing date calculation",
   });
 
 export const subscriptionUpdateBodySchema = z.object(subscriptionWriteBodyShape)
@@ -192,10 +201,6 @@ export const subscriptionUpdateBodySchema = z.object(subscriptionWriteBodyShape)
   }, {
     path: ["oneTimeTermCount"],
     message: "Invalid one-time term",
-  })
-  .refine(costSharingFieldsAreConsistent, {
-    path: ["costSharing"],
-    message: "Invalid cost sharing",
   })
   .refine((obj) => Object.keys(obj).length > 0, { message: "Empty payload" });
 
@@ -221,11 +226,12 @@ export const apiSubscriptionSchema = z.object({
   pinned: z.boolean(),
   publicHidden: z.boolean(),
   paymentMethod: z.string().min(1).optional(),
-  startDate: z.string(),
-  nextBillingDate: z.string(),
+  startDate: nullableDateInputSchema,
+  // 订阅响应的 date-only 字段由 shared 统一守门；Go、Worker 和前端都不能在本地补解析 ISO datetime。
+  nextBillingDate: dateInputSchema,
   autoRenew: z.boolean(),
   autoCalculateNextBillingDate: z.boolean(),
-  trialEndDate: z.string().optional(),
+  trialEndDate: dateInputSchema.optional(),
   website: z.string().optional(),
   notes: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -240,26 +246,52 @@ export const apiSubscriptionSchema = z.object({
 }).strict().refine(oneTimeTermFieldsAreConsistent, {
   path: ["oneTimeTermCount"],
   message: "Invalid one-time term",
+}).refine(startDateRequirementIsSatisfied, {
+  path: ["startDate"],
+  message: "Start date is required for one-time subscriptions and automatic billing date calculation",
 });
 
 export const subscriptionsListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   cursor: z.string().trim().min(1).max(512).optional(),
-}).strict();
+  q: z.string().trim().min(1).max(200).optional(),
+  category: z.array(z.string().trim().min(1).max(80)).max(50).optional(),
+  tag: z.array(z.string().trim().min(1).max(40)).max(100).optional(),
+  billingCycle: z.array(z.enum(BILLING_CYCLES)).max(BILLING_CYCLES.length).optional(),
+  paymentMethod: z.array(z.string().trim().min(1).max(80)).max(200).optional(),
+  currency: z.array(z.string().trim().regex(/^[A-Z]{3}$/)).max(50).optional(),
+  status: z.enum(SUBSCRIPTION_STATUSES).optional(),
+  renewal: z.enum(SUBSCRIPTION_QUERY_RENEWALS).optional(),
+  nextBillingFrom: dateInputSchema.optional(),
+  nextBillingTo: dateInputSchema.optional(),
+  pinned: queryBooleanSchema.optional(),
+  publicHidden: queryBooleanSchema.optional(),
+  reminderMode: z.enum(SUBSCRIPTION_REMINDER_MODES).optional(),
+  repeatReminder: queryBooleanSchema.optional(),
+}).strict().refine((value) => {
+  if (!value.nextBillingFrom || !value.nextBillingTo) return true;
+  return value.nextBillingFrom <= value.nextBillingTo;
+}, {
+  path: ["nextBillingTo"],
+  message: "Invalid date range",
+});
 
-export const subscriptionsListResponseSchema = z.object({
+export const subscriptionsListPayloadSchema = z.object({
   subscriptions: z.array(apiSubscriptionSchema),
   nextCursor: z.string().nullable(),
   total: z.number().int().nonnegative().optional(),
 }).strict();
+export const subscriptionsListResponseSchema = apiSuccessResponseSchema(subscriptionsListPayloadSchema);
 
-export const subscriptionResponseSchema = z.object({
+export const subscriptionPayloadSchema = z.object({
   subscription: apiSubscriptionSchema,
 }).strict();
+export const subscriptionResponseSchema = apiSuccessResponseSchema(subscriptionPayloadSchema);
 
-export const subscriptionDeleteResponseSchema = z.object({
-  ok: z.literal(true),
-}).strict();
+export const subscriptionDeleteResponseSchema = okResponseSchema;
+
+export type SubscriptionsListResponse = z.infer<typeof subscriptionsListPayloadSchema>;
+export type SubscriptionResponse = z.infer<typeof subscriptionPayloadSchema>;
 
 export type ApiSubscription = z.infer<typeof apiSubscriptionSchema> & {
   billingCycle: BillingCycle;
