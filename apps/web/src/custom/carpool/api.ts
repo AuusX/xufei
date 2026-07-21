@@ -34,6 +34,23 @@ export interface CarpoolSubscription {
   yourShare: number;
 }
 
+export interface CarpoolPlanStats {
+  totalCars: number;
+  activeCars: number;
+  emptyCars: number;
+  receivableTotal: number;
+}
+
+export interface CarpoolPlanSummary {
+  id: string;
+  name: string;
+  stats: CarpoolPlanStats;
+}
+
+export interface CarpoolPlanDetail extends CarpoolPlanSummary {
+  subscriptions: CarpoolSubscription[];
+}
+
 export interface CarpoolMemberDraft {
   id?: string;
   name: string;
@@ -73,18 +90,71 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   return (payload?.data ?? null) as T;
 }
 
+const PLANS_URL = "/api/custom/carpool/plans";
+
+/** 列出「正在续费」(active) 的订阅，供加入计划时选择。 */
 export async function fetchCarpoolSubscriptions(): Promise<CarpoolSubscription[]> {
   const data = await apiFetch<{ subscriptions: CarpoolSubscription[] } | null>("/api/custom/carpool/subscriptions");
   return data?.subscriptions ?? [];
 }
 
-export async function saveCarpoolMembers(
-  subscriptionId: string,
-  input: SaveCarpoolMembersInput,
-): Promise<CarpoolSubscription | null> {
-  const data = await apiFetch<{ subscription: CarpoolSubscription | null } | null>(
+/** 列出用户的所有拼车计划（含统计）。 */
+export async function fetchCarpoolPlans(): Promise<CarpoolPlanSummary[]> {
+  const data = await apiFetch<{ plans: CarpoolPlanSummary[] } | null>(PLANS_URL);
+  return data?.plans ?? [];
+}
+
+/** 创建拼车计划。 */
+export async function createCarpoolPlan(name: string): Promise<CarpoolPlanSummary | null> {
+  const data = await apiFetch<{ plan: CarpoolPlanSummary } | null>(PLANS_URL, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  return data?.plan ?? null;
+}
+
+/** 读取一个计划的详情（订阅视图 + 统计）。 */
+export async function fetchCarpoolPlanDetail(planId: string): Promise<CarpoolPlanDetail | null> {
+  const data = await apiFetch<{ plan: CarpoolPlanDetail } | null>(`${PLANS_URL}/${encodeURIComponent(planId)}`);
+  return data?.plan ?? null;
+}
+
+/** 重命名计划。 */
+export async function renameCarpoolPlan(planId: string, name: string): Promise<CarpoolPlanDetail | null> {
+  const data = await apiFetch<{ plan: CarpoolPlanDetail } | null>(`${PLANS_URL}/${encodeURIComponent(planId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name }),
+  });
+  return data?.plan ?? null;
+}
+
+/** 删除计划。 */
+export async function deleteCarpoolPlan(planId: string): Promise<void> {
+  await apiFetch<{ ok: boolean } | null>(`${PLANS_URL}/${encodeURIComponent(planId)}`, { method: "DELETE" });
+}
+
+/** 把一个订阅加入计划。 */
+export async function addSubscriptionToPlan(planId: string, subscriptionId: string): Promise<CarpoolPlanDetail | null> {
+  const data = await apiFetch<{ plan: CarpoolPlanDetail } | null>(
+    `${PLANS_URL}/${encodeURIComponent(planId)}/subscriptions`,
+    { method: "POST", body: JSON.stringify({ subscriptionId }) },
+  );
+  return data?.plan ?? null;
+}
+
+/** 从计划移除一个订阅。 */
+export async function removeSubscriptionFromPlan(planId: string, subscriptionId: string): Promise<CarpoolPlanDetail | null> {
+  const data = await apiFetch<{ plan: CarpoolPlanDetail } | null>(
+    `${PLANS_URL}/${encodeURIComponent(planId)}/subscriptions/${encodeURIComponent(subscriptionId)}`,
+    { method: "DELETE" },
+  );
+  return data?.plan ?? null;
+}
+
+/** 覆盖式保存一条订阅的拼车成员。 */
+export async function saveCarpoolMembers(subscriptionId: string, input: SaveCarpoolMembersInput): Promise<void> {
+  await apiFetch<{ ok: boolean } | null>(
     `/api/custom/carpool/subscriptions/${encodeURIComponent(subscriptionId)}/members`,
     { method: "PUT", body: JSON.stringify(input) },
   );
-  return data?.subscription ?? null;
 }
