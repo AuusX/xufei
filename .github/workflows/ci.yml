@@ -1,6 +1,6 @@
 name: CI
 
-# 质量门只覆盖 dev/main/release 分支，不发布任何远端产物；Docker/Cloudflare 发布必须走 tag workflow。
+# 分支质量门只覆盖 dev push；main 稳定线靠 release PR 与 tag workflow 守门，避免合并后重复跑整套 CI。
 on:
   pull_request:
     branches:
@@ -10,8 +10,6 @@ on:
   push:
     branches:
       - dev
-      - main
-      - "release/**"
 
 permissions:
   contents: read
@@ -37,7 +35,7 @@ jobs:
         uses: actions/setup-go@v6.4.0
         with:
           go-version: 1.26.2
-          cache-dependency-path: packages/server/go.sum
+          cache-dependency-path: apps/docker-server/go.sum
 
       - name: Enable Corepack
         run: corepack enable
@@ -64,7 +62,7 @@ jobs:
         run: pnpm --filter @renewlet/client test:run
 
       - name: Test server
-        run: pnpm --dir packages/server test
+        run: pnpm --dir apps/docker-server test
 
       - name: Check Cloudflare build path
         # 只做类型和构建前检查，避免普通分支 CI 触发 D1 migration 或 Worker 部署副作用。

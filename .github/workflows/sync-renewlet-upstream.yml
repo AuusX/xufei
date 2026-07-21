@@ -103,6 +103,7 @@ jobs:
             process.env.PRESERVE_PATH,
             JSON.stringify({
               name: config.name,
+              main: config.main,
               database_name: d1.database_name,
               database_id: d1.database_id,
               bucket_name: r2.bucket_name,
@@ -116,8 +117,19 @@ jobs:
           upstream_ref="FETCH_HEAD"
           upstream_sha="$(git rev-parse --short=12 "${upstream_ref}")"
 
-          # 生成仓库和上游没有 fork 关系；这里只同步文件树，并保留用户仓库里的 Cloudflare 资源配置和 workflow 入口。
-          git restore --source "${upstream_ref}" --staged --worktree :/
+          # 读取二次开发排除清单：这些路径（含整棵子目录）不随上游镜像被覆盖或删除。
+          exclude_args=()
+          if [ -f .upstream-sync-keep ]; then
+            while IFS= read -r keep_line || [ -n "${keep_line}" ]; do
+              keep_line="${keep_line%%#*}"
+              keep_line="$(printf '%s' "${keep_line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              [ -z "${keep_line}" ] && continue
+              exclude_args+=(":(exclude)${keep_line}")
+            done < .upstream-sync-keep
+          fi
+
+          # 生成仓库和上游没有 fork 关系；这里只同步文件树，并保留用户仓库里的 Cloudflare 资源配置、workflow 入口和二次开发目录。
+          git restore --source "${upstream_ref}" --staged --worktree -- ':/' "${exclude_args[@]}"
 
           if [ -f "${workflows_present}" ]; then
             rm -rf .github/workflows
@@ -181,6 +193,7 @@ jobs:
           const d1 = findBinding(config, "d1_databases", "DB");
           const r2 = findBinding(config, "r2_buckets", "ASSETS_BUCKET");
           config.name = preserved.name;
+          if (preserved.main) config.main = preserved.main;
           d1.database_name = preserved.database_name;
           d1.database_id = preserved.database_id;
           r2.bucket_name = preserved.bucket_name;
@@ -190,6 +203,18 @@ jobs:
           };
           writeFileSync("wrangler.jsonc", `${JSON.stringify(config, null, 2)}\n`);
           NODE
+
+          # 重新应用集中管理的本地补丁（如前端栏目注册）。上游把被补丁文件改动过大时，
+          # git apply 失败即中止：不 commit、不 push，交由人工处理，绝不静默覆盖你的改动。
+          if compgen -G "patches/*.patch" >/dev/null 2>&1; then
+            for patch_file in patches/*.patch; do
+              echo "Applying local patch: ${patch_file}"
+              if ! git apply --3way "${patch_file}"; then
+                echo "::error title=Local patch failed::${patch_file} did not apply cleanly after the upstream sync. No commit was created and nothing was pushed. Resolve the conflict manually (see patches/README.md)."
+                exit 1
+              fi
+            done
+          fi
 
           git add -A
           if git diff --cached --quiet; then

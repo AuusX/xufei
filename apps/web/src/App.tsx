@@ -26,6 +26,8 @@ const AdminUsers = lazy(lazyRouteLoader("adminUsers"));
 const ForgotPassword = lazy(lazyRouteLoader("forgotPassword"));
 const ResetPassword = lazy(lazyRouteLoader("resetPassword"));
 const NotFound = lazy(lazyRouteLoader("notFound"));
+// 二次开发栏目：拼车（直接懒加载 custom 目录，不进上游 route-resources 注册表）。
+const Carpool = lazy(() => import("@/custom/carpool/carpool-page"));
 
 function RouteFallback() {
   const { pathname } = useLocation();
@@ -44,6 +46,7 @@ export default function App() {
           <Route path="/subscriptions" element={<ProtectedRoute><Subscriptions /></ProtectedRoute>} />
           <Route path="/calendar" element={<ProtectedRoute><Calendar /></ProtectedRoute>} />
           <Route path="/statistics" element={<ProtectedRoute><Statistics /></ProtectedRoute>} />
+          <Route path="/carpool" element={<ProtectedRoute><Carpool /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/admin/users" element={<ProtectedRoute adminOnly><AdminUsers /></ProtectedRoute>} />
           <Route path="/setup" element={<Setup />} />

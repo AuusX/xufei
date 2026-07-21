@@ -11,7 +11,7 @@
 
 import Link, { NavLink } from '@/components/router-link';
 import { useRouter } from '@/lib/router';
-import { LayoutDashboard, List, CalendarDays, BarChart3, Settings, Sun, Moon, LogOut } from 'lucide-react';
+import { LayoutDashboard, List, CalendarDays, BarChart3, Settings, Sun, Moon, LogOut, CarFront } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -38,12 +38,13 @@ interface HeaderProps {
   subscriptionActions?: ReactNode;
 }
 
-type NavIconKey = "dashboard" | "subscriptions" | "calendar" | "statistics" | "settings";
+type NavIconKey = "dashboard" | "subscriptions" | "calendar" | "statistics" | "settings" | "carpool";
 
-/** 导航项配置：路径 / 文案 / 图标 key。 */
-const navItems: Array<{ path: string; labelKey: MessageKey; icon: NavIconKey }> = [
+/** 导航项配置：路径 / 文案 / 图标 key。label 为二次开发栏目提供不入 i18n catalog 的字面文案。 */
+const navItems: Array<{ path: string; labelKey?: MessageKey; label?: string; icon: NavIconKey }> = [
   { path: '/', labelKey: 'nav.dashboard', icon: "dashboard" },
   { path: '/subscriptions', labelKey: 'nav.subscriptions', icon: "subscriptions" },
+  { path: '/carpool', label: '拼车', icon: "carpool" },
   { path: '/calendar', labelKey: 'nav.calendar', icon: "calendar" },
   { path: '/statistics', labelKey: 'nav.statistics', icon: "statistics" },
   { path: '/settings', labelKey: 'nav.settings', icon: "settings" },
@@ -61,6 +62,8 @@ function renderNavIcon(icon: NavIconKey, className: string) {
       return <BarChart3 className={className} />;
     case "settings":
       return <Settings className={className} />;
+    case "carpool":
+      return <CarFront className={className} />;
   }
 }
 
@@ -71,6 +74,8 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
   const { t } = useI18n();
+  // 二次开发栏目用字面 label，不进 i18n catalog；上游项仍走 t(labelKey)。
+  const navLabel = (item: { labelKey?: MessageKey; label?: string }) => item.label ?? (item.labelKey ? t(item.labelKey) : "");
   const { data: sessionData } = authClient.useSession();
   const [systemDialogOpen, setSystemDialogOpen] = useState(false);
   const isAuthenticated = Boolean(sessionData?.user);
@@ -146,11 +151,11 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
                 key={item.path}
                 href={item.path}
                 end={item.path === "/"}
-                title={t(item.labelKey)}
+                title={navLabel(item)}
                 className={({ isActive }) => getHeaderDesktopNavLinkClass(isActive)}
               >
                 {renderNavIcon(item.icon, headerLayout.desktopNavIcon)}
-                <span className={headerLayout.desktopNavLabel}>{t(item.labelKey)}</span>
+                <span className={headerLayout.desktopNavLabel}>{navLabel(item)}</span>
               </NavLink>
             ))}
           </nav>
@@ -198,7 +203,7 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
             className={({ isActive }) => getHeaderMobileNavLinkClass(isActive)}
           >
             {renderNavIcon(item.icon, headerLayout.mobileNavIcon)}
-            {t(item.labelKey)}
+            {navLabel(item)}
           </NavLink>
         ))}
       </nav>
