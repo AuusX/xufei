@@ -36,6 +36,13 @@ const memberInputSchema = z
     customAmount: z.number().finite().nonnegative().optional(),
     joinDate: z.string().max(32).optional(),
     expiryDate: z.string().max(32).optional(),
+    status: z.enum(["active", "paused", "expired"]).optional(),
+    billingCycle: z.enum(["monthly", "quarterly", "yearly", "custom"]).optional(),
+    customDays: z.number().int().positive().max(3660).optional(),
+    autoCalcExpiry: z.boolean().optional(),
+    reminderDays: z.number().int().min(-1).max(365).optional(),
+    wechat: z.string().trim().max(100).optional(),
+    email: z.string().trim().max(200).optional(),
   })
   .strict();
 
@@ -43,6 +50,7 @@ const saveMembersSchema = z
   .object({
     enabled: z.boolean(),
     splitMode: z.enum(["equal", "custom"]),
+    account: z.string().trim().max(200).optional(),
     members: z.array(memberInputSchema).max(50),
   })
   .strict();
