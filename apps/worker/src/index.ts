@@ -86,6 +86,7 @@ import { systemRestart, systemUpdate, systemVersion } from "./system";
 import { errorResponse, methodNotAllowed, requestLocale, successJson, toResponse, type AppLocale } from "./http";
 import { serverText } from "./server-i18n";
 import type { Env } from "./types";
+import { registerCarpoolRoutes } from "./custom/carpool/routes";
 
 type AppBindings = {
   Bindings: Env;
@@ -120,6 +121,9 @@ app.notFound((context) => {
   const locale = context.get("locale") ?? requestLocale(context.req.raw);
   return errorResponse(404, serverText(locale, "common.notFound"), "NOT_FOUND");
 });
+
+// 二次开发：挂载拼车路由（/api/custom/carpool/*）。逻辑在 custom 目录，这里只登记入口。
+registerCarpoolRoutes(app);
 
 defineRoute(app, "/calendar/renewals.ics", {
   GET: (context) => calendarFeedIcs(context.req.raw, context.env),

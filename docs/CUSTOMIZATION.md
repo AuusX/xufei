@@ -49,7 +49,7 @@ git restore --source upstream/main --staged --worktree :/
 而是由 workflow 在镜像后**把你的这些字段写回**：
 
 - `name`（Worker 名）
-- `main`（入口 —— 指向你的 wrapper，见 §5）
+- `main`（Worker 入口；默认即上游 `index.ts`，保留只为你日后想换自定义入口时不被覆盖）
 - D1 `database_name` / `database_id`
 - R2 `bucket_name`
 - `vars`（你的值优先，上游新增的 var 会并入）
@@ -86,20 +86,21 @@ git switch -c upstream-sync && git push -u origin upstream-sync
 
 ---
 
-## 5. 如何加一个后端功能（零核心改动）
+## 5. 如何加一个后端功能
 
-入口通过 wrapper 适配器接管，**不改上游任何 `.ts`**：
+自定义逻辑放 `apps/worker/src/custom/`，导出一个 `registerXxxRoutes(app)`，再用一处**最小补丁**
+让上游 `index.ts` 调用它（和前端注册栏目同一套 `patches/` 机制）：
 
-- `wrangler.jsonc` 的 `main` 指向 `apps/worker/src/custom/entry.ts`（已由 Layer 2 保留）。
-- `entry.ts` 里：命中 `/api/custom/*` 走你自己的 Hono app，其余请求原样委托上游 worker；
-  `scheduled`（Cron）也委托上游。
-- 自定义接口一律挂在 **`/api/custom/*`** 前缀下（天然落在 wrangler 的 `run_worker_first: /api/*`，
-  无需改路由配置），复用上游的 `requireAuth(request, env)` 鉴权、`http.ts` 的响应助手。
+- 在 `custom/<feature>/routes.ts` 导出 `registerXxxRoutes(app)`，用 `app.get/post/...` 把接口挂到上游
+  传入的 Hono `app` 上；接口一律用 **`/api/custom/*`** 前缀（天然落在 wrangler 的
+  `run_worker_first: /api/*`，无需改路由配置）。
+- `index.ts` 里加两行（import + `registerXxxRoutes(app);`），做成 `patches/000X-*.patch`，同步后自动重打。
+- 复用上游 `requireAuth(request, env)` 鉴权、`http.ts` 响应助手、全局 locale middleware 与 `onError`。
 - 自定义数据表用运行时 `CREATE TABLE IF NOT EXISTS` **懒建**（见 `apps/worker/src/custom/carpool/store.ts`），
   不占用上游迁移编号、不依赖 `wrangler d1 migrations apply` 流水线。
 
-> 只允许**引用（import）**上游函数，不允许**修改**上游文件。上游若改了被引用的签名，
-> `pnpm check:cloudflare` 的 typecheck 会在同步审核时报错，不会静默出错。
+> 除 `index.ts` 那处两行补丁外，只**引用（import）**上游函数、不修改上游文件。上游若改了被引用的签名，
+> 或改动 `index.ts` 导致补丁冲突，`check:cloudflare` typecheck / 同步时的 `git apply` 会报错，不会静默出错。
 
 ## 6. 如何加一个前端栏目
 
@@ -119,8 +120,8 @@ git switch -c upstream-sync && git push -u origin upstream-sync
 
 | 部件 | 位置 |
 |---|---|
-| Worker wrapper 入口 | `apps/worker/src/custom/entry.ts` |
-| 拼车 API（`/api/custom/carpool/*`） | `apps/worker/src/custom/carpool/` |
+| 拼车 API（`/api/custom/carpool/*`） | `apps/worker/src/custom/carpool/routes.ts` |
+| Worker 路由挂载补丁 | `patches/0002-mount-carpool-routes.patch`（index.ts 两行） |
 | overlay 表（懒建） | `apps/worker/src/custom/carpool/store.ts` |
 | 前端栏目 | `apps/web/src/custom/carpool/` |
 | 路由/导航注册补丁 | `patches/0001-register-carpool-nav.patch` |
