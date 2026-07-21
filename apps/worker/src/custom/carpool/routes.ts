@@ -43,6 +43,7 @@ const memberInputSchema = z
     reminderDays: z.number().int().min(-1).max(365).optional(),
     wechat: z.string().trim().max(100).optional(),
     email: z.string().trim().max(200).optional(),
+    amountCny: z.number().finite().nonnegative().optional(),
   })
   .strict();
 

@@ -37,6 +37,8 @@ const CREATE_TABLE_STATEMENTS = [
     reminder_days INTEGER,
     wechat TEXT,
     email TEXT,
+    amount_cny REAL,
+    reminded_for TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, subscription_id, member_id)
@@ -74,6 +76,8 @@ const MEMBER_META_ADDED_COLUMNS: Array<[name: string, def: string]> = [
   ["reminder_days", "INTEGER"],
   ["wechat", "TEXT"],
   ["email", "TEXT"],
+  ["amount_cny", "REAL"],
+  ["reminded_for", "TEXT"],
 ];
 
 let schemaReady: Promise<void> | null = null;
@@ -138,6 +142,8 @@ export interface CarpoolMemberMeta {
   reminderDays: number;
   wechat: string | null;
   email: string | null;
+  /** 成员实际支付的人民币金额（原始录入值）；cost_sharing 里的 customAmount 是换算成订阅货币后的值。 */
+  amountCny: number | null;
 }
 
 /** 提供给前端的成员视图：cost-sharing 成员 + 计算金额 + overlay 字段 + 计算出的到期日。 */
@@ -206,6 +212,7 @@ interface OverlayRow {
   reminder_days: number | null;
   wechat: string | null;
   email: string | null;
+  amount_cny: number | null;
 }
 
 function overlayKey(subscriptionId: string, memberId: string): string {
@@ -223,6 +230,7 @@ function defaultMeta(): CarpoolMemberMeta {
     reminderDays: -1,
     wechat: null,
     email: null,
+    amountCny: null,
   };
 }
 
@@ -253,7 +261,7 @@ function parseCostSharing(raw: string | null): CostSharing {
 
 async function fetchOverlayMap(env: Env, userId: string): Promise<Map<string, CarpoolMemberMeta>> {
   const overlays = await env.DB.prepare(
-    `SELECT subscription_id, member_id, join_date, expiry_date, status, billing_cycle, custom_days, auto_calc_expiry, reminder_days, wechat, email
+    `SELECT subscription_id, member_id, join_date, expiry_date, status, billing_cycle, custom_days, auto_calc_expiry, reminder_days, wechat, email, amount_cny
      FROM carpool_member_meta WHERE user_id = ?`,
   )
     .bind(userId)
@@ -270,6 +278,7 @@ async function fetchOverlayMap(env: Env, userId: string): Promise<Map<string, Ca
       reminderDays: typeof row.reminder_days === "number" ? row.reminder_days : -1,
       wechat: row.wechat ?? null,
       email: row.email ?? null,
+      amountCny: row.amount_cny ?? null,
     });
   }
   return map;
@@ -492,6 +501,7 @@ export interface CarpoolMemberInput {
   reminderDays?: number | undefined;
   wechat?: string | undefined;
   email?: string | undefined;
+  amountCny?: number | undefined;
 }
 
 function normalizeText(value: string | undefined): string | null {
@@ -563,8 +573,8 @@ export async function saveCarpoolMembers(
     ...members.map(({ costMember, input: m }) =>
       env.DB.prepare(
         `INSERT INTO carpool_member_meta
-           (user_id, subscription_id, member_id, join_date, expiry_date, status, billing_cycle, custom_days, auto_calc_expiry, reminder_days, wechat, email, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (user_id, subscription_id, member_id, join_date, expiry_date, status, billing_cycle, custom_days, auto_calc_expiry, reminder_days, wechat, email, amount_cny, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         userId,
         subscriptionId,
@@ -578,6 +588,7 @@ export async function saveCarpoolMembers(
         typeof m.reminderDays === "number" ? m.reminderDays : -1,
         normalizeText(m.wechat),
         normalizeText(m.email),
+        typeof m.amountCny === "number" ? m.amountCny : null,
         now,
         now,
       ),

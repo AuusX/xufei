@@ -87,6 +87,7 @@ import { errorResponse, methodNotAllowed, requestLocale, successJson, toResponse
 import { serverText } from "./server-i18n";
 import type { Env } from "./types";
 import { registerCarpoolRoutes } from "./custom/carpool/routes";
+import { runCarpoolReminders } from "./custom/carpool/reminders";
 
 type AppBindings = {
   Bindings: Env;
@@ -338,6 +339,7 @@ async function runScheduledTasks(env: Env): Promise<void> {
   await runScheduledPhase("auto_renew_subscriptions", () => renewAutoSubscriptionsForAllUsers(env));
   await runScheduledPhase("notifications", () => runScheduledNotifications(env));
   await runScheduledPhase("cloud_backups", () => runDueCloudBackups(env));
+  await runScheduledPhase("carpool_reminders", () => runCarpoolReminders(env));
 }
 
 async function runScheduledPhase(phase: string, task: () => Promise<unknown>): Promise<void> {
