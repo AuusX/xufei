@@ -1,18 +1,16 @@
 /**
  * 拼车栏目（/carpool）。
  *
- * 两个视图（内部 state 切换，不新增路由）：
- *  1. 计划列表：创建拼车计划（如 TEAM 计划），每个卡片显示 总车数/进行中/空车/成员应收合计。
- *  2. 计划详情：勾选属于该计划的订阅，订阅以「小轿车卡片」网格呈现（一行 2-3 辆）；点某辆车「管理拼车」
- *     打开弹窗编辑车辆 gpt账号与车友（成员）。
+ * 视图（内部 state 切换，不新增路由）：
+ *  1. 计划列表：创建拼车计划、设置拼车通知（独立 webhook）；每个卡片显示 总车数/进行中/空车/成员应收合计。
+ *  2. 计划详情：订阅以「小轿车卡片」网格呈现（一行 2-3 辆），点整张卡片打开弹窗管理车辆 gpt账号与车友。
  *
- * 付款金额按人民币录入，保存时用应用汇率换算成订阅货币写入 cost_sharing（与家庭共享同步），原始人民币值
- * 另存 overlay。成员状态/周期/自动到期/提醒/微信/邮箱存 overlay，车辆 gpt账号存车辆信息表；计划分组存 plan 表。
- * 全部经 `/api/custom/carpool/*`，不改上游任何文件。
+ * 付款金额按人民币录入，保存时用应用汇率换算成订阅货币写入 cost_sharing（与家庭共享同步），原始人民币另存。
+ * 拼车通知走用户单独配置的一个 webhook（独立于系统订阅通知）。全部经 `/api/custom/carpool/*`，不改上游。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CarFront, ChevronLeft, Loader2, Plus, Trash2 } from "lucide-react";
+import { Bell, CarFront, ChevronLeft, Loader2, Plus, Trash2 } from "lucide-react";
 import { Header } from "@/components/header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -20,20 +18,25 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import {
   addSubscriptionToPlan,
   createCarpoolPlan,
   deleteCarpoolPlan,
+  fetchCarpoolNotification,
   fetchCarpoolPlanDetail,
   fetchCarpoolPlans,
   fetchCarpoolSubscriptions,
   removeSubscriptionFromPlan,
   saveCarpoolMembers,
+  saveCarpoolNotification,
+  testCarpoolNotification,
   type CarpoolBillingCycle,
   type CarpoolMember,
   type CarpoolMemberStatus,
+  type CarpoolNotification,
   type CarpoolPlanStats,
   type CarpoolSplitMode,
   type CarpoolSubscription,
@@ -41,6 +44,7 @@ import {
 
 const PLANS_KEY = ["carpool", "plans"] as const;
 const ACTIVE_SUBS_KEY = ["carpool", "active-subscriptions"] as const;
+const NOTIFICATION_KEY = ["carpool", "notification"] as const;
 const planKey = (planId: string) => ["carpool", "plan", planId] as const;
 const CNY = "CNY";
 
@@ -56,6 +60,7 @@ const CYCLE_OPTIONS: Array<{ value: CarpoolBillingCycle; label: string }> = [
   { value: "custom", label: "自定义天数" },
 ];
 const STATUS_LABEL: Record<CarpoolMemberStatus, string> = { active: "使用中", paused: "暂停", expired: "已过期" };
+const SELECT_CLASS = "mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
 function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -76,19 +81,17 @@ function daysUntil(dateStr: string | null): number | null {
   return Math.round((target.getTime() - today.getTime()) / 86_400_000);
 }
 
-/** 到期徽标：已过期(红) / 即将到期(琥珀，在提醒窗口内) / 普通。 */
 function expiryBadge(member: CarpoolMember): { text: string; className: string } | null {
   const expiry = member.effectiveExpiry;
   if (!expiry) return null;
   const days = daysUntil(expiry);
   if (days === null) return null;
-  if (days < 0) return { text: `已过期`, className: "bg-destructive/10 text-destructive" };
+  if (days < 0) return { text: "已过期", className: "bg-destructive/10 text-destructive" };
   const withinReminder = member.reminderDays >= 0 && days <= member.reminderDays;
   if (withinReminder) return { text: `${days}天后到期`, className: "bg-amber-500/15 text-amber-600 dark:text-amber-400" };
   return { text: `到期 ${expiry}`, className: "text-muted-foreground" };
 }
 
-/** 成员付款展示：优先显示录入的人民币，否则显示订阅货币的计算值。 */
 function memberPayText(member: CarpoolMember, currency: string): string {
   if (member.amountCny != null) return formatCny(member.amountCny);
   return formatMoney(member.amount, currency);
@@ -98,7 +101,7 @@ interface DraftMember {
   key: string;
   id?: string;
   name: string;
-  amountCny: string; // 付款金额（人民币录入）
+  amountCny: string;
   joinDate: string;
   expiryDate: string;
   status: CarpoolMemberStatus;
@@ -134,7 +137,6 @@ function newDraftMember(): DraftMember {
   };
 }
 
-/** subToCny：把订阅货币金额换算回人民币，用于回填旧数据（没有 amountCny 时）的输入框。 */
 function toDraft(subscription: CarpoolSubscription, subToCny: (amount: number) => number): Draft {
   return {
     enabled: subscription.enabled,
@@ -208,6 +210,7 @@ function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) 
   const query = useQuery({ queryKey: PLANS_KEY, queryFn: fetchCarpoolPlans });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [notifyOpen, setNotifyOpen] = useState(false);
 
   const createMutation = useMutation({
     mutationFn: (planName: string) => createCarpoolPlan(planName),
@@ -232,7 +235,7 @@ function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) 
 
   return (
     <>
-      <div className="mb-6 mt-4 flex items-center justify-between gap-3">
+      <div className="mb-6 mt-4 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <CarFront className="h-7 w-7 text-primary" />
           <div>
@@ -240,11 +243,16 @@ function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) 
             <p className="text-sm text-muted-foreground">创建拼车计划（如 TEAM 计划），把要拼的订阅归到计划里管理。</p>
           </div>
         </div>
-        {!creating && (
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Plus className="mr-1 h-4 w-4" /> 创建拼车计划
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setNotifyOpen(true)}>
+            <Bell className="mr-1 h-4 w-4" /> 设置拼车通知
           </Button>
-        )}
+          {!creating && (
+            <Button size="sm" onClick={() => setCreating(true)}>
+              <Plus className="mr-1 h-4 w-4" /> 创建拼车计划
+            </Button>
+          )}
+        </div>
       </div>
 
       {creating && (
@@ -301,6 +309,8 @@ function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) 
           ))}
         </div>
       )}
+
+      <NotificationDialog open={notifyOpen} onOpenChange={setNotifyOpen} />
     </>
   );
 }
@@ -332,7 +342,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
   });
   const removeMutation = useMutation({
     mutationFn: (subscriptionId: string) => removeSubscriptionFromPlan(planId, subscriptionId),
-    onSuccess: invalidate,
+    onSuccess: () => { invalidate(); setEditingSubId(null); setDraft(null); },
     onError: onMutationError("移除订阅失败"),
   });
   const deletePlanMutation = useMutation({
@@ -367,7 +377,6 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
         return {
           ...(m.id ? { id: m.id } : {}),
           name: m.name.trim(),
-          // 人民币 → 订阅货币，写入 cost_sharing（与家庭共享同步）；原始人民币另存。
           ...(hasCny ? { customAmount: round2(convert(cny, CNY, subscription.currency)), amountCny: cny } : {}),
           ...(m.joinDate ? { joinDate: m.joinDate } : {}),
           ...(m.expiryDate ? { expiryDate: m.expiryDate } : {}),
@@ -459,13 +468,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {plan.subscriptions.map((subscription) => (
-                <CarCard
-                  key={subscription.id}
-                  subscription={subscription}
-                  removing={removeMutation.isPending}
-                  onManage={() => startEditing(subscription)}
-                  onRemove={() => removeMutation.mutate(subscription.id)}
-                />
+                <CarCard key={subscription.id} subscription={subscription} onManage={() => startEditing(subscription)} />
               ))}
             </div>
           )}
@@ -482,6 +485,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
               draft={draft}
               currency={editingSubscription.currency}
               saving={saveMembersMutation.isPending}
+              removing={removeMutation.isPending}
               cnyToCurrency={(cny) => round2(convert(cny, CNY, editingSubscription.currency))}
               onAccount={(account) => setDraft((c) => (c ? { ...c, account } : c))}
               onToggleEnabled={(enabled) => setDraft((c) => (c ? { ...c, enabled } : c))}
@@ -489,6 +493,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
               onAddMember={() => setDraft((c) => (c ? { ...c, members: [...c.members, newDraftMember()] } : c))}
               onRemoveMember={(memberKey) => setDraft((c) => (c ? { ...c, members: c.members.filter((m) => m.key !== memberKey) } : c))}
               onUpdateMember={updateMember}
+              onRemoveFromPlan={() => { if (window.confirm(`把「${editingSubscription.name}」移出本计划？订阅本身不会被删除。`)) removeMutation.mutate(editingSubscription.id); }}
               onCancel={closeEditor}
               onSave={() => save(editingSubscription)}
             />
@@ -499,18 +504,15 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
   );
 }
 
-/** 小轿车样式卡片：车顶(挡风玻璃)+车厢(车友座位)+车轮。 */
-function CarCard(props: {
-  subscription: CarpoolSubscription;
-  removing: boolean;
-  onManage: () => void;
-  onRemove: () => void;
-}) {
-  const { subscription: sub } = props;
+/** 小轿车样式卡片：整张卡片可点击进入管理。车顶(挡风玻璃)+车厢(车友座位)。 */
+function CarCard({ subscription: sub, onManage }: { subscription: CarpoolSubscription; onManage: () => void }) {
   const occupied = sub.enabled && sub.members.length > 0;
   return (
-    <div className="relative overflow-hidden rounded-2xl border bg-card shadow-sm">
-      {/* 车顶 / 挡风玻璃 */}
+    <button
+      type="button"
+      onClick={onManage}
+      className="group overflow-hidden rounded-2xl border bg-card text-left shadow-sm transition hover:border-primary/60 hover:shadow-md"
+    >
       <div className="bg-gradient-to-b from-primary/15 to-transparent px-4 pb-3 pt-4">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
@@ -528,46 +530,39 @@ function CarCard(props: {
         ) : null}
       </div>
 
-      {/* 车厢：座位（车友） */}
-      <div className="space-y-1.5 px-4 pb-1">
+      <div className="space-y-1.5 px-4 pb-4">
         {sub.members.length > 0 ? (
           sub.members.map((member) => {
             const badge = expiryBadge(member);
             return (
-              <div key={member.id} className="flex items-center justify-between gap-2 border-t py-1.5 text-sm first:border-t-0">
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate font-medium">{member.name}</span>
-                  <span className="shrink-0 rounded bg-muted px-1 text-[11px] text-muted-foreground">{STATUS_LABEL[member.status]}</span>
-                </span>
-                <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
-                  <span>{memberPayText(member, sub.currency)}</span>
-                  {badge ? <span className={`rounded px-1 text-[11px] ${badge.className}`}>{badge.text}</span> : null}
-                </span>
+              <div key={member.id} className="border-t py-1.5 text-sm first:border-t-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate font-medium">{member.name}</span>
+                    <span className="shrink-0 rounded bg-muted px-1 text-[11px] text-muted-foreground">{STATUS_LABEL[member.status]}</span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
+                    <span>{memberPayText(member, sub.currency)}</span>
+                    {badge ? <span className={`rounded px-1 text-[11px] ${badge.className}`}>{badge.text}</span> : null}
+                  </span>
+                </div>
+                {member.wechat || member.email ? (
+                  <div className="mt-0.5 flex flex-wrap gap-x-3 text-[11px] text-muted-foreground">
+                    {member.wechat ? <span>微信 {member.wechat}</span> : null}
+                    {member.email ? <span>邮箱 {member.email}</span> : null}
+                  </div>
+                ) : null}
               </div>
             );
           })
         ) : (
-          <p className="py-2 text-sm text-muted-foreground">还没有车友</p>
+          <p className="py-2 text-sm text-muted-foreground">还没有车友，点击卡片添加</p>
         )}
         <div className="border-t pt-1.5 text-xs text-muted-foreground">
           总价 {formatMoney(sub.price, sub.currency)} · 你承担 {formatMoney(sub.yourShare, sub.currency)}
         </div>
       </div>
-
-      {/* 操作 + 车轮 */}
-      <div className="flex items-center justify-between px-4 pb-3 pt-2">
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={props.onManage}>管理拼车</Button>
-          <Button variant="ghost" size="icon" aria-label="移出计划" className="h-8 w-8" disabled={props.removing} onClick={props.onRemove}>
-            <Trash2 className="h-4 w-4 text-muted-foreground" />
-          </Button>
-        </div>
-      </div>
-      <div className="pointer-events-none flex justify-between px-5 pb-1.5">
-        <span className="h-3.5 w-3.5 rounded-full border-2 border-foreground/25 bg-background" />
-        <span className="h-3.5 w-3.5 rounded-full border-2 border-foreground/25 bg-background" />
-      </div>
-    </div>
+    </button>
   );
 }
 
@@ -575,6 +570,7 @@ interface CarpoolEditorProps {
   draft: Draft;
   currency: string;
   saving: boolean;
+  removing: boolean;
   cnyToCurrency: (cny: number) => number;
   onAccount: (account: string) => void;
   onToggleEnabled: (enabled: boolean) => void;
@@ -582,11 +578,10 @@ interface CarpoolEditorProps {
   onAddMember: () => void;
   onRemoveMember: (memberKey: string) => void;
   onUpdateMember: (memberKey: string, patch: Partial<DraftMember>) => void;
+  onRemoveFromPlan: () => void;
   onCancel: () => void;
   onSave: () => void;
 }
-
-const SELECT_CLASS = "mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
 function CarpoolEditor(props: CarpoolEditorProps) {
   const { draft, currency, saving } = props;
@@ -697,9 +692,14 @@ function CarpoolEditor(props: CarpoolEditorProps) {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button variant="outline" size="sm" onClick={props.onAddMember}>
-          <Plus className="mr-1 h-4 w-4" /> 添加车友
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={props.onAddMember}>
+            <Plus className="mr-1 h-4 w-4" /> 添加车友
+          </Button>
+          <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={props.removing} onClick={props.onRemoveFromPlan}>
+            <Trash2 className="mr-1 h-4 w-4" /> 移出计划
+          </Button>
+        </div>
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={props.onCancel} disabled={saving}>取消</Button>
           <Button size="sm" onClick={props.onSave} disabled={saving}>
@@ -709,5 +709,84 @@ function CarpoolEditor(props: CarpoolEditorProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------- 拼车通知设置（独立 webhook） ----------------
+
+const EMPTY_NOTIFICATION: CarpoolNotification = { enabled: false, webhookUrl: "", webhookMethod: "POST", webhookHeaders: "", webhookPayload: "" };
+
+function NotificationDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const query = useQuery({ queryKey: NOTIFICATION_KEY, queryFn: fetchCarpoolNotification, enabled: open });
+  const [form, setForm] = useState<CarpoolNotification>(EMPTY_NOTIFICATION);
+
+  useEffect(() => {
+    if (query.data) setForm(query.data);
+  }, [query.data]);
+
+  const saveMutation = useMutation({
+    mutationFn: (config: CarpoolNotification) => saveCarpoolNotification(config),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: NOTIFICATION_KEY }); toast({ title: "已保存拼车通知设置" }); onOpenChange(false); },
+    onError: (error: unknown) => toast({ title: "保存失败", description: error instanceof Error ? error.message : "请重试", variant: "destructive" }),
+  });
+  const testMutation = useMutation({
+    mutationFn: (config: CarpoolNotification) => testCarpoolNotification(config),
+    onSuccess: () => toast({ title: "测试通知已发送", description: "去你的 webhook 目标看看有没有收到。" }),
+    onError: (error: unknown) => toast({ title: "测试失败", description: error instanceof Error ? error.message : "请检查配置", variant: "destructive" }),
+  });
+
+  const update = (patch: Partial<CarpoolNotification>) => setForm((f) => ({ ...f, ...patch }));
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>设置拼车通知（Webhook）</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          拼车到期提醒走这里配置的 webhook（独立于系统订阅通知）。到期提醒触发时，会向此 URL 发送请求。
+        </p>
+        <div className="space-y-4">
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={form.enabled} onCheckedChange={(v) => update({ enabled: v })} />
+            启用拼车到期推送
+          </label>
+          <div>
+            <Label className="text-xs">Webhook URL</Label>
+            <Input value={form.webhookUrl} placeholder="https://example.com/webhook" onChange={(e) => update({ webhookUrl: e.target.value })} />
+          </div>
+          <div>
+            <Label className="text-xs">请求方法</Label>
+            <select className={SELECT_CLASS} value={form.webhookMethod} onChange={(e) => update({ webhookMethod: e.target.value === "GET" ? "GET" : "POST" })}>
+              <option value="POST">POST</option>
+              <option value="GET">GET</option>
+            </select>
+          </div>
+          <div>
+            <Label className="text-xs">请求头（JSON，可留空）</Label>
+            <Textarea rows={3} value={form.webhookHeaders} placeholder={'{"Content-Type":"application/json"}'} onChange={(e) => update({ webhookHeaders: e.target.value })} />
+          </div>
+          <div>
+            <Label className="text-xs">请求负载模板（可用 {"{title}"} / {"{content}"} 占位符）</Label>
+            <Textarea rows={4} value={form.webhookPayload} placeholder={'{"text":"{title}\\n{content}"}'} onChange={(e) => update({ webhookPayload: e.target.value })} />
+          </div>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+          <Button variant="outline" size="sm" disabled={testMutation.isPending || !form.webhookUrl.trim()} onClick={() => testMutation.mutate(form)}>
+            {testMutation.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Bell className="mr-1 h-4 w-4" />}
+            发送测试
+          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>取消</Button>
+            <Button size="sm" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate(form)}>
+              {saveMutation.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              保存
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

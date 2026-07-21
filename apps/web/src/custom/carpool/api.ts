@@ -179,3 +179,33 @@ export async function saveCarpoolMembers(subscriptionId: string, input: SaveCarp
     { method: "PUT", body: JSON.stringify(input) },
   );
 }
+
+export interface CarpoolNotification {
+  enabled: boolean;
+  webhookUrl: string;
+  webhookMethod: "GET" | "POST";
+  webhookHeaders: string;
+  webhookPayload: string;
+}
+
+/** 读取拼车通知配置。 */
+export async function fetchCarpoolNotification(): Promise<CarpoolNotification | null> {
+  const data = await apiFetch<{ notification: CarpoolNotification } | null>("/api/custom/carpool/notification");
+  return data?.notification ?? null;
+}
+
+/** 保存拼车通知配置。 */
+export async function saveCarpoolNotification(config: CarpoolNotification): Promise<void> {
+  await apiFetch<{ notification: CarpoolNotification } | null>("/api/custom/carpool/notification", {
+    method: "PUT",
+    body: JSON.stringify(config),
+  });
+}
+
+/** 用给定配置发一条测试通知。 */
+export async function testCarpoolNotification(config: CarpoolNotification): Promise<void> {
+  await apiFetch<{ ok: boolean } | null>("/api/custom/carpool/notification/test", {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+}
