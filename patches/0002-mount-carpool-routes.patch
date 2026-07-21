@@ -1,16 +1,17 @@
 diff --git a/apps/worker/src/index.ts b/apps/worker/src/index.ts
-index fce7354..a8ac930 100644
+index fce7354..cd81225 100644
 --- a/apps/worker/src/index.ts
 +++ b/apps/worker/src/index.ts
-@@ -86,6 +86,7 @@ import { systemRestart, systemUpdate, systemVersion } from "./system";
+@@ -86,6 +86,8 @@ import { systemRestart, systemUpdate, systemVersion } from "./system";
  import { errorResponse, methodNotAllowed, requestLocale, successJson, toResponse, type AppLocale } from "./http";
  import { serverText } from "./server-i18n";
  import type { Env } from "./types";
 +import { registerCarpoolRoutes } from "./custom/carpool/routes";
++import { runCarpoolReminders } from "./custom/carpool/reminders";
  
  type AppBindings = {
    Bindings: Env;
-@@ -121,6 +122,9 @@ app.notFound((context) => {
+@@ -121,6 +123,9 @@ app.notFound((context) => {
    return errorResponse(404, serverText(locale, "common.notFound"), "NOT_FOUND");
  });
  
@@ -20,3 +21,11 @@ index fce7354..a8ac930 100644
  defineRoute(app, "/calendar/renewals.ics", {
    GET: (context) => calendarFeedIcs(context.req.raw, context.env),
  });
+@@ -334,6 +339,7 @@ async function runScheduledTasks(env: Env): Promise<void> {
+   await runScheduledPhase("auto_renew_subscriptions", () => renewAutoSubscriptionsForAllUsers(env));
+   await runScheduledPhase("notifications", () => runScheduledNotifications(env));
+   await runScheduledPhase("cloud_backups", () => runDueCloudBackups(env));
++  await runScheduledPhase("carpool_reminders", () => runCarpoolReminders(env));
+ }
+ 
+ async function runScheduledPhase(phase: string, task: () => Promise<unknown>): Promise<void> {

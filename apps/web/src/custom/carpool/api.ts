@@ -28,6 +28,7 @@ export interface CarpoolMember {
   reminderDays: number;
   wechat: string | null;
   email: string | null;
+  amountCny: number | null;
 }
 
 export interface CarpoolSubscription {
@@ -76,6 +77,7 @@ export interface CarpoolMemberDraft {
   reminderDays?: number;
   wechat?: string;
   email?: string;
+  amountCny?: number;
 }
 
 export interface SaveCarpoolMembersInput {
