@@ -1,14 +1,15 @@
 /**
- * 拼车 overlay + 计划存储层。
+ * 拼车 overlay + 计划 + 车辆信息存储层。
  *
  * 架构位置：
- * - 拼车与「家庭共享」共用订阅上的 `cost_sharing_json`（成员 + 付款金额）作为唯一数据源，
- *   写成员/金额即与家庭共享双向同步。
- * - 拼车独有的「上车时间 / 按成员到期时间」存 `carpool_member_meta`（按 user, subscription, member）。
- * - 「拼车计划」把多个订阅归组：`carpool_plan`（计划）+ `carpool_plan_subscription`（计划↔订阅）。
- *   每个订阅 = 一辆车；统计 = 总车数 / 进行中(有成员) / 空车 / 成员应收合计。
+ * - 成员的「姓名 / 付款金额」写进订阅的 `cost_sharing_json`（与「家庭共享」共用，自动同步）。
+ * - 成员的拼车独有字段（上车/到期时间、状态、扣费周期、自动计算到期、到期提醒、微信、邮箱）存
+ *   `carpool_member_meta`。
+ * - 车辆（订阅）的拼车独有信息（gpt账号）存 `carpool_subscription_meta`。
+ * - 「拼车计划」把多个订阅归组：`carpool_plan` + `carpool_plan_subscription`。每个订阅=一辆车。
  *
- * 三张自定义表都用运行时 `CREATE TABLE IF NOT EXISTS` 懒建，不占用上游 D1 迁移编号。
+ * 所有自定义表都用运行时 `CREATE TABLE IF NOT EXISTS` 懒建；旧版 `carpool_member_meta` 缺列时用
+ * PRAGMA + ALTER 幂等补列，不占用上游 D1 迁移编号。
  */
 import {
   calculateCostSharingMemberAmount,
@@ -16,7 +17,11 @@ import {
   type CostSharingMember,
   type CostSharingSplitMode,
 } from "@renewlet/shared/cost-sharing";
+import { addBillingCycles } from "@renewlet/shared/subscription-renewal";
 import type { Env } from "../../types";
+
+export type CarpoolMemberStatus = "active" | "paused" | "expired";
+export type CarpoolBillingCycle = "monthly" | "quarterly" | "yearly" | "custom";
 
 const CREATE_TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS carpool_member_meta (
@@ -25,9 +30,24 @@ const CREATE_TABLE_STATEMENTS = [
     member_id TEXT NOT NULL,
     join_date TEXT,
     expiry_date TEXT,
+    status TEXT,
+    billing_cycle TEXT,
+    custom_days INTEGER,
+    auto_calc_expiry INTEGER,
+    reminder_days INTEGER,
+    wechat TEXT,
+    email TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, subscription_id, member_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS carpool_subscription_meta (
+    user_id TEXT NOT NULL,
+    subscription_id TEXT NOT NULL,
+    account TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, subscription_id)
   )`,
   `CREATE TABLE IF NOT EXISTS carpool_plan (
     id TEXT PRIMARY KEY,
@@ -45,12 +65,32 @@ const CREATE_TABLE_STATEMENTS = [
   )`,
 ];
 
+// 旧版 carpool_member_meta 只有 join_date/expiry_date；这些列在已存在的表上用 ALTER 幂等补齐。
+const MEMBER_META_ADDED_COLUMNS: Array<[name: string, def: string]> = [
+  ["status", "TEXT"],
+  ["billing_cycle", "TEXT"],
+  ["custom_days", "INTEGER"],
+  ["auto_calc_expiry", "INTEGER"],
+  ["reminder_days", "INTEGER"],
+  ["wechat", "TEXT"],
+  ["email", "TEXT"],
+];
+
 let schemaReady: Promise<void> | null = null;
 
-/** 懒建自定义表；失败时清空缓存以便下次请求重试。CREATE TABLE IF NOT EXISTS 幂等，可安全跨请求缓存。 */
+/** 懒建自定义表并补齐旧表缺列；失败时清空缓存以便下次请求重试。 */
 export function ensureCarpoolSchema(env: Env): Promise<void> {
   if (!schemaReady) {
-    schemaReady = env.DB.batch(CREATE_TABLE_STATEMENTS.map((sql) => env.DB.prepare(sql)))
+    schemaReady = (async () => {
+      await env.DB.batch(CREATE_TABLE_STATEMENTS.map((sql) => env.DB.prepare(sql)));
+      const info = await env.DB.prepare(`PRAGMA table_info(carpool_member_meta)`).all<{ name: string }>();
+      const existing = new Set((info.results ?? []).map((row) => row.name));
+      for (const [name, def] of MEMBER_META_ADDED_COLUMNS) {
+        if (!existing.has(name)) {
+          await env.DB.prepare(`ALTER TABLE carpool_member_meta ADD COLUMN ${name} ${def}`).run();
+        }
+      }
+    })()
       .then(() => undefined)
       .catch((error) => {
         schemaReady = null;
@@ -64,17 +104,47 @@ function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-/** overlay 行：拼车独有的按成员字段。 */
+function toMemberStatus(value: string | null | undefined): CarpoolMemberStatus {
+  return value === "paused" || value === "expired" ? value : "active";
+}
+
+function toBillingCycle(value: string | null | undefined): CarpoolBillingCycle {
+  return value === "quarterly" || value === "yearly" || value === "custom" ? value : "monthly";
+}
+
+/** 上车时间 + 扣费周期算出到期日（YYYY-MM-DD）。 */
+function addCycle(dateStr: string, cycle: CarpoolBillingCycle, customDays: number | null): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  try {
+    return addBillingCycles(
+      dateStr,
+      cycle === "yearly" ? "annual" : cycle,
+      1,
+      cycle === "custom" ? customDays : undefined,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** 成员的拼车独有元数据（overlay）。 */
 export interface CarpoolMemberMeta {
   joinDate: string | null;
   expiryDate: string | null;
+  status: CarpoolMemberStatus;
+  billingCycle: CarpoolBillingCycle;
+  customDays: number | null;
+  autoCalcExpiry: boolean;
+  reminderDays: number;
+  wechat: string | null;
+  email: string | null;
 }
 
-/** 提供给前端的成员视图：cost-sharing 成员 + 计算金额 + overlay 字段。 */
-export interface CarpoolMemberView extends CostSharingMember {
+/** 提供给前端的成员视图：cost-sharing 成员 + 计算金额 + overlay 字段 + 计算出的到期日。 */
+export interface CarpoolMemberView extends CostSharingMember, CarpoolMemberMeta {
   amount: number;
-  joinDate: string | null;
-  expiryDate: string | null;
+  /** 实际到期日：开启自动计算时由上车时间+周期得出，否则用手填的到期时间。 */
+  effectiveExpiry: string | null;
 }
 
 /** 提供给前端的订阅视图：一条「可拼车」的订阅（一辆车）及其成员。 */
@@ -86,6 +156,8 @@ export interface CarpoolSubscriptionView {
   currency: string;
   status: string;
   nextBillingDate: string;
+  /** 车辆信息：gpt账号（拼车独有）。 */
+  account: string | null;
   enabled: boolean;
   splitMode: CostSharingSplitMode;
   members: CarpoolMemberView[];
@@ -95,24 +167,18 @@ export interface CarpoolSubscriptionView {
 
 /** 计划级统计。 */
 export interface CarpoolPlanStats {
-  /** 总车数 = 计划内订阅数。 */
   totalCars: number;
-  /** 进行中的拼车 = 有成员的订阅数。 */
   activeCars: number;
-  /** 空车 = 没成员的订阅数。 */
   emptyCars: number;
-  /** 成员应收合计（各订阅币种未折算）。 */
   receivableTotal: number;
 }
 
-/** 计划摘要（列表页用）。 */
 export interface CarpoolPlanSummary {
   id: string;
   name: string;
   stats: CarpoolPlanStats;
 }
 
-/** 计划详情（含订阅视图，详情页用）。 */
 export interface CarpoolPlanDetail extends CarpoolPlanSummary {
   subscriptions: CarpoolSubscriptionView[];
 }
@@ -133,10 +199,31 @@ interface OverlayRow {
   member_id: string;
   join_date: string | null;
   expiry_date: string | null;
+  status: string | null;
+  billing_cycle: string | null;
+  custom_days: number | null;
+  auto_calc_expiry: number | null;
+  reminder_days: number | null;
+  wechat: string | null;
+  email: string | null;
 }
 
 function overlayKey(subscriptionId: string, memberId: string): string {
   return `${subscriptionId} ${memberId}`;
+}
+
+function defaultMeta(): CarpoolMemberMeta {
+  return {
+    joinDate: null,
+    expiryDate: null,
+    status: "active",
+    billingCycle: "monthly",
+    customDays: null,
+    autoCalcExpiry: false,
+    reminderDays: -1,
+    wechat: null,
+    email: null,
+  };
 }
 
 /** 把 D1 里的 cost_sharing_json 收敛成安全的 CostSharing；空对象 / 脏数据视为未开启。 */
@@ -166,7 +253,8 @@ function parseCostSharing(raw: string | null): CostSharing {
 
 async function fetchOverlayMap(env: Env, userId: string): Promise<Map<string, CarpoolMemberMeta>> {
   const overlays = await env.DB.prepare(
-    `SELECT subscription_id, member_id, join_date, expiry_date FROM carpool_member_meta WHERE user_id = ?`,
+    `SELECT subscription_id, member_id, join_date, expiry_date, status, billing_cycle, custom_days, auto_calc_expiry, reminder_days, wechat, email
+     FROM carpool_member_meta WHERE user_id = ?`,
   )
     .bind(userId)
     .all<OverlayRow>();
@@ -175,20 +263,44 @@ async function fetchOverlayMap(env: Env, userId: string): Promise<Map<string, Ca
     map.set(overlayKey(row.subscription_id, row.member_id), {
       joinDate: row.join_date ?? null,
       expiryDate: row.expiry_date ?? null,
+      status: toMemberStatus(row.status),
+      billingCycle: toBillingCycle(row.billing_cycle),
+      customDays: row.custom_days ?? null,
+      autoCalcExpiry: row.auto_calc_expiry === 1,
+      reminderDays: typeof row.reminder_days === "number" ? row.reminder_days : -1,
+      wechat: row.wechat ?? null,
+      email: row.email ?? null,
     });
   }
   return map;
 }
 
-/** 把订阅行 + overlay 合并成前端视图。 */
-function buildSubscriptionView(row: SubscriptionRow, overlayMap: Map<string, CarpoolMemberMeta>): CarpoolSubscriptionView {
+async function fetchAccountMap(env: Env, userId: string): Promise<Map<string, string>> {
+  const rows = await env.DB.prepare(`SELECT subscription_id, account FROM carpool_subscription_meta WHERE user_id = ?`)
+    .bind(userId)
+    .all<{ subscription_id: string; account: string | null }>();
+  const map = new Map<string, string>();
+  for (const row of rows.results ?? []) {
+    if (row.account) map.set(row.subscription_id, row.account);
+  }
+  return map;
+}
+
+function buildSubscriptionView(
+  row: SubscriptionRow,
+  overlayMap: Map<string, CarpoolMemberMeta>,
+  accountMap: Map<string, string>,
+): CarpoolSubscriptionView {
   const costSharing = parseCostSharing(row.cost_sharing_json);
   let memberTotal = 0;
   const members: CarpoolMemberView[] = costSharing.members.map((member) => {
     const amount = calculateCostSharingMemberAmount(costSharing, member, row.price);
     memberTotal += amount;
-    const meta = overlayMap.get(overlayKey(row.id, member.id));
-    return { ...member, amount, joinDate: meta?.joinDate ?? null, expiryDate: meta?.expiryDate ?? null };
+    const meta = overlayMap.get(overlayKey(row.id, member.id)) ?? defaultMeta();
+    const effectiveExpiry = meta.autoCalcExpiry && meta.joinDate
+      ? addCycle(meta.joinDate, meta.billingCycle, meta.customDays)
+      : meta.expiryDate;
+    return { ...member, ...meta, amount, effectiveExpiry };
   });
   return {
     id: row.id,
@@ -198,6 +310,7 @@ function buildSubscriptionView(row: SubscriptionRow, overlayMap: Map<string, Car
     currency: row.currency,
     status: row.status,
     nextBillingDate: row.next_billing_date,
+    account: accountMap.get(row.id) ?? null,
     enabled: costSharing.enabled,
     splitMode: costSharing.splitMode,
     members,
@@ -205,7 +318,6 @@ function buildSubscriptionView(row: SubscriptionRow, overlayMap: Map<string, Car
   };
 }
 
-/** 从订阅视图算计划统计。 */
 function computeStats(subscriptions: CarpoolSubscriptionView[]): CarpoolPlanStats {
   let activeCars = 0;
   let receivableTotal = 0;
@@ -226,21 +338,22 @@ const SUBSCRIPTION_COLUMNS = "id, name, logo, price, currency, status, next_bill
 /** 列出用户所有 `active`（正在续费）订阅，用于把订阅加入计划的选择器。 */
 export async function listActiveSubscriptions(env: Env, userId: string): Promise<CarpoolSubscriptionView[]> {
   await ensureCarpoolSchema(env);
-  const [subs, overlayMap] = await Promise.all([
+  const [subs, overlayMap, accountMap] = await Promise.all([
     env.DB.prepare(
       `SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions WHERE user_id = ? AND status = 'active' ORDER BY next_billing_date ASC`,
     )
       .bind(userId)
       .all<SubscriptionRow>(),
     fetchOverlayMap(env, userId),
+    fetchAccountMap(env, userId),
   ]);
-  return (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap));
+  return (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap, accountMap));
 }
 
 /** 列出用户的所有拼车计划及其统计。 */
 export async function listCarpoolPlans(env: Env, userId: string): Promise<CarpoolPlanSummary[]> {
   await ensureCarpoolSchema(env);
-  const [plans, rows, overlayMap] = await Promise.all([
+  const [plans, rows, overlayMap, accountMap] = await Promise.all([
     env.DB.prepare(`SELECT id, name FROM carpool_plan WHERE user_id = ? ORDER BY created_at ASC`)
       .bind(userId)
       .all<{ id: string; name: string }>(),
@@ -253,12 +366,13 @@ export async function listCarpoolPlans(env: Env, userId: string): Promise<Carpoo
       .bind(userId)
       .all<SubscriptionRow & { plan_id: string }>(),
     fetchOverlayMap(env, userId),
+    fetchAccountMap(env, userId),
   ]);
 
   const viewsByPlan = new Map<string, CarpoolSubscriptionView[]>();
   for (const row of rows.results ?? []) {
     const list = viewsByPlan.get(row.plan_id) ?? [];
-    list.push(buildSubscriptionView(row, overlayMap));
+    list.push(buildSubscriptionView(row, overlayMap, accountMap));
     viewsByPlan.set(row.plan_id, list);
   }
 
@@ -277,7 +391,7 @@ export async function getCarpoolPlanDetail(env: Env, userId: string, planId: str
     .first<{ id: string; name: string }>();
   if (!plan) return null;
 
-  const [subs, overlayMap] = await Promise.all([
+  const [subs, overlayMap, accountMap] = await Promise.all([
     env.DB.prepare(
       `SELECT ${SUBSCRIPTION_COLUMNS}
        FROM carpool_plan_subscription ps
@@ -288,9 +402,10 @@ export async function getCarpoolPlanDetail(env: Env, userId: string, planId: str
       .bind(userId, planId)
       .all<SubscriptionRow>(),
     fetchOverlayMap(env, userId),
+    fetchAccountMap(env, userId),
   ]);
 
-  const subscriptions = (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap));
+  const subscriptions = (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap, accountMap));
   return { id: plan.id, name: plan.name, stats: computeStats(subscriptions), subscriptions };
 }
 
@@ -362,7 +477,7 @@ export async function removeSubscriptionFromPlan(
   return (result.meta?.changes ?? 0) > 0;
 }
 
-/** PUT 入参里的单个成员（overlay 字段随行）。 */
+/** PUT 入参里的单个成员（cost-sharing 字段 + overlay 字段随行）。 */
 export interface CarpoolMemberInput {
   id?: string | undefined;
   name: string;
@@ -370,24 +485,32 @@ export interface CarpoolMemberInput {
   customAmount?: number | undefined;
   joinDate?: string | undefined;
   expiryDate?: string | undefined;
+  status?: CarpoolMemberStatus | undefined;
+  billingCycle?: CarpoolBillingCycle | undefined;
+  customDays?: number | undefined;
+  autoCalcExpiry?: boolean | undefined;
+  reminderDays?: number | undefined;
+  wechat?: string | undefined;
+  email?: string | undefined;
 }
 
-function normalizeDate(value: string | undefined): string | null {
+function normalizeText(value: string | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }
 
 /**
- * 覆盖式保存一条订阅的拼车成员。
+ * 覆盖式保存一条订阅的车辆信息与拼车成员。
  *
- * 同一次写入两处：cost_sharing_json（与家庭共享共享，成员/金额/开关/分摊模式）+ overlay 表
- * （上车/到期时间）。全部按 user_id 隔离，并核对订阅归属。返回是否命中订阅。
+ * 写入三处：cost_sharing_json（与家庭共享共享，成员/金额/开关/分摊模式）、carpool_subscription_meta
+ * （车辆 gpt账号）、carpool_member_meta（每成员的上车/到期/状态/周期/提醒/微信/邮箱）。
+ * 全部按 user_id 隔离，并核对订阅归属。返回是否命中订阅。
  */
 export async function saveCarpoolMembers(
   env: Env,
   userId: string,
   subscriptionId: string,
-  input: { enabled: boolean; splitMode: CostSharingSplitMode; members: CarpoolMemberInput[] },
+  input: { enabled: boolean; splitMode: CostSharingSplitMode; account?: string | undefined; members: CarpoolMemberInput[] },
 ): Promise<boolean> {
   await ensureCarpoolSchema(env);
 
@@ -415,11 +538,7 @@ export async function saveCarpoolMembers(
         ? { customAmount: member.customAmount }
         : {}),
     };
-    return {
-      costMember,
-      joinDate: normalizeDate(member.joinDate),
-      expiryDate: normalizeDate(member.expiryDate),
-    };
+    return { costMember, input: member };
   });
 
   const hasMembers = members.length > 0;
@@ -436,16 +555,33 @@ export async function saveCarpoolMembers(
       userId,
       subscriptionId,
     ),
-    // overlay 全量重建：先清空该订阅旧行，再写入当前成员，避免残留已删除成员的日期。
+    env.DB.prepare(
+      `INSERT OR REPLACE INTO carpool_subscription_meta (user_id, subscription_id, account, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    ).bind(userId, subscriptionId, normalizeText(input.account), now, now),
+    // overlay 全量重建：先清空该订阅旧行，再写入当前成员。
     env.DB.prepare(`DELETE FROM carpool_member_meta WHERE user_id = ? AND subscription_id = ?`).bind(userId, subscriptionId),
-    ...members
-      .filter((m) => m.joinDate !== null || m.expiryDate !== null)
-      .map((m) =>
-        env.DB.prepare(
-          `INSERT INTO carpool_member_meta (user_id, subscription_id, member_id, join_date, expiry_date, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(userId, subscriptionId, m.costMember.id, m.joinDate, m.expiryDate, now, now),
+    ...members.map(({ costMember, input: m }) =>
+      env.DB.prepare(
+        `INSERT INTO carpool_member_meta
+           (user_id, subscription_id, member_id, join_date, expiry_date, status, billing_cycle, custom_days, auto_calc_expiry, reminder_days, wechat, email, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        userId,
+        subscriptionId,
+        costMember.id,
+        normalizeText(m.joinDate),
+        normalizeText(m.expiryDate),
+        toMemberStatus(m.status),
+        toBillingCycle(m.billingCycle),
+        m.billingCycle === "custom" && typeof m.customDays === "number" ? m.customDays : null,
+        m.autoCalcExpiry ? 1 : 0,
+        typeof m.reminderDays === "number" ? m.reminderDays : -1,
+        normalizeText(m.wechat),
+        normalizeText(m.email),
+        now,
+        now,
       ),
+    ),
   ];
 
   await env.DB.batch(statements);

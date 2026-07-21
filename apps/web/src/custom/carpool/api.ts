@@ -8,6 +8,8 @@ import { getLocaleHeaders } from "@/i18n/api-locale";
 import { getProductAuthHeader } from "@/services/product-session";
 
 export type CarpoolSplitMode = "equal" | "custom";
+export type CarpoolMemberStatus = "active" | "paused" | "expired";
+export type CarpoolBillingCycle = "monthly" | "quarterly" | "yearly" | "custom";
 
 export interface CarpoolMember {
   id: string;
@@ -18,6 +20,14 @@ export interface CarpoolMember {
   amount: number;
   joinDate: string | null;
   expiryDate: string | null;
+  status: CarpoolMemberStatus;
+  billingCycle: CarpoolBillingCycle;
+  customDays: number | null;
+  autoCalcExpiry: boolean;
+  effectiveExpiry: string | null;
+  reminderDays: number;
+  wechat: string | null;
+  email: string | null;
 }
 
 export interface CarpoolSubscription {
@@ -28,6 +38,7 @@ export interface CarpoolSubscription {
   currency: string;
   status: string;
   nextBillingDate: string;
+  account: string | null;
   enabled: boolean;
   splitMode: CarpoolSplitMode;
   members: CarpoolMember[];
@@ -58,11 +69,19 @@ export interface CarpoolMemberDraft {
   customAmount?: number;
   joinDate?: string;
   expiryDate?: string;
+  status?: CarpoolMemberStatus;
+  billingCycle?: CarpoolBillingCycle;
+  customDays?: number;
+  autoCalcExpiry?: boolean;
+  reminderDays?: number;
+  wechat?: string;
+  email?: string;
 }
 
 export interface SaveCarpoolMembersInput {
   enabled: boolean;
   splitMode: CarpoolSplitMode;
+  account?: string;
   members: CarpoolMemberDraft[];
 }
 
