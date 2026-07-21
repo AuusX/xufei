@@ -1,0 +1,19 @@
+# 上游同步排除清单（Renewlet 二次开发）
+#
+# `Sync Renewlet Upstream` 在把仓库镜像成上游时，会用 git pathspec `:(exclude)` 跳过下面这些路径，
+# 因此上游的改动【不会】覆盖 / 删除你在这些路径下的自定义内容。
+#
+# 规则：
+#   - 每行一个仓库根相对路径；`#` 开头或空行忽略。
+#   - 写目录名即保护整棵子树（含其下全部文件）。
+#   - 不要把 `wrangler.jsonc` 放进来：它由 workflow 做“字段级”保留（见 CUSTOMIZATION.md），
+#     这样上游对兼容日期 / assets 等的改进仍能流入，而你的 Worker 名 / D1 / R2 / main 入口不被覆盖。
+#
+# 新增自定义目录时，记得同时把它加到这里，否则下次同步会被删。
+
+.upstream-sync-keep
+.gitattributes
+patches
+docs/CUSTOMIZATION.md
+apps/worker/src/custom
+apps/web/src/custom
