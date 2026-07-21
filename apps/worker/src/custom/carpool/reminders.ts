@@ -2,16 +2,15 @@
  * 拼车到期推送提醒（定时任务）+ 拼车专属 webhook 通知。
  *
  * 由 index.ts 的补丁在 Cron 阶段调用 `runCarpoolReminders(env)`。拼车通知**独立于系统订阅通知**：
- * 只走用户在拼车页面单独配置的一个 webhook（系统 webhook 的 URL/方法/负载是给订阅用的，不适用）。
- * 发送时把拼车 webhook 的 4 个字段覆盖进一份默认 settings，复用上游 `sendChannel(env,"webhook",...)`。
+ * 只走用户在拼车页面单独配置的一个 webhook。发送用自建发送器（不复用系统 sendWebhook，因为后者强制
+ * 负载为 JSON）——JSON 模板走 JSON 替换并转义，纯文本模板原样替换，兼容 ntfy 等纯文本 webhook；
+ * URL 走上游 `assertSafeOutboundUrl` 做 SSRF 校验。
  *
  * Cron 每分钟触发，用 `carpool_member_meta.reminded_for` 去重：每个到期日只发一次（发送成败都记）。
  *
- * 注意：`notification-channel-send` 传递依赖 `smtp.ts → cloudflare:sockets`（Workers 专有模块），Node 下的
- * vitest 无法解析，所以只在真正发送时 `import()`，避免测试加载 index.ts 时被拖累。
+ * 注意：`assertSafeOutboundUrl` 只在真正发送时 `import()`，避免测试加载 index.ts 时牵连（与 cloudflare:sockets 同理）。
  */
 import type { NotificationEmailMessage } from "@renewlet/shared/email-template";
-import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import { DEFAULT_SERVER_I18N_LOCALE } from "../../server-i18n";
 import type { Env } from "../../types";
 import { appendCarpoolNotificationLog, getCarpoolNotification, listActiveSubscriptions, type CarpoolNotificationConfig } from "./store";
@@ -65,21 +64,66 @@ function buildMessage(due: DueMember[], now: Date): NotificationEmailMessage {
   };
 }
 
-/** 用拼车 webhook 配置覆盖一份默认 settings（sendWebhook 只读这 4 个字段）。 */
-function carpoolWebhookSettings(config: CarpoolNotificationConfig) {
-  return {
-    ...createDefaultAppSettings(),
-    webhookUrl: config.webhookUrl,
-    webhookMethod: config.webhookMethod,
-    webhookHeaders: config.webhookHeaders,
-    webhookPayload: config.webhookPayload,
-  };
+// ---- webhook 负载渲染 ----
+
+function applyPlain(template: string, m: NotificationEmailMessage): string {
+  return template.replaceAll("{title}", m.title).replaceAll("{content}", m.content).replaceAll("{timestamp}", m.timestamp);
 }
 
-/**
- * 通过拼车专属 webhook 发送一条消息，并记录发送日志（成功/失败原因）。
- * 动态 import 以避开测试环境的 cloudflare:sockets；失败会抛出（调用方决定是否吞掉）。
- */
+function substituteJson(value: unknown, m: NotificationEmailMessage): unknown {
+  if (typeof value === "string") return applyPlain(value, m);
+  if (Array.isArray(value)) return value.map((item) => substituteJson(item, m));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, substituteJson(item, m)]));
+  }
+  return value;
+}
+
+/** JSON 模板走 JSON 替换（自动转义多行正文），纯文本模板原样替换。 */
+function renderCarpoolPayload(template: string, m: NotificationEmailMessage): string {
+  const tpl = template.trim();
+  if (!tpl) return `${m.title}\n${m.content}\n${m.timestamp}`;
+  try {
+    return JSON.stringify(substituteJson(JSON.parse(tpl), m));
+  } catch {
+    return applyPlain(tpl, m);
+  }
+}
+
+function parseHeaders(raw: string): Headers {
+  const headers = new Headers();
+  if (!raw.trim()) return headers;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error("请求头不是合法 JSON");
+  }
+  for (const [key, value] of Object.entries(parsed)) headers.set(key, String(value));
+  return headers;
+}
+
+/** 拼车专属 webhook 发送：支持纯文本或 JSON 负载，带 SSRF 校验与 10s 超时。 */
+async function sendRawWebhook(config: CarpoolNotificationConfig, message: NotificationEmailMessage): Promise<void> {
+  const { assertSafeOutboundUrl } = await import("../../outbound-url-policy");
+  const url = await assertSafeOutboundUrl(config.webhookUrl, DEFAULT_SERVER_I18N_LOCALE);
+
+  const headers = parseHeaders(config.webhookHeaders);
+  const method = config.webhookMethod === "GET" ? "GET" : "POST";
+  const body = renderCarpoolPayload(config.webhookPayload, message);
+  if (method !== "GET" && !headers.has("content-type")) headers.set("content-type", "text/plain; charset=utf-8");
+
+  const init: RequestInit = { method, headers, signal: AbortSignal.timeout(10_000) };
+  if (method !== "GET") init.body = body;
+
+  const response = await fetch(url.toString(), init);
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Webhook 返回 ${response.status}${text ? `：${text.slice(0, 200)}` : ""}`);
+  }
+}
+
+/** 发送并记录日志（成功/失败原因）；失败会抛出，由调用方决定是否吞掉。 */
 async function sendCarpoolWebhook(
   env: Env,
   userId: string,
@@ -87,9 +131,8 @@ async function sendCarpoolWebhook(
   message: NotificationEmailMessage,
   context: string,
 ): Promise<void> {
-  const { sendChannel } = await import("../../notification-channel-send");
   try {
-    await sendChannel(env, "webhook", carpoolWebhookSettings(config), message, DEFAULT_SERVER_I18N_LOCALE);
+    await sendRawWebhook(config, message);
     await appendCarpoolNotificationLog(env, userId, true, null, context);
   } catch (error) {
     await appendCarpoolNotificationLog(env, userId, false, error instanceof Error ? error.message : String(error), context);
@@ -97,7 +140,7 @@ async function sendCarpoolWebhook(
   }
 }
 
-/** 供「测试」按钮调用：用给定配置发一条测试通知并记日志（配置无效会抛错，由路由转成错误响应）。 */
+/** 供「测试」按钮调用：用给定配置发一条测试通知并记日志（失败会抛错，由路由转成错误响应）。 */
 export async function sendCarpoolTestNotification(env: Env, userId: string, config: CarpoolNotificationConfig): Promise<void> {
   await sendCarpoolWebhook(
     env,
@@ -153,7 +196,6 @@ async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
 /** Cron 入口：为所有开启了拼车通知的用户发送到期推送。 */
 export async function runCarpoolReminders(env: Env): Promise<void> {
   const now = new Date();
-  // Cron 每分钟触发；只扫描「开启了拼车通知」的用户。
   const enabled = await env.DB.prepare(`SELECT user_id FROM carpool_notification WHERE enabled = 1`).all<{ user_id: string }>();
 
   for (const { user_id: userId } of enabled.results ?? []) {
