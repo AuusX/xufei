@@ -47,6 +47,7 @@ const CREATE_TABLE_STATEMENTS = [
     user_id TEXT NOT NULL,
     subscription_id TEXT NOT NULL,
     account TEXT,
+    card_last4 TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id, subscription_id)
@@ -76,6 +77,14 @@ const CREATE_TABLE_STATEMENTS = [
     updated_at TEXT NOT NULL,
     PRIMARY KEY (user_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS carpool_notification_log (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    ok INTEGER NOT NULL,
+    error TEXT,
+    context TEXT
+  )`,
 ];
 
 // 旧版 carpool_member_meta 只有 join_date/expiry_date；这些列在已存在的表上用 ALTER 幂等补齐。
@@ -91,6 +100,17 @@ const MEMBER_META_ADDED_COLUMNS: Array<[name: string, def: string]> = [
   ["reminded_for", "TEXT"],
 ];
 
+const SUBSCRIPTION_META_ADDED_COLUMNS: Array<[name: string, def: string]> = [["card_last4", "TEXT"]];
+
+/** 幂等补列：只对表上缺失的列执行 ALTER ADD COLUMN。 */
+async function migrateColumns(env: Env, table: string, columns: Array<[name: string, def: string]>): Promise<void> {
+  const info = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+  const existing = new Set((info.results ?? []).map((row) => row.name));
+  for (const [name, def] of columns) {
+    if (!existing.has(name)) await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`).run();
+  }
+}
+
 let schemaReady: Promise<void> | null = null;
 
 /** 懒建自定义表并补齐旧表缺列；失败时清空缓存以便下次请求重试。 */
@@ -98,13 +118,8 @@ export function ensureCarpoolSchema(env: Env): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       await env.DB.batch(CREATE_TABLE_STATEMENTS.map((sql) => env.DB.prepare(sql)));
-      const info = await env.DB.prepare(`PRAGMA table_info(carpool_member_meta)`).all<{ name: string }>();
-      const existing = new Set((info.results ?? []).map((row) => row.name));
-      for (const [name, def] of MEMBER_META_ADDED_COLUMNS) {
-        if (!existing.has(name)) {
-          await env.DB.prepare(`ALTER TABLE carpool_member_meta ADD COLUMN ${name} ${def}`).run();
-        }
-      }
+      await migrateColumns(env, "carpool_member_meta", MEMBER_META_ADDED_COLUMNS);
+      await migrateColumns(env, "carpool_subscription_meta", SUBSCRIPTION_META_ADDED_COLUMNS);
     })()
       .then(() => undefined)
       .catch((error) => {
@@ -175,6 +190,8 @@ export interface CarpoolSubscriptionView {
   nextBillingDate: string;
   /** 车辆信息：gpt账号（拼车独有）。 */
   account: string | null;
+  /** 车辆信息：信用卡尾数（拼车独有）。 */
+  cardLast4: string | null;
   enabled: boolean;
   splitMode: CostSharingSplitMode;
   members: CarpoolMemberView[];
@@ -295,13 +312,18 @@ async function fetchOverlayMap(env: Env, userId: string): Promise<Map<string, Ca
   return map;
 }
 
-async function fetchAccountMap(env: Env, userId: string): Promise<Map<string, string>> {
-  const rows = await env.DB.prepare(`SELECT subscription_id, account FROM carpool_subscription_meta WHERE user_id = ?`)
+interface CarMeta {
+  account: string | null;
+  cardLast4: string | null;
+}
+
+async function fetchCarMetaMap(env: Env, userId: string): Promise<Map<string, CarMeta>> {
+  const rows = await env.DB.prepare(`SELECT subscription_id, account, card_last4 FROM carpool_subscription_meta WHERE user_id = ?`)
     .bind(userId)
-    .all<{ subscription_id: string; account: string | null }>();
-  const map = new Map<string, string>();
+    .all<{ subscription_id: string; account: string | null; card_last4: string | null }>();
+  const map = new Map<string, CarMeta>();
   for (const row of rows.results ?? []) {
-    if (row.account) map.set(row.subscription_id, row.account);
+    map.set(row.subscription_id, { account: row.account ?? null, cardLast4: row.card_last4 ?? null });
   }
   return map;
 }
@@ -309,7 +331,7 @@ async function fetchAccountMap(env: Env, userId: string): Promise<Map<string, st
 function buildSubscriptionView(
   row: SubscriptionRow,
   overlayMap: Map<string, CarpoolMemberMeta>,
-  accountMap: Map<string, string>,
+  carMetaMap: Map<string, CarMeta>,
 ): CarpoolSubscriptionView {
   const costSharing = parseCostSharing(row.cost_sharing_json);
   let memberTotal = 0;
@@ -330,7 +352,8 @@ function buildSubscriptionView(
     currency: row.currency,
     status: row.status,
     nextBillingDate: row.next_billing_date,
-    account: accountMap.get(row.id) ?? null,
+    account: carMetaMap.get(row.id)?.account ?? null,
+    cardLast4: carMetaMap.get(row.id)?.cardLast4 ?? null,
     enabled: costSharing.enabled,
     splitMode: costSharing.splitMode,
     members,
@@ -343,7 +366,7 @@ function computeStats(subscriptions: CarpoolSubscriptionView[]): CarpoolPlanStat
   let receivableTotal = 0;
   for (const sub of subscriptions) {
     if (sub.enabled && sub.members.length > 0) activeCars += 1;
-    for (const member of sub.members) receivableTotal += member.amount;
+    for (const member of sub.members) receivableTotal += member.amountCny ?? 0;
   }
   return {
     totalCars: subscriptions.length,
@@ -358,22 +381,22 @@ const SUBSCRIPTION_COLUMNS = "id, name, logo, price, currency, status, next_bill
 /** 列出用户所有 `active`（正在续费）订阅，用于把订阅加入计划的选择器。 */
 export async function listActiveSubscriptions(env: Env, userId: string): Promise<CarpoolSubscriptionView[]> {
   await ensureCarpoolSchema(env);
-  const [subs, overlayMap, accountMap] = await Promise.all([
+  const [subs, overlayMap, carMetaMap] = await Promise.all([
     env.DB.prepare(
       `SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions WHERE user_id = ? AND status = 'active' ORDER BY next_billing_date ASC`,
     )
       .bind(userId)
       .all<SubscriptionRow>(),
     fetchOverlayMap(env, userId),
-    fetchAccountMap(env, userId),
+    fetchCarMetaMap(env, userId),
   ]);
-  return (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap, accountMap));
+  return (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap, carMetaMap));
 }
 
 /** 列出用户的所有拼车计划及其统计。 */
 export async function listCarpoolPlans(env: Env, userId: string): Promise<CarpoolPlanSummary[]> {
   await ensureCarpoolSchema(env);
-  const [plans, rows, overlayMap, accountMap] = await Promise.all([
+  const [plans, rows, overlayMap, carMetaMap] = await Promise.all([
     env.DB.prepare(`SELECT id, name FROM carpool_plan WHERE user_id = ? ORDER BY created_at ASC`)
       .bind(userId)
       .all<{ id: string; name: string }>(),
@@ -386,13 +409,13 @@ export async function listCarpoolPlans(env: Env, userId: string): Promise<Carpoo
       .bind(userId)
       .all<SubscriptionRow & { plan_id: string }>(),
     fetchOverlayMap(env, userId),
-    fetchAccountMap(env, userId),
+    fetchCarMetaMap(env, userId),
   ]);
 
   const viewsByPlan = new Map<string, CarpoolSubscriptionView[]>();
   for (const row of rows.results ?? []) {
     const list = viewsByPlan.get(row.plan_id) ?? [];
-    list.push(buildSubscriptionView(row, overlayMap, accountMap));
+    list.push(buildSubscriptionView(row, overlayMap, carMetaMap));
     viewsByPlan.set(row.plan_id, list);
   }
 
@@ -411,7 +434,7 @@ export async function getCarpoolPlanDetail(env: Env, userId: string, planId: str
     .first<{ id: string; name: string }>();
   if (!plan) return null;
 
-  const [subs, overlayMap, accountMap] = await Promise.all([
+  const [subs, overlayMap, carMetaMap] = await Promise.all([
     env.DB.prepare(
       `SELECT ${SUBSCRIPTION_COLUMNS}
        FROM carpool_plan_subscription ps
@@ -422,10 +445,10 @@ export async function getCarpoolPlanDetail(env: Env, userId: string, planId: str
       .bind(userId, planId)
       .all<SubscriptionRow>(),
     fetchOverlayMap(env, userId),
-    fetchAccountMap(env, userId),
+    fetchCarMetaMap(env, userId),
   ]);
 
-  const subscriptions = (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap, accountMap));
+  const subscriptions = (subs.results ?? []).map((row) => buildSubscriptionView(row, overlayMap, carMetaMap));
   return { id: plan.id, name: plan.name, stats: computeStats(subscriptions), subscriptions };
 }
 
@@ -531,7 +554,7 @@ export async function saveCarpoolMembers(
   env: Env,
   userId: string,
   subscriptionId: string,
-  input: { enabled: boolean; splitMode: CostSharingSplitMode; account?: string | undefined; members: CarpoolMemberInput[] },
+  input: { enabled: boolean; splitMode: CostSharingSplitMode; account?: string | undefined; cardLast4?: string | undefined; members: CarpoolMemberInput[] },
 ): Promise<boolean> {
   await ensureCarpoolSchema(env);
 
@@ -577,8 +600,8 @@ export async function saveCarpoolMembers(
       subscriptionId,
     ),
     env.DB.prepare(
-      `INSERT OR REPLACE INTO carpool_subscription_meta (user_id, subscription_id, account, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-    ).bind(userId, subscriptionId, normalizeText(input.account), now, now),
+      `INSERT OR REPLACE INTO carpool_subscription_meta (user_id, subscription_id, account, card_last4, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(userId, subscriptionId, normalizeText(input.account), normalizeText(input.cardLast4), now, now),
     // overlay 全量重建：先清空该订阅旧行，再写入当前成员。
     env.DB.prepare(`DELETE FROM carpool_member_meta WHERE user_id = ? AND subscription_id = ?`).bind(userId, subscriptionId),
     ...members.map(({ costMember, input: m }) =>
@@ -664,4 +687,57 @@ export async function saveCarpoolNotification(env: Env, userId: string, config: 
       now,
     )
     .run();
+}
+
+/** 拼车通知发送日志（含失败原因）。 */
+export interface CarpoolNotificationLog {
+  id: string;
+  createdAt: string;
+  ok: boolean;
+  error: string | null;
+  context: string | null;
+}
+
+/** 追加一条通知发送日志，并保留每用户最近 30 条。 */
+export async function appendCarpoolNotificationLog(
+  env: Env,
+  userId: string,
+  ok: boolean,
+  error: string | null,
+  context: string | null,
+): Promise<void> {
+  await ensureCarpoolSchema(env);
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO carpool_notification_log (id, user_id, created_at, ok, error, context) VALUES (?, ?, ?, ?, ?, ?)`).bind(
+      crypto.randomUUID(),
+      userId,
+      new Date().toISOString(),
+      ok ? 1 : 0,
+      error ? error.slice(0, 1000) : null,
+      context ? context.slice(0, 500) : null,
+    ),
+    // 只保留最近 30 条，避免日志无限增长。
+    env.DB.prepare(
+      `DELETE FROM carpool_notification_log WHERE user_id = ? AND id NOT IN (
+         SELECT id FROM carpool_notification_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 30
+       )`,
+    ).bind(userId, userId),
+  ]);
+}
+
+/** 读取用户最近的通知发送日志。 */
+export async function listCarpoolNotificationLog(env: Env, userId: string): Promise<CarpoolNotificationLog[]> {
+  await ensureCarpoolSchema(env);
+  const rows = await env.DB.prepare(
+    `SELECT id, created_at, ok, error, context FROM carpool_notification_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 30`,
+  )
+    .bind(userId)
+    .all<{ id: string; created_at: string; ok: number; error: string | null; context: string | null }>();
+  return (rows.results ?? []).map((row) => ({
+    id: row.id,
+    createdAt: row.created_at,
+    ok: row.ok === 1,
+    error: row.error ?? null,
+    context: row.context ?? null,
+  }));
 }

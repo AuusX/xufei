@@ -17,6 +17,7 @@ import {
   getCarpoolNotification,
   getCarpoolPlanDetail,
   listActiveSubscriptions,
+  listCarpoolNotificationLog,
   listCarpoolPlans,
   removeSubscriptionFromPlan,
   renameCarpoolPlan,
@@ -65,6 +66,7 @@ const saveMembersSchema = z
     enabled: z.boolean(),
     splitMode: z.enum(["equal", "custom"]),
     account: z.string().trim().max(200).optional(),
+    cardLast4: z.string().trim().max(50).optional(),
     members: z.array(memberInputSchema).max(50),
   })
   .strict();
@@ -173,14 +175,20 @@ export function registerCarpoolRoutes(app: Hono<AppBindings>): void {
 
   // 用当前表单里的配置发一条测试通知。
   app.post("/api/custom/carpool/notification/test", async (c) => {
-    await requireAuth(c.req.raw, c.env);
+    const auth = await requireAuth(c.req.raw, c.env);
     const config = await readJson(c.req.raw, notificationConfigSchema, requestLocale(c.req.raw));
     if (!config.webhookUrl.trim()) return errorResponse(400, "请先填写 webhook URL", "INVALID_PAYLOAD");
     try {
-      await sendCarpoolTestNotification(c.env, config);
+      await sendCarpoolTestNotification(c.env, auth.user.id, config);
     } catch (error) {
       return errorResponse(502, error instanceof Error ? error.message : "发送失败", "UPSTREAM_FAILED");
     }
     return successJson({ ok: true });
+  });
+
+  // 拼车通知发送历史（含失败原因）。
+  app.get("/api/custom/carpool/notification/log", async (c) => {
+    const auth = await requireAuth(c.req.raw, c.env);
+    return successJson({ log: await listCarpoolNotificationLog(c.env, auth.user.id) });
   });
 }
