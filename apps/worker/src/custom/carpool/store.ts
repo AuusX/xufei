@@ -65,6 +65,17 @@ const CREATE_TABLE_STATEMENTS = [
     created_at TEXT NOT NULL,
     PRIMARY KEY (plan_id, subscription_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS carpool_notification (
+    user_id TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    webhook_url TEXT,
+    webhook_method TEXT,
+    webhook_headers TEXT,
+    webhook_payload TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id)
+  )`,
 ];
 
 // 旧版 carpool_member_meta 只有 join_date/expiry_date；这些列在已存在的表上用 ALTER 幂等补齐。
@@ -597,4 +608,60 @@ export async function saveCarpoolMembers(
 
   await env.DB.batch(statements);
   return true;
+}
+
+/** 拼车专属通知配置（只支持 webhook；系统 webhook 是给订阅用的，这里独立一份，字段照搬系统 webhook）。 */
+export interface CarpoolNotificationConfig {
+  enabled: boolean;
+  webhookUrl: string;
+  webhookMethod: "GET" | "POST";
+  webhookHeaders: string;
+  webhookPayload: string;
+}
+
+const DEFAULT_NOTIFICATION: CarpoolNotificationConfig = {
+  enabled: false,
+  webhookUrl: "",
+  webhookMethod: "POST",
+  webhookHeaders: "",
+  webhookPayload: "",
+};
+
+/** 读取用户的拼车通知配置（无则返回默认）。 */
+export async function getCarpoolNotification(env: Env, userId: string): Promise<CarpoolNotificationConfig> {
+  await ensureCarpoolSchema(env);
+  const row = await env.DB.prepare(
+    `SELECT enabled, webhook_url, webhook_method, webhook_headers, webhook_payload FROM carpool_notification WHERE user_id = ? LIMIT 1`,
+  )
+    .bind(userId)
+    .first<{ enabled: number; webhook_url: string | null; webhook_method: string | null; webhook_headers: string | null; webhook_payload: string | null }>();
+  if (!row) return { ...DEFAULT_NOTIFICATION };
+  return {
+    enabled: row.enabled === 1,
+    webhookUrl: row.webhook_url ?? "",
+    webhookMethod: row.webhook_method === "GET" ? "GET" : "POST",
+    webhookHeaders: row.webhook_headers ?? "",
+    webhookPayload: row.webhook_payload ?? "",
+  };
+}
+
+/** 覆盖保存用户的拼车通知配置。 */
+export async function saveCarpoolNotification(env: Env, userId: string, config: CarpoolNotificationConfig): Promise<void> {
+  await ensureCarpoolSchema(env);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO carpool_notification (user_id, enabled, webhook_url, webhook_method, webhook_headers, webhook_payload, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      userId,
+      config.enabled ? 1 : 0,
+      config.webhookUrl.trim() || null,
+      config.webhookMethod === "GET" ? "GET" : "POST",
+      config.webhookHeaders || null,
+      config.webhookPayload || null,
+      now,
+      now,
+    )
+    .run();
 }

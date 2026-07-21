@@ -14,19 +14,32 @@ import {
   addSubscriptionToPlan,
   createCarpoolPlan,
   deleteCarpoolPlan,
+  getCarpoolNotification,
   getCarpoolPlanDetail,
   listActiveSubscriptions,
   listCarpoolPlans,
   removeSubscriptionFromPlan,
   renameCarpoolPlan,
   saveCarpoolMembers,
+  saveCarpoolNotification,
 } from "./store";
+import { sendCarpoolTestNotification } from "./reminders";
 
 // 与上游 index.ts 的 AppBindings 保持一致，这样 registerCarpoolRoutes(app) 能直接接收上游的 app。
 type AppBindings = { Bindings: Env; Variables: { locale: AppLocale } };
 
 const planNameSchema = z.object({ name: z.string().trim().min(1).max(60) }).strict();
 const addSubscriptionSchema = z.object({ subscriptionId: z.string().min(1).max(64) }).strict();
+
+const notificationConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    webhookUrl: z.string().trim().max(2000),
+    webhookMethod: z.enum(["GET", "POST"]),
+    webhookHeaders: z.string().max(20_000),
+    webhookPayload: z.string().max(100_000),
+  })
+  .strict();
 
 const memberInputSchema = z
   .object({
@@ -139,6 +152,35 @@ export function registerCarpoolRoutes(app: Hono<AppBindings>): void {
     const body = await readJson(c.req.raw, saveMembersSchema, requestLocale(c.req.raw));
     const found = await saveCarpoolMembers(c.env, auth.user.id, subscriptionId, body);
     if (!found) return errorResponse(404, "Subscription not found", "NOT_FOUND");
+    return successJson({ ok: true });
+  });
+
+  // ---- 拼车专属通知（webhook） ----
+
+  // 读取拼车通知配置。
+  app.get("/api/custom/carpool/notification", async (c) => {
+    const auth = await requireAuth(c.req.raw, c.env);
+    return successJson({ notification: await getCarpoolNotification(c.env, auth.user.id) });
+  });
+
+  // 保存拼车通知配置。
+  app.put("/api/custom/carpool/notification", async (c) => {
+    const auth = await requireAuth(c.req.raw, c.env);
+    const config = await readJson(c.req.raw, notificationConfigSchema, requestLocale(c.req.raw));
+    await saveCarpoolNotification(c.env, auth.user.id, config);
+    return successJson({ notification: config });
+  });
+
+  // 用当前表单里的配置发一条测试通知。
+  app.post("/api/custom/carpool/notification/test", async (c) => {
+    await requireAuth(c.req.raw, c.env);
+    const config = await readJson(c.req.raw, notificationConfigSchema, requestLocale(c.req.raw));
+    if (!config.webhookUrl.trim()) return errorResponse(400, "请先填写 webhook URL", "INVALID_PAYLOAD");
+    try {
+      await sendCarpoolTestNotification(c.env, config);
+    } catch (error) {
+      return errorResponse(502, error instanceof Error ? error.message : "发送失败", "UPSTREAM_FAILED");
+    }
     return successJson({ ok: true });
   });
 }
