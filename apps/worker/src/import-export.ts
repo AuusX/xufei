@@ -17,6 +17,7 @@ import { requestLocale, readJsonWithLimit, HttpError, successJson, type AppLocal
 import { serverText } from "./server-i18n";
 import { requireAuth } from "./auth";
 import { normalizeSubscriptionBodyForStorage, subscriptionRowValues, toSubscriptionRow, type SubscriptionBody } from "./subscriptions";
+import { refreshSubscriptionDerivedState } from "./subscription-derived-state";
 import { refreshSubscriptionSchedulerState } from "./subscription-scheduler-state";
 import type { Env, SubscriptionRow } from "./types";
 
@@ -72,6 +73,7 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
   const statements: D1PreparedStatement[] = [];
   const existingMatches = buildExistingImportMatches(existing);
   let wroteSubscriptions = false;
+  let wroteSettings = false;
   for (const item of preview.items) {
     if (item.action !== "create" && item.action !== "replace") continue;
     const source = preview.normalizedByIndex.get(item.index);
@@ -127,6 +129,7 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
   }
 
   if (body.payload.settings) {
+    wroteSettings = true;
     const current = await getSettings(env, auth.user.id);
     const next = mergeSettingsPatch(current, body.payload.settings);
     // settings merge 先套默认值和清洗规则，再写 JSON；导入文件不能绕过设置页契约塞入未知字段。
@@ -151,7 +154,9 @@ export async function applyImport(request: Request, env: Env): Promise<Response>
     await env.DB.batch(statements);
   }
   if (wroteSubscriptions) {
-    await refreshSubscriptionSchedulerState(env, auth.user.id, { resetAutoRenewCheck: true });
+    await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
+  } else if (wroteSettings) {
+    await refreshSubscriptionSchedulerState(env, auth.user.id, { resetAutoRenewCheck: false });
   }
   return successJson(importApplyPayloadSchema.parse(publicPreview(preview)));
 }

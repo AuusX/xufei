@@ -499,7 +499,10 @@ describe("Statistics page", () => {
       expect(tooltip).toHaveTextContent("1月20日");
       expect(tooltip).toHaveTextContent("Monthly");
       expect(tooltip).toHaveTextContent("1月15日");
-      const tooltipDateBadge = within(tooltip).getAllByText("1月20日")[0];
+      const annualDateBadges = within(tooltip).getAllByText("1月20日");
+      expect(annualDateBadges).toHaveLength(1);
+      expect(within(tooltip).getAllByText("1月15日")).toHaveLength(1);
+      const tooltipDateBadge = annualDateBadges[0];
       if (!tooltipDateBadge) {
         throw new Error("Expected trend tooltip to render a compact date badge.");
       }
@@ -651,7 +654,8 @@ describe("Statistics page", () => {
       expect(screen.getByText("按当前有效订阅组合估算未来 12 个月的月均成本归属。")).toBeInTheDocument();
       const tooltip = getLastTrendTooltip();
       expect(tooltip).toHaveTextContent("月均摊销");
-      expect(tooltip).toHaveTextContent("月均归属");
+      expect(within(tooltip).getAllByText("月均").length).toBeGreaterThan(0);
+      expect(within(tooltip).queryByText("月均归属")).not.toBeInTheDocument();
       expect(tooltip).toHaveTextContent("还有 2 个订阅");
       expect(screen.getByRole("heading", { name: "2026年2月 明细" })).toBeInTheDocument();
       expect(screen.getByRole("list", { name: "2026年2月 明细" })).toHaveTextContent("月均");

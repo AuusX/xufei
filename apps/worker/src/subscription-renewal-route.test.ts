@@ -31,27 +31,51 @@ function envFixture(row: SubscriptionRow | null) {
   let updateParams: unknown[] | null = null;
   const env = {
     DB: {
-      prepare: vi.fn((sql: string) => ({
-        bind: (...params: unknown[]) => ({
+      prepare: vi.fn((sql: string) => {
+        const statement = {
+          bind: (...params: unknown[]) => ({
           first: vi.fn(async () => {
-            if (sql.includes("FROM subscriptions")) {
+            if (sql.includes("FROM subscriptions") && !sql.includes("SUM(CASE WHEN auto_renew")) {
               subscriptionLookupParams = params;
               return row;
+            }
+            if (sql.includes("SUM(CASE WHEN auto_renew")) {
+              return {
+                auto_renew_count: row?.auto_renew === 1 ? 1 : 0,
+                repeat_reminder_count: row?.repeat_reminder_enabled === 1 ? 1 : 0,
+              };
             }
             if (sql.includes("SELECT settings_json FROM settings")) {
               return null;
             }
+            if (sql.includes("FROM subscription_scheduler_state")) {
+              return null;
+            }
             throw new Error(`unexpected first query: ${sql}`);
+          }),
+          all: vi.fn(async <T>() => {
+            if (sql.includes("FROM subscriptions")) {
+              return { success: true, meta: {}, results: row ? [row] as T[] : [] } as D1Result<T>;
+            }
+            return { success: true, meta: {}, results: [] as T[] } as D1Result<T>;
           }),
           run: vi.fn(async () => {
             if (sql.includes("UPDATE subscriptions SET next_billing_date")) {
               updateParams = params;
               return { success: true, meta: { changes: 1 } };
             }
-            throw new Error(`unexpected run query: ${sql}`);
+            return { success: true, meta: { changes: 1 }, results: [] };
           }),
-        }),
-      })),
+          }),
+        };
+        return statement;
+      }),
+      batch: vi.fn(async (statements: D1PreparedStatement[]) => {
+        for (const statement of statements) {
+          await statement.run();
+        }
+          return statements.map(() => ({ success: true, meta: { changes: 1 }, results: [] }) as unknown as D1Result);
+      }),
     } as unknown as D1Database,
     ASSETS: {} as Fetcher,
     ASSETS_BUCKET: {} as R2Bucket,

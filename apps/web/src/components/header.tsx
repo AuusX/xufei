@@ -12,7 +12,8 @@
 import Link, { NavLink } from '@/components/router-link';
 import { useRouter } from '@/lib/router';
 import { LayoutDashboard, List, CalendarDays, BarChart3, Settings, Sun, Moon, LogOut } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { SubscriptionDraft } from '@/types/subscription';
 import { Button } from '@/components/ui/button';
@@ -25,6 +26,8 @@ import { AddSubscriptionDialog } from '@/components/add-subscription-dialog';
 import { SystemUpdateDialog } from '@/components/system-update-dialog';
 import { useI18n } from '@/i18n/I18nProvider';
 import type { MessageKey } from '@/i18n/messages';
+import { scheduleAuthenticatedRoutePreloads, useRoutePreloadPending } from '@/lib/route-resources';
+import { cn } from '@/lib/utils';
 
 interface HeaderProps {
   /** 新增订阅回调（传入订阅主体数据，不包含 id）。不传则隐藏“新增订阅”按钮。 */
@@ -64,12 +67,19 @@ function renderNavIcon(icon: NavIconKey, className: string) {
 /** Header 组件：全局导航 + 主题切换 + 新增订阅入口。 */
 export function Header({ onAddSubscription, availableTags, subscriptionActions }: HeaderProps) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
   const { t } = useI18n();
   const { data: sessionData } = authClient.useSession();
   const [systemDialogOpen, setSystemDialogOpen] = useState(false);
   const isAuthenticated = Boolean(sessionData?.user);
+  const isRoutePreloadPending = useRoutePreloadPending();
+
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    return scheduleAuthenticatedRoutePreloads(queryClient);
+  }, [isAuthenticated, queryClient]);
 
   /**
    * Header 是全局快捷开关，只写本机偏好；账户级外观草稿必须从 Settings 页外观控件产生。
@@ -99,6 +109,14 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
 
   return (
     <header className={headerLayout.shell} data-testid="app-header">
+      <div
+        aria-hidden="true"
+        data-testid="app-header-route-preload-indicator"
+        className={cn(
+          "pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-primary transition-opacity duration-200",
+          isRoutePreloadPending ? "opacity-100" : "opacity-0",
+        )}
+      />
       <div className={headerLayout.inner} data-testid="app-header-inner">
         <div className={headerLayout.primaryCluster}>
           <div className={headerLayout.brandCluster}>

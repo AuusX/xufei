@@ -25,7 +25,6 @@ import {
 } from "@renewlet/shared/schemas/cloud-backup";
 import { renewletExportV1Schema, type RenewletExportAsset } from "@renewlet/shared/schemas/import-export";
 // Cloudflare 云备份在 D1 保存策略与锁、R2 保存 ZIP，对外只暴露脱敏后的上游错误详情。
-import type { ApiAppSettings } from "@renewlet/shared/schemas/settings";
 import {
   boolToInt,
   getAsset,
@@ -49,7 +48,8 @@ import {
   type CloudBackupRemoteClient,
 } from "./cloud-backup-remote";
 import { cloudBackupProviderFromRequest, cloudBackupProviderParameterError } from "./cloud-backup-provider";
-import { cloudBackupTargetDue, createDefaultFallbackSettings } from "./cloud-backup-schedule";
+import { cloudBackupNextRunAt, cloudBackupTargetDue, createDefaultFallbackSettings } from "./cloud-backup-schedule";
+import { sanitizeSettingsForCloudBackup } from "./cloud-backup-sanitize";
 import { deleteCloudBackupFromTargets, downloadCloudBackupFromTargets, type CloudBackupTarget } from "./cloud-backup-snapshot-resolve";
 import { bytesForFetchBody, extensionFromMime, parseJsonObject, privateAssetIdFromLogo } from "./cloud-backup-utils";
 import type { CloudBackupTargetRow, Env, UserRow } from "./types";
@@ -68,6 +68,7 @@ const CLOUD_BACKUP_COLUMNS = [
   "last_status",
   "last_error",
   "locked_until",
+  "next_run_at_utc",
   "created_at",
   "updated_at",
 ] as const;
@@ -111,6 +112,7 @@ type ResolvedCloudBackupTarget = {
   lastStatus: "idle" | "success" | "failed";
   lastError: string | null;
   lockedUntil: string | null;
+  nextRunAt: string | null;
   updatedAt: string | null;
 };
 
@@ -130,28 +132,6 @@ type ExportAsset = RenewletExportAsset & {
 };
 
 type ServerTextKey = Parameters<typeof serverText>[1];
-
-const SECRET_SETTING_KEYS: Array<keyof ApiAppSettings> = [
-  "testPhone",
-  "telegramBotToken",
-  "telegramChatId",
-  "notifyxApiKey",
-  "webhookUrl",
-  "webhookHeaders",
-  "webhookPayload",
-  "wechatWebhookUrl",
-  "wechatAtPhones",
-  "smtpHost",
-  "smtpPort",
-  "smtpSecure",
-  "smtpUser",
-  "smtpPassword",
-  "smtpFrom",
-  "smtpReplyTo",
-  "recipientEmail",
-  "barkServerUrl", "barkDeviceKey", "serverchanSendKey",
-  "discordWebhookUrl", "discordBotUsername", "discordBotAvatarUrl", "pushplusToken",
-];
 
 export async function readCloudBackupConfig(request: Request, env: Env): Promise<Response> {
   const auth = await requireAuth(request, env);
@@ -278,14 +258,23 @@ export async function deleteCloudBackup(request: Request, env: Env, id: string):
 
 export async function runDueCloudBackups(env: Env, now = new Date()): Promise<void> {
   const groups = new Map<string, { user: UserRow; targets: ConfiguredCloudBackupTarget[] }>();
-  for (let offset = 0; ; offset += CLOUD_BACKUP_PAGE_SIZE) {
+  const seenTargets = new Set<string>();
+  for (;;) {
+    // next_run_at_utc 是 scheduled 热路径索引；NULL 只表示迁移/保存前待修复，仍需进入单目标 due 判断。
     const rows = await env.DB.prepare(`
       SELECT ${CLOUD_BACKUP_CONFIG_COLUMNS} FROM cloud_backup_targets
-      WHERE schedule_enabled = 1
-      ORDER BY updated_at ASC
-      LIMIT ? OFFSET ?
-    `).bind(CLOUD_BACKUP_PAGE_SIZE, offset).all<CloudBackupTargetRow>();
-    for (const row of rows.results) {
+      WHERE schedule_enabled = 1 AND (next_run_at_utc IS NULL OR next_run_at_utc <= ?)
+      ORDER BY next_run_at_utc IS NOT NULL, next_run_at_utc ASC, updated_at ASC
+      LIMIT ?
+    `).bind(now.toISOString(), CLOUD_BACKUP_PAGE_SIZE).all<CloudBackupTargetRow>();
+    const runnableRows = rows.results.filter((row) => {
+      const key = `${row.user_id}:${row.provider}`;
+      if (seenTargets.has(key)) return false;
+      seenTargets.add(key);
+      return true;
+    });
+    if (runnableRows.length === 0) break;
+    for (const row of runnableRows) {
       const target = rowToTarget(row);
       const user = await env.DB.prepare("SELECT id, email, name, role, banned, ban_reason, password_hash, reset_token_hash, reset_token_expires_at, created_at, updated_at FROM users WHERE id = ? LIMIT 1")
         .bind(target.userId)
@@ -295,7 +284,10 @@ export async function runDueCloudBackups(env: Env, now = new Date()): Promise<vo
         continue;
       }
       const settings = await getSettings(env, target.userId).catch(() => createDefaultFallbackSettings());
-      if (!cloudBackupTargetDue(target, settings.timezone, now)) continue;
+      if (!cloudBackupTargetDue(target, settings.timezone, now)) {
+        await updateCloudBackupNextRun(env, target, settings.timezone, now);
+        continue;
+      }
       if (!(await acquireCloudBackupLock(env, target.userId, target.provider, now))) continue;
       try {
         const configuredTarget = configuredTargetFromResolvedTarget(target, requestLocaleFromDefault());
@@ -303,6 +295,7 @@ export async function runDueCloudBackups(env: Env, now = new Date()): Promise<vo
         group.targets.push(configuredTarget);
         groups.set(target.userId, group);
       } catch (error) {
+        // 配置/密钥错误是目标级失败；保持 due 时间不推进，让用户修正配置前仍保留可见失败状态。
         await markCloudBackupStatus(env, target.userId, target.provider, "failed", persistedCloudBackupErrorMessage(error));
       }
     }
@@ -315,6 +308,7 @@ export async function runDueCloudBackups(env: Env, now = new Date()): Promise<vo
       payload = await buildCloudBackupSnapshotPayload(env, userId);
     } catch (error) {
       for (const target of group.targets) {
+        // ZIP 构建失败影响同一用户本轮所有目标，但不推进 next_run_at，保持原有每分钟重试语义。
         await markCloudBackupStatus(env, userId, target.provider, "failed", persistedCloudBackupErrorMessage(error));
       }
       continue;
@@ -323,6 +317,7 @@ export async function runDueCloudBackups(env: Env, now = new Date()): Promise<vo
       try {
         await uploadCloudBackupSnapshotToTarget(env, userId, payload, target);
       } catch (error) {
+        // 远端上传失败只落 provider 状态；成功目标仍独立推进，失败目标下一分钟继续 due。
         await markCloudBackupStatus(env, userId, target.provider, "failed", persistedCloudBackupErrorMessage(error));
       }
     }
@@ -424,12 +419,14 @@ async function saveCloudBackupConfig(env: Env, userId: string, body: CloudBackup
   const current = await getCloudBackupTarget(env, userId, body.provider);
   const next = targetFromUpdate(userId, body, current);
   const timestamp = nowIso();
+  const settings = await getSettings(env, userId).catch(() => createDefaultFallbackSettings());
+  const nextRunAt = cloudBackupNextRunAt(next, settings.timezone, new Date());
   // user+provider 是 D1 唯一写入边界；credential_json 永远独立存储并由 DTO 脱敏成 credentialSet。
   await env.DB.prepare(`
     INSERT INTO cloud_backup_targets (
       user_id, provider, config_json, credential_json, schedule_enabled, schedule_frequency, schedule_time,
-      schedule_weekday, retention, last_status, last_error, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', NULL, ?, ?)
+      schedule_weekday, retention, last_status, last_error, next_run_at_utc, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', NULL, ?, ?, ?)
     ON CONFLICT(user_id, provider) DO UPDATE SET
       config_json = excluded.config_json,
       credential_json = excluded.credential_json,
@@ -438,6 +435,7 @@ async function saveCloudBackupConfig(env: Env, userId: string, body: CloudBackup
       schedule_time = excluded.schedule_time,
       schedule_weekday = excluded.schedule_weekday,
       retention = excluded.retention,
+      next_run_at_utc = excluded.next_run_at_utc,
       updated_at = excluded.updated_at
   `).bind(
     userId,
@@ -449,6 +447,7 @@ async function saveCloudBackupConfig(env: Env, userId: string, body: CloudBackup
     next.policy.scheduleTime,
     next.policy.scheduleWeekday,
     next.policy.retention,
+    nextRunAt,
     timestamp,
     timestamp,
   ).run();
@@ -477,6 +476,7 @@ function rowToTarget(row: CloudBackupTargetRow): ResolvedCloudBackupTarget {
     lastStatus: row.last_status || "idle",
     lastError: row.last_error,
     lockedUntil: row.locked_until,
+    nextRunAt: row.next_run_at_utc ?? null,
     updatedAt: row.updated_at,
     ...(webdav ? { webdav } : {}),
     ...(s3 ? { s3 } : {}),
@@ -503,6 +503,7 @@ function defaultTarget(userId: string, provider: CloudBackupProvider): ResolvedC
     lastStatus: "idle",
     lastError: null,
     lockedUntil: null,
+    nextRunAt: null,
     updatedAt: null,
   };
 }
@@ -648,20 +649,6 @@ async function buildCloudBackupExportZip(env: Env, userId: string): Promise<{ co
   return { content: createStoredZip(zipEntries, exportedAt), exportedAt };
 }
 
-export function sanitizeSettingsForCloudBackup(settings: ApiAppSettings): Partial<ApiAppSettings> {
-  const sanitized = { ...settings } as Partial<ApiAppSettings> & Record<string, unknown>;
-  // 普通云快照用于恢复订阅数据，不是 secrets 备份；新增外部通知字段必须进入这组剔除边界。
-  for (const key of SECRET_SETTING_KEYS) delete sanitized[key];
-  if (sanitized.aiRecognition) {
-    sanitized.aiRecognition = {
-      ...sanitized.aiRecognition,
-      baseUrl: "",
-      apiKey: "",
-    };
-  }
-  return sanitized;
-}
-
 async function readExportAsset(env: Env, userId: string, assetId: string): Promise<ExportAsset | null> {
   const row = await getAsset(env, userId, assetId);
   if (!row) return null;
@@ -708,11 +695,14 @@ async function enforceRetention(client: CloudBackupRemoteClient, retention: numb
 }
 
 async function markCloudBackupSuccess(env: Env, userId: string, provider: CloudBackupProvider, backupAt: string): Promise<void> {
+  const target = await getCloudBackupTarget(env, userId, provider);
+  const settings = await getSettings(env, userId).catch(() => createDefaultFallbackSettings());
+  const nextRunAt = cloudBackupNextRunAt({ ...target, lastBackupAt: backupAt }, settings.timezone, new Date(backupAt));
   await env.DB.prepare(`
     UPDATE cloud_backup_targets
-    SET last_backup_at = ?, last_status = 'success', last_error = NULL, locked_until = NULL, updated_at = ?
+    SET last_backup_at = ?, last_status = 'success', last_error = NULL, locked_until = NULL, next_run_at_utc = ?, updated_at = ?
     WHERE user_id = ? AND provider = ?
-  `).bind(backupAt, nowIso(), userId, provider).run();
+  `).bind(backupAt, nextRunAt, nowIso(), userId, provider).run();
 }
 
 async function markCloudBackupStatus(env: Env, userId: string, provider: CloudBackupProvider, status: "idle" | "success" | "failed", message: string): Promise<void> {
@@ -731,6 +721,15 @@ async function acquireCloudBackupLock(env: Env, userId: string, provider: CloudB
     WHERE user_id = ? AND provider = ? AND (locked_until IS NULL OR locked_until = '' OR locked_until <= ?)
   `).bind(lockedUntil, nowIso(), userId, provider, now.toISOString()).run();
   return (result.meta.changes ?? 0) > 0;
+}
+
+async function updateCloudBackupNextRun(env: Env, target: ResolvedCloudBackupTarget, timezone: string, now: Date): Promise<void> {
+  // next_run_at 是 Cron due-index；非 due 旧行只推进索引，不改 last_status，避免把用户可见审计状态伪装成成功。
+  await env.DB.prepare(`
+    UPDATE cloud_backup_targets
+    SET next_run_at_utc = ?, updated_at = ?
+    WHERE user_id = ? AND provider = ?
+  `).bind(cloudBackupNextRunAt(target, timezone, now), nowIso(), target.userId, target.provider).run();
 }
 
 function snapshotsFromManifests(provider: CloudBackupProvider, manifests: CloudBackupSnapshotManifest[]): CloudBackupSnapshot[] {

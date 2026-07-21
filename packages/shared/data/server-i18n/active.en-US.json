@@ -226,6 +226,8 @@
   "rateLimit.tooManyRequests": "Too many requests. Please try again later",
   "service.barkDeviceKey": "Bark device key",
   "service.barkServerURL": "Bark server URL",
+  "service.dingtalkResponseInvalid": "Invalid DingTalk bot response",
+  "service.dingtalkWebhookURL": "DingTalk bot Webhook URL",
   "service.discordBotAvatarURL": "Discord bot avatar URL",
   "service.discordWebhookURL": "Discord Webhook URL",
   "service.notifyxAPIKey": "NotifyX API key",

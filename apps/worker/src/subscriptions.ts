@@ -13,7 +13,7 @@ import {
 import { boolToInt, getSettings, getSubscription, newId, nowIso, parseJsonObject, parseStringArray, parseSubscriptionCursor, subscriptionCursor, toApiSubscription } from "./db";
 import { listSubscriptionsForQuery } from "./subscription-list-filters";
 import { advanceSubscriptionRenewal, dateOnlyInZone } from "./subscription-renewal";
-import { refreshSubscriptionSchedulerState } from "./subscription-scheduler-state";
+import { refreshSubscriptionDerivedState } from "./subscription-derived-state";
 import { HttpError, ok, readJson, readOptionalJson, requestLocale, successJson } from "./http";
 import { serverText } from "./server-i18n";
 import { requireAuth } from "./auth";
@@ -82,7 +82,7 @@ export async function createSubscription(request: Request, env: Env): Promise<Re
       reminder_days, repeat_reminder_enabled, repeat_reminder_interval, repeat_reminder_window, cost_sharing_json, extra_json, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(...subscriptionRowValues(row)).run();
-  await refreshSubscriptionSchedulerState(env, auth.user.id, { resetAutoRenewCheck: true });
+  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
   return successJson(subscriptionPayloadSchema.parse({ subscription: toApiSubscription(row) }), { status: 201 });
 }
 
@@ -138,7 +138,7 @@ export async function updateSubscription(request: Request, env: Env, id: string)
     auth.user.id,
     id,
   ).run();
-  await refreshSubscriptionSchedulerState(env, auth.user.id, { resetAutoRenewCheck: true });
+  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
   return successJson(subscriptionPayloadSchema.parse({ subscription: toApiSubscription(merged) }));
 }
 
@@ -147,7 +147,7 @@ export async function deleteSubscription(request: Request, env: Env, id: string)
   const auth = await requireAuth(request, env);
   const result = await env.DB.prepare("DELETE FROM subscriptions WHERE user_id = ? AND id = ?").bind(auth.user.id, id).run();
   if ((result.meta.changes ?? 0) === 0) throw new HttpError(404, serverText(locale, "subscription.notFound"));
-  await refreshSubscriptionSchedulerState(env, auth.user.id, { resetAutoRenewCheck: true });
+  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
   return ok();
 }
 
@@ -169,6 +169,7 @@ export async function renewSubscription(request: Request, env: Env, id: string):
     UPDATE subscriptions SET next_billing_date = ?, status = ?, updated_at = ?
     WHERE user_id = ? AND id = ?
   `).bind(merged.next_billing_date, merged.status, timestamp, auth.user.id, id).run();
+  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
   return successJson(subscriptionPayloadSchema.parse({ subscription: toApiSubscription(merged) }));
 }
 

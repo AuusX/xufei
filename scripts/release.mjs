@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryOwner = "zhiyingzzhou";
@@ -122,13 +122,15 @@ function latestStableTag() {
     .find((tag) => /^v\d+\.\d+\.\d+$/.test(tag));
 }
 
-function allowedNextVersions(previousVersion) {
+export function allowedNextVersions(previousVersion) {
   const { major, minor, patch } = versionParts(previousVersion);
-  return [
+  // patch 段同时承担常规补丁和 hotfix 子线：0.2.9 可继续 0.2.10，也可开 0.2.91。
+  return [...new Set([
     `${major}.${minor}.${patch + 1}`,
+    `${major}.${minor}.${patch * 10 + 1}`,
     `${major}.${minor + 1}.0`,
     `${major + 1}.0.0`,
-  ];
+  ])];
 }
 
 function validateNextVersion(rawVersion) {
@@ -149,7 +151,7 @@ function validateNextVersion(rawVersion) {
   const previousVersion = normalizeVersion(latestTag);
   const allowed = allowedNextVersions(previousVersion);
   if (!allowed.includes(version)) {
-    // 发布序列必须连续，防止手填 0.5.0 这类合法但会误导升级节奏的跳号版本。
+    // prepare 只看最新稳定 tag 的下一组合法目标，避免手填 0.5.0 这类合法但会误导升级节奏的跳号版本。
     fail(`Invalid next release ${version}. Latest stable is ${latestTag}; allowed next versions: ${allowed.join(", ")}.`);
   }
 
@@ -397,37 +399,48 @@ function packageDocker(rawVersion) {
   console.log(zipPath);
 }
 
-const args = parseArgs(process.argv.slice(2));
-const command = args._[0];
+function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  const command = args._[0];
 
-switch (command) {
-  case "validate-version": {
-    const version = normalizeVersion(args._[1]);
-    console.log(version);
-    break;
+  switch (command) {
+    case "validate-version": {
+      const version = normalizeVersion(args._[1]);
+      console.log(version);
+      break;
+    }
+    case "validate-package-versions":
+      validatePackageVersions(args._[1]);
+      break;
+    case "validate-next-version":
+      validateNextVersion(args._[1]);
+      break;
+    case "sync-version":
+      syncVersion(args._[1]);
+      break;
+    case "notes":
+      process.stdout.write(markdownNotes(args.version, args.previous));
+      break;
+    case "docker-tags":
+      process.stdout.write(`${dockerTags(args._[1]).join("\n")}\n`);
+      break;
+    case "package-docker":
+      packageDocker(args._[1]);
+      break;
+    case "release-body":
+      process.stdout.write(releaseBody(args.version, args.previous));
+      break;
+    default:
+      usage();
+      process.exit(command ? 1 : 0);
   }
-  case "validate-package-versions":
-    validatePackageVersions(args._[1]);
-    break;
-  case "validate-next-version":
-    validateNextVersion(args._[1]);
-    break;
-  case "sync-version":
-    syncVersion(args._[1]);
-    break;
-  case "notes":
-    process.stdout.write(markdownNotes(args.version, args.previous));
-    break;
-  case "docker-tags":
-    process.stdout.write(`${dockerTags(args._[1]).join("\n")}\n`);
-    break;
-  case "package-docker":
-    packageDocker(args._[1]);
-    break;
-  case "release-body":
-    process.stdout.write(releaseBody(args.version, args.previous));
-    break;
-  default:
-    usage();
-    process.exit(command ? 1 : 0);
+}
+
+function isEntrypoint() {
+  const scriptPath = process.argv[1];
+  return Boolean(scriptPath) && import.meta.url === pathToFileURL(resolve(scriptPath)).href;
+}
+
+if (isEntrypoint()) {
+  main();
 }

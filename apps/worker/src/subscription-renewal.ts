@@ -5,7 +5,8 @@ import {
   type SubscriptionRenewalResult,
 } from "@renewlet/shared/subscription-renewal";
 import { getSettings, nowIso, SUBSCRIPTION_COLUMNS } from "./db";
-import { getSubscriptionSchedulerState, markAutoRenewCheckedForLocalDate } from "./subscription-scheduler-state";
+import { refreshSubscriptionDerivedState } from "./subscription-derived-state";
+import { getSubscriptionSchedulerState, listAutoRenewDueUsers, markAutoRenewCheckedForLocalDate, refreshSubscriptionSchedulerState } from "./subscription-scheduler-state";
 import type { Env, SubscriptionRow, SubscriptionSchedulerStateRow } from "./types";
 
 const RENEWAL_MAINTENANCE_PAGE_SIZE = 500;
@@ -34,15 +35,14 @@ export function dateOnlyInZone(date: Date, timezone: string): string {
 export async function renewAutoSubscriptionsForAllUsers(env: Env, now = new Date()): Promise<{ usersProcessed: number; subscriptionsUpdated: number }> {
   let usersProcessed = 0;
   let subscriptionsUpdated = 0;
-  for (let offset = 0; ; offset += RENEWAL_MAINTENANCE_PAGE_SIZE) {
-    const users = await env.DB.prepare("SELECT id FROM users WHERE banned = 0 ORDER BY id LIMIT ? OFFSET ?")
-      .bind(RENEWAL_MAINTENANCE_PAGE_SIZE, offset)
-      .all<{ id: string }>();
-    for (const user of users.results) {
-      subscriptionsUpdated += await renewAutoSubscriptionsForUser(env, user.id, now);
+  // 顶层只消费 scheduler due-index；真正的本地日期幂等仍在单用户入口判断，避免索引脏值造成误续订。
+  for (;;) {
+    const users = await listAutoRenewDueUsers(env, now, RENEWAL_MAINTENANCE_PAGE_SIZE);
+    for (const user of users) {
+      subscriptionsUpdated += await renewAutoSubscriptionsForUser(env, user.user_id, now);
       usersProcessed += 1;
     }
-    if (users.results.length < RENEWAL_MAINTENANCE_PAGE_SIZE) break;
+    if (users.length < RENEWAL_MAINTENANCE_PAGE_SIZE) break;
   }
   return { usersProcessed, subscriptionsUpdated };
 }
@@ -65,7 +65,12 @@ export async function renewAutoSubscriptionsForUserInTimezone(
   if (!userId) return 0;
   const today = dateOnlyInZone(now, timezone);
   const state = cachedState ?? await getSubscriptionSchedulerState(env, userId);
-  if (state.auto_renew_count <= 0 || state.last_auto_renew_local_date === today) return 0;
+  if (state.auto_renew_count <= 0) return 0;
+  if (state.last_auto_renew_local_date === today) {
+    // 被旧 due 选中的用户如果今天已检查，只推进 gate，不再触碰 subscriptions 候选查询。
+    await refreshSubscriptionSchedulerState(env, userId, { resetAutoRenewCheck: false, now });
+    return 0;
+  }
   let updated = 0;
   for (;;) {
     let pageUpdated = 0;
@@ -86,6 +91,9 @@ export async function renewAutoSubscriptionsForUserInTimezone(
     // 本轮更新后继续从头查，保证一次 cron 能追上跨多期过期订阅，同时不会依赖被改写的游标。
     if (pageUpdated === 0 || rows.results.length < RENEWAL_MAINTENANCE_PAGE_SIZE) {
       await markAutoRenewCheckedForLocalDate(env, userId, today);
+      if (updated > 0) {
+        await refreshSubscriptionDerivedState(env, userId, { resetAutoRenewCheck: false, now });
+      }
       return updated;
     }
   }

@@ -37,7 +37,7 @@ type upstreamOperationError struct {
 	timedOut bool
 }
 
-var upstreamSignedQueryValueRe = regexp.MustCompile(`(?i)([?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|Expires|access_key|accessKey|api_key|apikey|token|sendkey|sendKey|key)=)[^&\s"'<>]+`)
+var upstreamSignedQueryValueRe = regexp.MustCompile(`(?i)([?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sign|Expires|access_key|accessKey|api_key|apikey|token|sendkey|sendKey|key)=)[^&\s"'<>]+`)
 
 func (err *upstreamOperationError) Error() string {
 	if err == nil {

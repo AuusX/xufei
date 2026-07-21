@@ -27,6 +27,8 @@ function getNotificationChannelSummary(settings: AppSettings, channel: Notificat
       return settings.webhookUrl.trim()
         ? t("settings.channel.webhookReady", { method: settings.webhookMethod })
         : t("settings.channel.webhookTodo");
+    case 'dingtalk':
+      return settings.dingtalkWebhookUrl.trim() ? t("settings.channel.dingtalkReady") : t("settings.channel.dingtalkTodo");
     case 'wechat':
       return settings.wechatWebhookUrl.trim() ? t("settings.channel.wechatReady") : t("settings.channel.wechatTodo");
     case 'email':

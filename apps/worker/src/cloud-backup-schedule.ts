@@ -21,6 +21,18 @@ export function cloudBackupTargetDue(target: CloudBackupScheduleTarget, timezone
   return last.getTime() < scheduledAt.getTime();
 }
 
+export function cloudBackupNextRunAt(target: CloudBackupScheduleTarget, timezone: string, now: Date): string | null {
+  if (!target.policy.scheduleEnabled) return null;
+  const scheduledAt = latestCloudBackupScheduledInstant(now, timezone, target.policy);
+  // 返回“仍欠账的最近计划点”而不是强行算未来时间；失败重试必须复用同一个 due instant。
+  if (scheduledAt && scheduledAt.getTime() <= now.getTime()) {
+    if (!target.lastBackupAt) return scheduledAt.toISOString();
+    const last = new Date(target.lastBackupAt);
+    if (Number.isNaN(last.getTime()) || last.getTime() < scheduledAt.getTime()) return scheduledAt.toISOString();
+  }
+  return nextCloudBackupScheduledInstant(now, timezone, target.policy)?.toISOString() ?? null;
+}
+
 export function createDefaultFallbackSettings(): ApiAppSettings {
   return createDefaultAppSettings();
 }
@@ -39,6 +51,24 @@ function latestCloudBackupScheduledInstant(now: Date, timezone: string, policy: 
     scheduled = new Date(zonedWallTimeToUtc(scheduledDate, policy.scheduleTime, safeTimezone));
   }
   return Number.isNaN(scheduled.getTime()) ? null : scheduled;
+}
+
+function nextCloudBackupScheduledInstant(now: Date, timezone: string, policy: CloudBackupPolicy): Date | null {
+  const safeTimezone = validTimeZone(timezone) ? timezone : "UTC";
+  const localDate = dateOnlyInZone(now, safeTimezone);
+  if (policy.scheduleFrequency === "weekly") {
+    for (let offset = 0; offset <= 7; offset += 1) {
+      const scheduledDate = datePlusDays(localDate, offset);
+      if (weekdayNameForDateOnly(scheduledDate) !== policy.scheduleWeekday) continue;
+      const scheduled = new Date(zonedWallTimeToUtc(scheduledDate, policy.scheduleTime, safeTimezone));
+      if (!Number.isNaN(scheduled.getTime()) && scheduled.getTime() > now.getTime()) return scheduled;
+    }
+    return null;
+  }
+  const todayScheduled = new Date(zonedWallTimeToUtc(localDate, policy.scheduleTime, safeTimezone));
+  if (!Number.isNaN(todayScheduled.getTime()) && todayScheduled.getTime() > now.getTime()) return todayScheduled;
+  const tomorrow = new Date(zonedWallTimeToUtc(datePlusDays(localDate, 1), policy.scheduleTime, safeTimezone));
+  return Number.isNaN(tomorrow.getTime()) ? null : tomorrow;
 }
 
 function validTimeZone(timezone: string): boolean {
@@ -60,6 +90,10 @@ function weekdayNameInZone(date: Date, timezone: string): CloudBackupScheduleWee
   return cloudBackupWeekdayFromName(name);
 }
 
+function weekdayNameForDateOnly(date: string): CloudBackupScheduleWeekday {
+  return cloudBackupWeekdayFromName(new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long" }).format(new Date(`${date}T12:00:00.000Z`)).toLowerCase());
+}
+
 function cloudBackupWeekdayFromName(name: string): CloudBackupScheduleWeekday {
   if (name === "sunday") return "sunday";
   if (name === "tuesday") return "tuesday";
@@ -78,6 +112,12 @@ function weekdayDistanceBack(current: CloudBackupScheduleWeekday, target: CloudB
 function dateMinusDays(date: string, days: number): string {
   const parsed = new Date(`${date}T00:00:00.000Z`);
   parsed.setUTCDate(parsed.getUTCDate() - days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function datePlusDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
   return parsed.toISOString().slice(0, 10);
 }
 

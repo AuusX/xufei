@@ -161,6 +161,49 @@ func parseHeaderJSON(input string, locale appLocale) (map[string]string, error) 
 	return headers, nil
 }
 
+func renderWebhookPayloadTemplate(template string, message notificationMessage, locale appLocale) ([]byte, error) {
+	if strings.TrimSpace(template) == "" {
+		return json.Marshal(webhookDefaultPayload{
+			Title:     message.Title,
+			Content:   message.Content,
+			Timestamp: message.Timestamp,
+		})
+	}
+	var value interface{}
+	decoder := json.NewDecoder(strings.NewReader(template))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, errors.New(serverText(locale, "validation.jsonParseFailed"))
+	}
+	var extra interface{}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, errors.New(serverText(locale, "validation.jsonParseFailed"))
+	}
+	// Webhook 模板必须先作为 JSON 解析，再只替换 string leaf；这样多行正文会由 json.Marshal 负责转义。
+	return json.Marshal(renderWebhookTemplateValue(value, message))
+}
+
+func renderWebhookTemplateValue(value interface{}, message notificationMessage) interface{} {
+	switch typed := value.(type) {
+	case string:
+		return applyTemplate(typed, message)
+	case []interface{}:
+		out := make([]interface{}, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, renderWebhookTemplateValue(item, message))
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			out[key] = renderWebhookTemplateValue(item, message)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
 func applyTemplate(template string, message notificationMessage) string {
 	replacer := strings.NewReplacer(
 		"{title}", message.Title,

@@ -301,6 +301,7 @@ function sensitiveKey(value: string): boolean {
     || normalized.includes("apikey")
     || normalized.includes("authkey")
     || normalized === "key"
+    || normalized === "sign"
     || normalized === "sendkey"
     || normalized === "cookie"
     || normalized === "setcookie";

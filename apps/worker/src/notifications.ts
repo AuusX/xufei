@@ -24,7 +24,7 @@ import {
   toApiSubscription,
 } from "./db";
 import { renewAutoSubscriptionsForUserInTimezone } from "./subscription-renewal";
-import { getSubscriptionSchedulerState } from "./subscription-scheduler-state";
+import { getSubscriptionSchedulerState, listNotificationDueUsers, refreshSubscriptionSchedulerState } from "./subscription-scheduler-state";
 import { HttpError, ok, readOptionalJson, readJson, requestLocale, successJson, type AppLocale } from "./http";
 import { DEFAULT_SERVER_I18N_LOCALE, serverFormat, serverText } from "./server-i18n";
 import { requireAuth } from "./auth";
@@ -73,6 +73,7 @@ const CRON_USER_PAGE_SIZE = 50;
 const CRON_USER_CONCURRENCY = 5;
 
 type NotificationMessage = NotificationEmailMessage;
+type CronRunOutcome = "settled" | "keep_due";
 
 /** 发送单渠道测试通知；settings 来自表单快照，只临时合并校验，不写入 D1。 */
 export async function notificationTest(request: Request, env: Env): Promise<Response> {
@@ -142,29 +143,33 @@ export async function notificationHistory(request: Request, env: Env): Promise<R
 
 /** Cloudflare Cron 入口按用户分页并发执行，避免一次 Worker tick 放大 D1 与外部通知 provider 压力。 */
 export async function runScheduledNotifications(env: Env): Promise<void> {
-  for (let offset = 0; ; offset += CRON_USER_PAGE_SIZE) {
-    let users: D1Result<{ id: string }>;
+  const now = new Date();
+  const seenUserIds = new Set<string>();
+  for (;;) {
+    let users: Array<{ user_id: string }>;
     try {
-      users = await env.DB.prepare("SELECT id FROM users WHERE banned = 0 ORDER BY id LIMIT ? OFFSET ?")
-        .bind(CRON_USER_PAGE_SIZE, offset)
-        .all<{ id: string }>();
+      users = await listNotificationDueUsers(env, now, CRON_USER_PAGE_SIZE);
     } catch (error) {
-      logScheduledNotificationError({ phase: "list_users", offset, error });
+      logScheduledNotificationError({ phase: "list_due_users", error });
       throw scheduledRuntimeError(error);
     }
+    // 失败/锁竞争会让 due 行保留到下一分钟；本 tick 内去重即可避免同一 Worker 事件反复处理同一用户。
+    const runnable = users.filter((user) => !seenUserIds.has(user.user_id));
+    if (runnable.length === 0) break;
+    for (const user of runnable) seenUserIds.add(user.user_id);
     // Cron 运行在 Worker 平台限额内；分页加固定并发避免一次 tick 把 D1/通知 provider 打满。
-    await runBounded(users.results, CRON_USER_CONCURRENCY, async (user) => {
+    await runBounded(runnable, CRON_USER_CONCURRENCY, async (user) => {
       try {
-        await runScheduledForUser(env, user.id);
+        await runScheduledForUser(env, user.user_id, now);
       } catch (error) {
-        logScheduledNotificationError({ phase: "run_user", userId: user.id, error });
+        logScheduledNotificationError({ phase: "run_user", userId: user.user_id, error });
       }
     });
-    if (users.results.length < CRON_USER_PAGE_SIZE) break;
+    if (users.length < CRON_USER_PAGE_SIZE) break;
   }
 }
 
-function logScheduledNotificationError(context: { phase: "list_users" | "run_user"; offset?: number; userId?: string; error: unknown }): void {
+function logScheduledNotificationError(context: { phase: "list_due_users" | "run_user"; offset?: number; userId?: string; error: unknown }): void {
   console.error("scheduled_notifications_failed", {
     event: "scheduled_notifications_failed",
     phase: context.phase,
@@ -211,20 +216,28 @@ async function runBounded<T>(items: T[], concurrency: number, task: (item: T) =>
   await Promise.all(workers);
 }
 
-async function runScheduledForUser(env: Env, userId: string): Promise<void> {
+async function runScheduledForUser(env: Env, userId: string, now = new Date()): Promise<void> {
   const settings = await getSettings(env, userId);
-  const now = new Date();
+  let repeatCandidatesForRefresh: ApiSubscription[] | undefined;
   let decision = getLocalScheduleDecision(now, settings.timezone, settings.notificationTimeLocal, NOTIFICATION_CRON_WINDOW_MINUTES, false);
   if (!decision.due) {
     const schedulerState = await getSubscriptionSchedulerState(env, userId);
     if (schedulerState.repeat_reminder_count > 0) {
       const repeatCandidates = (await listRepeatReminderCandidateSubscriptions(env, userId, dateOnlyInZone(now, settings.timezone))).map(toApiSubscription);
+      repeatCandidatesForRefresh = repeatCandidates;
       // 非日常窗口只允许 repeat 候选参与 due 判断；gate=0 时连候选查询都不做，避免空跑读放大。
       const repeatDecision = getRepeatScheduleDecision(now, settings, repeatCandidates, NOTIFICATION_CRON_WINDOW_MINUTES);
       if (repeatDecision.due) decision = repeatDecision;
     }
   }
-  if (!decision.due) return;
+  if (!decision.due) {
+    await refreshSubscriptionSchedulerState(env, userId, {
+      resetAutoRenewCheck: false,
+      now,
+      ...(repeatCandidatesForRefresh ? { repeatCandidates: repeatCandidatesForRefresh } : {}),
+    });
+    return;
+  }
   const occurrence = publicScheduleOccurrence(decision);
   // due 确认后才推进续订并读取 payload 候选，保持自动续订先于通知内容且不污染非 due 分钟。
   await renewAutoSubscriptionsForUserInTimezone(env, userId, settings.timezone, now);
@@ -234,7 +247,11 @@ async function runScheduledForUser(env: Env, userId: string): Promise<void> {
     showExpired: settings.showExpired,
   })).map(toApiSubscription);
   // Cron 没有 request origin；邮件 CTA 只在手动请求能确定公开域名时生成。
-  await runCronForUser(env, userId, settings, subscriptions, occurrence, now, DEFAULT_SERVER_I18N_LOCALE);
+  const outcome = await runCronForUser(env, userId, settings, subscriptions, occurrence, now, DEFAULT_SERVER_I18N_LOCALE);
+  if (outcome === "settled") {
+    // failed/fresh sending 需要继续留在 due-index 内重试；只有 sent/skipped/终止状态才推进到下一次提醒。
+    await refreshSubscriptionSchedulerState(env, userId, { resetAutoRenewCheck: false, now, skipCurrentNotificationWindow: true });
+  }
 }
 
 async function runManualForUser(
@@ -269,12 +286,12 @@ async function runCronForUser(
   schedule: ScheduleOccurrence,
   now: Date,
   locale: AppLocale,
-): Promise<void> {
+): Promise<CronRunOutcome> {
   const existingJob = await getNotificationJob(env, userId, schedule);
   // sent/skipped 是终态；Cron 重试只允许接管 failed 或 stale sending，避免重复推送已解释过的窗口。
-  if (isNotificationJobTerminal(existingJob)) return;
-  if (existingJob && isSendingJobFresh(existingJob, now, NOTIFICATION_STALE_SENDING_MINUTES)) return;
-  if (existingJob?.status === "failed" && existingJob.attempts >= NOTIFICATION_MAX_RETRIES) return;
+  if (isNotificationJobTerminal(existingJob)) return "settled";
+  if (existingJob && isSendingJobFresh(existingJob, now, NOTIFICATION_STALE_SENDING_MINUTES)) return "keep_due";
+  if (existingJob?.status === "failed" && existingJob.attempts >= NOTIFICATION_MAX_RETRIES) return "settled";
 
   const message = buildDueMessageForSchedule(schedule, now, settings, subscriptions, true);
   const previousChannels = existingJob?.status === "failed" ? readJobChannels(existingJob) : emptyJobChannels();
@@ -300,7 +317,7 @@ async function runCronForUser(
       channels: emptyJobChannels(),
     });
     await finalizeNotificationJob(env, existingJob, userId, schedule, "skipped", attempts, null, result);
-    return;
+    return "settled";
   }
 
   if (noRetryableChannels) {
@@ -317,19 +334,19 @@ async function runCronForUser(
       channels,
     });
     await finalizeNotificationJob(env, existingJob, userId, schedule, "sent", existingJob?.attempts ?? 0, null, result);
-    return;
+    return "settled";
   }
 
   let activeJob = existingJob;
   if (!activeJob) {
     // 新窗口先抢占 sending，再做外部发送；唯一键冲突说明另一轮 Cron 已接管。
     const created = await createNotificationJob(env, userId, schedule, "sending", 1);
-    if (!created.created) return;
+    if (!created.created) return "keep_due";
     activeJob = created.row;
   } else {
     activeJob = await markNotificationJobSending(env, activeJob, activeJob.attempts + 1);
   }
-  if (!activeJob) return;
+  if (!activeJob) return "keep_due";
 
   const summary = await sendChannels(env, retryChannels, settings, message, locale);
   const channels = mergeChannelResults(previousChannels, summary, settings.enabledChannels);
@@ -347,6 +364,7 @@ async function runCronForUser(
     channels,
   });
   await finalizeNotificationJob(env, activeJob, userId, schedule, status, activeJob.attempts, lastErrorFromChannels(channels), result);
+  return status === "failed" ? "keep_due" : "settled";
 }
 
 type SettingsPatch = z.infer<typeof settingsUpdateBodySchema>;

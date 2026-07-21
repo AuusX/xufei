@@ -185,7 +185,7 @@ describe("Cloudflare auth settings initialization", () => {
     }, { "x-renewlet-locale": "zh-CN" }), envFixture(run));
 
     expect(response.status).toBe(201);
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(2);
     expect(mocks.ensureSettings).toHaveBeenCalledWith(expect.anything(), expect.stringMatching(/^usr_/), "zh-CN");
   });
 
@@ -475,6 +475,15 @@ function envFixture(updateRun: ReturnType<typeof vi.fn>): Env {
         bind: vi.fn(() => {
           if (sql.includes("FROM sessions JOIN users")) {
             return { first: vi.fn().mockResolvedValue(authRow()) };
+          }
+          if (sql.includes("SUM(CASE WHEN auto_renew")) {
+            return { first: vi.fn().mockResolvedValue({ auto_renew_count: 0, repeat_reminder_count: 0 }) };
+          }
+          if (sql.includes("FROM subscription_scheduler_state")) {
+            return { first: vi.fn().mockResolvedValue(null) };
+          }
+          if (sql.includes("SELECT settings_json FROM settings")) {
+            return { first: vi.fn().mockResolvedValue(null) };
           }
           if (sql.includes("UPDATE sessions SET last_seen_at")) {
             return { run: sessionTouchRun };

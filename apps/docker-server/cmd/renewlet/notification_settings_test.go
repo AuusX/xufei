@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +46,60 @@ func TestMergeSettingsForWriteValidatesTelegramMessageFormat(t *testing.T) {
 	}
 	if _, err := mergeSettingsForWrite(defaultAppSettings(), json.RawMessage(`{"telegramMessageFormat":"markdown"}`)); err == nil {
 		t.Fatal("expected unsupported Telegram message format write to fail")
+	}
+}
+
+func TestDingTalkMessageTypeDefaultsAndWriteValidation(t *testing.T) {
+	if got := defaultAppSettings().DingTalkMessageType; got != dingtalkMessageTypeMarkdown {
+		t.Fatalf("expected markdown DingTalk message type default, got %q", got)
+	}
+
+	settings, err := settingsFromValue(json.RawMessage(`{"dingtalkMessageType":"feedCard","monthlyBudget":2333}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.DingTalkMessageType != dingtalkMessageTypeMarkdown || settings.MonthlyBudget != 2333 {
+		t.Fatalf("expected invalid stored DingTalk type to recover only that field, got %#v", settings)
+	}
+
+	settings, err = mergeSettingsForWrite(defaultAppSettings(), json.RawMessage(`{"dingtalkMessageType":"text"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.DingTalkMessageType != dingtalkMessageTypeText {
+		t.Fatalf("expected text DingTalk type, got %q", settings.DingTalkMessageType)
+	}
+	if _, err := mergeSettingsForWrite(defaultAppSettings(), json.RawMessage(`{"dingtalkMessageType":"actionCard"}`)); err == nil {
+		t.Fatal("expected unsupported DingTalk message type write to fail")
+	}
+}
+
+func TestDingTalkTemplateDefaultsAndWriteValidation(t *testing.T) {
+	settings := defaultAppSettings()
+	if settings.DingTalkTitleTemplate != "" || settings.DingTalkContentTemplate != "" {
+		t.Fatalf("expected empty DingTalk template defaults, got %#v", settings)
+	}
+
+	recovered, err := settingsFromValue(json.RawMessage(`{"dingtalkTitleTemplate":"标题","dingtalkContentTemplate":"正文","monthlyBudget":2333}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.DingTalkTitleTemplate != "标题" || recovered.DingTalkContentTemplate != "正文" || recovered.MonthlyBudget != 2333 {
+		t.Fatalf("expected DingTalk templates to survive settings recovery, got %#v", recovered)
+	}
+
+	recovered, err = settingsFromValue(json.RawMessage(`{"dingtalkTitleTemplate":"` + strings.Repeat("a", dingtalkTitleTemplateMaxRunes+1) + `","dingtalkContentTemplate":42,"monthlyBudget":2333}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.DingTalkTitleTemplate != "" || recovered.DingTalkContentTemplate != "" || recovered.MonthlyBudget != 2333 {
+		t.Fatalf("expected stored invalid DingTalk templates to recover only those fields, got %#v", recovered)
+	}
+
+	if _, err := mergeSettingsForWrite(defaultAppSettings(), json.RawMessage(`{"dingtalkTitleTemplate":"`+strings.Repeat("a", dingtalkTitleTemplateMaxRunes+1)+`"}`)); err == nil {
+		t.Fatal("expected overly long DingTalk title template write to fail")
+	}
+	if _, err := mergeSettingsForWrite(defaultAppSettings(), json.RawMessage(`{"dingtalkContentTemplate":"`+strings.Repeat("a", dingtalkContentTemplateMaxRunes+1)+`"}`)); err == nil {
+		t.Fatal("expected overly long DingTalk content template write to fail")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -222,8 +223,20 @@ func staticWithSecurityHeaders(staticFS fs.FS) func(*core.RequestEvent) error {
 		headers.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		headers.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		headers.Set("Content-Security-Policy", staticContentSecurityPolicy(e.Request))
+		headers.Set("Cache-Control", staticCacheControl(e.Request, staticFS))
 		return handler(e)
 	}
+}
+
+func staticCacheControl(request *http.Request, staticFS fs.FS) string {
+	name := strings.TrimPrefix(path.Clean("/"+request.URL.Path), "/")
+	if strings.HasPrefix(name, "assets/") {
+		if _, err := fs.Stat(staticFS, name); err == nil {
+			// Vite assets 带内容 hash；Docker 与 Cloudflare 必须同样长缓存，避免切页 chunk 每次重验证。
+			return "public, max-age=31536000, immutable"
+		}
+	}
+	return "no-cache"
 }
 
 func staticContentSecurityPolicy(request *http.Request) string {

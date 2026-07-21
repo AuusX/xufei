@@ -434,7 +434,7 @@ func sensitiveUpstreamDiagnosticKey(value string) bool {
 	if normalized == "" {
 		return false
 	}
-	if normalized == "key" || normalized == "sendkey" || normalized == "cookie" || normalized == "setcookie" {
+	if normalized == "key" || normalized == "sign" || normalized == "sendkey" || normalized == "cookie" || normalized == "setcookie" {
 		return true
 	}
 	for _, marker := range []string{"authorization", "password", "passwd", "secret", "token", "signature", "credential", "accesskey", "apikey", "authkey"} {

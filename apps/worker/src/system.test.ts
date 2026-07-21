@@ -215,6 +215,30 @@ describe("Cloudflare system update contract", () => {
     });
   });
 
+  it("reports hotfix patch stable releases as newer deploy-only updates", async () => {
+    mockLatestRelease("0.2.91");
+
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
+      headers: { "accept-language": "en-US" },
+    }), envFixture({ RENEWLET_VERSION: "0.2.9" }));
+
+    expect(response.status).toBe(200);
+    const body = await readSuccessData<Record<string, unknown>>(response);
+    expect(body).toMatchObject({
+      currentVersion: "0.2.9",
+      latestVersion: "0.2.91",
+      checkSucceeded: true,
+      hasUpdate: true,
+      updateMode: "cloudflare-deploy",
+      updateSupported: false,
+      releaseInfo: {
+        tagName: "v0.2.91",
+        version: "0.2.91",
+        htmlUrl: "https://github.com/zhiyingzzhou/renewlet/releases/tag/v0.2.91",
+      },
+    });
+  });
+
   it("skips release candidates from the Atom feed when selecting the stable target", async () => {
     mockReleaseFeed(["1.3.0-rc.1", "1.2.3"]);
 

@@ -41,5 +41,3 @@ wrangler.generated.jsonc
 *.njsproj
 *.sln
 *.sw?
-
-in-memoria.db

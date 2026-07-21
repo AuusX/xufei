@@ -74,6 +74,14 @@ function createEnv(overrides: Partial<TelegramBotTestState> = {}): Env & { __sta
 class TelegramBotTestDB {
   constructor(private readonly state: TelegramBotTestState) {}
 
+  async batch(statements: D1PreparedStatement[]): Promise<D1Result[]> {
+    const results: D1Result[] = [];
+    for (const statement of statements) {
+      results.push(await statement.run());
+    }
+    return results;
+  }
+
   prepare(sql: string) {
     this.state.queries.push(sql);
     return new TelegramBotTestStatement(this.state, sql);
@@ -108,6 +116,32 @@ class TelegramBotTestStatement {
     if (this.sql.includes("SELECT COUNT(*) AS count FROM subscriptions")) {
       const userId = String(this.values[0]);
       return { count: this.state.subscriptions.filter((row) => row.user_id === userId).length } as T;
+    }
+    if (this.sql.includes("FROM subscription_user_stats")) {
+      const userId = String(this.values[0]);
+      const rows = this.state.subscriptions.filter((row) => row.user_id === userId);
+      const statusCounts = rows.reduce<Record<string, number>>((counts, row) => {
+        counts[row.status] = (counts[row.status] ?? 0) + 1;
+        return counts;
+      }, {});
+      return {
+        user_id: userId,
+        total_count: rows.length,
+        status_counts_json: JSON.stringify(statusCounts),
+        created_at: "2026-06-05T00:00:00.000Z",
+        updated_at: "2026-06-05T00:00:00.000Z",
+      } as T;
+    }
+    if (this.sql.includes("FROM subscription_scheduler_state")) {
+      return null;
+    }
+    if (this.sql.includes("SUM(CASE WHEN auto_renew")) {
+      const userId = String(this.values[0]);
+      const rows = this.state.subscriptions.filter((row) => row.user_id === userId);
+      return {
+        auto_renew_count: rows.filter((row) => row.auto_renew === 1).length,
+        repeat_reminder_count: rows.filter((row) => row.repeat_reminder_enabled === 1).length,
+      } as T;
     }
     return null;
   }
@@ -189,6 +223,14 @@ class TelegramBotTestStatement {
     if (this.sql.includes("INSERT INTO settings")) {
       const [, settingsJson] = this.values as [string, string, string, string];
       this.state.settingsJson = settingsJson;
+      return d1Result([], 1);
+    }
+    if (
+      this.sql.includes("subscription_scheduler_state")
+      || this.sql.includes("subscription_list_index")
+      || this.sql.includes("subscription_tags")
+      || this.sql.includes("subscription_user_stats")
+    ) {
       return d1Result([], 1);
     }
     return d1Result([], 0);

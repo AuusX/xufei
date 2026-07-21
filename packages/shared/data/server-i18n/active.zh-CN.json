@@ -226,6 +226,8 @@
   "rateLimit.tooManyRequests": "请求过于频繁，请稍后再试",
   "service.barkDeviceKey": "Bark 设备 Key",
   "service.barkServerURL": "Bark 服务器地址",
+  "service.dingtalkResponseInvalid": "钉钉机器人响应格式无效",
+  "service.dingtalkWebhookURL": "钉钉机器人 Webhook URL",
   "service.discordBotAvatarURL": "Discord 机器人头像 URL",
   "service.discordWebhookURL": "Discord Webhook URL",
   "service.notifyxAPIKey": "NotifyX API Key",

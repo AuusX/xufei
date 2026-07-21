@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   setTheme: vi.fn(),
   theme: "dark",
   writeAppearancePendingToStorage: vi.fn(),
+  scheduleAuthenticatedRoutePreloads: vi.fn(() => vi.fn()),
+  useRoutePreloadPending: vi.fn(() => false),
 }));
 
 vi.mock("@/lib/auth-client", () => ({
@@ -47,6 +49,11 @@ vi.mock("@/lib/theme-provider", () => ({
 
 vi.mock("@/lib/theme-storage", () => ({
   writeAppearancePendingToStorage: mocks.writeAppearancePendingToStorage,
+}));
+
+vi.mock("@/lib/route-resources", () => ({
+  scheduleAuthenticatedRoutePreloads: mocks.scheduleAuthenticatedRoutePreloads,
+  useRoutePreloadPending: mocks.useRoutePreloadPending,
 }));
 
 vi.mock("@/i18n/I18nProvider", () => ({
@@ -165,6 +172,10 @@ describe("Header system version entry", () => {
     mocks.setTheme.mockReset();
     mocks.theme = "dark";
     mocks.writeAppearancePendingToStorage.mockReset();
+    mocks.scheduleAuthenticatedRoutePreloads.mockReset();
+    mocks.scheduleAuthenticatedRoutePreloads.mockReturnValue(vi.fn());
+    mocks.useRoutePreloadPending.mockReset();
+    mocks.useRoutePreloadPending.mockReturnValue(false);
     mocks.useSystemVersion.mockReturnValue({
       data: versionFixture(),
       isPending: false,
@@ -233,6 +244,31 @@ describe("Header system version entry", () => {
 
     expect(screen.queryByRole("button", { name: "打开系统更新" })).not.toBeInTheDocument();
     expect(mocks.useSystemVersion).not.toHaveBeenCalled();
+    expect(mocks.scheduleAuthenticatedRoutePreloads).not.toHaveBeenCalled();
+  });
+
+  it("preloads primary routes after sign-in without changing header layout", () => {
+    mocks.useSession.mockReturnValue(adminSession("user"));
+
+    renderHeader();
+
+    expect(mocks.scheduleAuthenticatedRoutePreloads).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("app-header-route-preload-indicator")).toHaveClass("opacity-0");
+  });
+
+  it("shows a thin route preload indicator in the existing header chrome", () => {
+    mocks.useSession.mockReturnValue(adminSession("user"));
+    mocks.useRoutePreloadPending.mockReturnValue(true);
+
+    renderHeader();
+
+    expect(screen.getByTestId("app-header-route-preload-indicator")).toHaveClass(
+      "absolute",
+      "bottom-0",
+      "h-0.5",
+      "bg-primary",
+      "opacity-100",
+    );
   });
 
   it("keeps the header theme toggle as a local-only preference", async () => {

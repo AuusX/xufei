@@ -52,20 +52,30 @@ function envFixture() {
     prepare: vi.fn((sql: string) => ({
       bind: (...values: unknown[]) => {
         statements.push({ sql, values });
-        return {
-          run: vi.fn(),
-          first: vi.fn(),
-          all: vi.fn(),
+        const statement = {
+          run: vi.fn(async () => d1Result([], 1)),
+          first: vi.fn(async <T>() => {
+            if (sql.includes("SUM(CASE WHEN auto_renew")) {
+              return { auto_renew_count: 0, repeat_reminder_count: 0 } as T;
+            }
+            return null;
+          }),
+          all: vi.fn(async <T>() => d1Result<T>([])),
         };
+        return statement;
       },
     })),
-    batch: vi.fn(async () => ({ success: true, results: [], meta: {} })),
+    batch: vi.fn(async (batchStatements: D1PreparedStatement[]) => batchStatements.map(() => d1Result([], 1))),
   };
   return {
     env: { DB: db as unknown as D1Database, ASSETS: {} as Fetcher, ASSETS_BUCKET: {} as R2Bucket } as Env,
     db,
     statements,
   };
+}
+
+function d1Result<T = unknown>(results: T[] = [], changes = 0): D1Result<T> {
+  return { success: true, results, meta: { changes } } as D1Result<T>;
 }
 
 function requestFor(path: string, body: unknown): Request {
@@ -173,7 +183,7 @@ describe("Cloudflare import", () => {
     ])), env);
 
     expect(response.status).toBe(200);
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
     expect(insert?.values[16]).toBeNull();
     expect(insert?.values[17]).toBe("2026-06-21");
@@ -192,7 +202,7 @@ describe("Cloudflare import", () => {
     ])), env);
 
     expect(response.status).toBe(200);
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
     expect(insert?.values[6]).toBe("one-time");
     expect(insert?.values[7]).toBeNull();
@@ -217,7 +227,7 @@ describe("Cloudflare import", () => {
     ])), env);
 
     expect(response.status).toBe(200);
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
     expect(insert?.values[6]).toBe("one-time");
     expect(insert?.values[7]).toBeNull();
@@ -237,7 +247,7 @@ describe("Cloudflare import", () => {
     ])), env);
 
     expect(response.status).toBe(200);
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
     expect(insert?.values[24]).toBe(-2);
   });
@@ -257,7 +267,7 @@ describe("Cloudflare import", () => {
     ])), env);
 
     expect(response.status).toBe(200);
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
     expect(insert?.sql).toContain("cost_sharing_json");
     expect(JSON.parse(insert?.values[28] as string)).toEqual(costSharing);
@@ -270,7 +280,7 @@ describe("Cloudflare import", () => {
     ])), env);
 
     expect(response.status).toBe(200);
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     expect(statements.some((statement) => statement.sql.includes("INSERT INTO subscription_scheduler_state"))).toBe(true);
   });
 
@@ -281,7 +291,7 @@ describe("Cloudflare import", () => {
     const response = await applyImport(requestFor("/api/app/import/apply", importPayload([subscription])), env);
 
     expect(response.status).toBe(200);
-    expect(db.batch).toHaveBeenCalledTimes(1);
+    expect(db.batch).toHaveBeenCalledTimes(2);
     const insert = statements.find((statement) => statement.sql.includes("INSERT INTO subscriptions"));
     expect(insert?.values[18]).toBe(0);
   });

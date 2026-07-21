@@ -102,4 +102,22 @@ describe("updateCustomHeadScriptStaticHeaders", () => {
 
     expect(twice).toBe(once);
   });
+
+  it("preserves the asset cache override block while updating CSP", () => {
+    const script = parseCustomHeadScript(`<script defer src="https://cdn.example.com/widget.js"></script>`);
+    const headers = [
+      "/*",
+      "  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; object-src 'none'",
+      "  Cache-Control: no-cache",
+      "",
+      "/assets/*",
+      "  ! Cache-Control",
+      "  Cache-Control: public, max-age=31536000, immutable",
+      "",
+    ].join("\n");
+
+    const updated = updateCustomHeadScriptStaticHeaders(headers, script);
+
+    expect(updated).toContain("/assets/*\n  ! Cache-Control\n  Cache-Control: public, max-age=31536000, immutable");
+  });
 });

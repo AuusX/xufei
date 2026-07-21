@@ -8,10 +8,10 @@ import {
   downloadCloudBackup,
   listCloudBackups,
   runDueCloudBackups,
-  sanitizeSettingsForCloudBackup,
   testCloudBackupConfig,
   updateCloudBackupConfig,
 } from "./cloud-backup";
+import { sanitizeSettingsForCloudBackup } from "./cloud-backup-sanitize";
 import { CloudBackupRemoteError, sha256Hex, type CloudBackupRemoteClient } from "./cloud-backup-remote";
 import { deleteCloudBackupFromTargets, type CloudBackupTarget } from "./cloud-backup-snapshot-resolve";
 import { readSuccessData } from "./api-test-helpers";
@@ -97,6 +97,7 @@ function fakeEnvForRows(rows: CloudBackupTargetRow[], onQuery?: (query: FakeD1Qu
     }
     if (method === "run" && sql.includes("SET locked_until")) return d1Run(1);
     if (method === "run" && sql.includes("SET last_backup_at")) return d1Run(1);
+    if (method === "run" && sql.includes("SET next_run_at_utc")) return d1Run(1);
     if (method === "run" && sql.includes("SET last_status")) return d1Run(1);
     throw new Error(`unexpected ${method} query: ${sql}`);
   });
@@ -170,6 +171,7 @@ function cloudBackupRow(provider: "webdav" | "s3", overrides: Partial<CloudBacku
     last_status: "idle",
     last_error: null,
     locked_until: null,
+    next_run_at_utc: null,
     created_at: "2026-06-09T00:00:00.000Z",
     updated_at: "2026-06-09T00:00:00.000Z",
     ...overrides,
@@ -209,10 +211,11 @@ function upsertTargetRow(rows: CloudBackupTargetRow[], params: unknown[]) {
     schedule_time: String(params[6]),
     schedule_weekday: params[7] as CloudBackupTargetRow["schedule_weekday"],
     retention: Number(params[8]),
+    next_run_at_utc: params[9] === null ? null : String(params[9]),
     last_status: previous.last_status || "idle",
     last_error: previous.last_error,
-    created_at: previous.created_at || String(params[9]),
-    updated_at: String(params[10]),
+    created_at: previous.created_at || String(params[10]),
+    updated_at: String(params[11]),
   };
   if (index >= 0) rows[index] = next;
   else rows.push(next);
@@ -405,21 +408,35 @@ describe("Cloudflare cloud backup", () => {
     expect(calls.some((call) => call.includes("dav.example.com"))).toBe(false);
   });
 
-  it("strips Discord and PushPlus secrets from cloud backup settings", () => {
+  it("strips external notification secrets from cloud backup settings", () => {
     const sanitized = sanitizeSettingsForCloudBackup({
       ...createDefaultAppSettings(),
       discordWebhookUrl: "https://discord.com/api/webhooks/123/secret",
       discordBotUsername: "Renewlet",
       discordBotAvatarUrl: "https://cdn.example.com/avatar.png",
       pushplusToken: "push-token",
+      dingtalkWebhookUrl: "https://oapi.dingtalk.com/robot/send?access_token=ding-token",
+      dingtalkSecret: "SECsecret",
+      dingtalkKeyword: "自定义关键词",
+      dingtalkTitleTemplate: "自定义标题",
+      dingtalkContentTemplate: "自定义正文",
     });
 
     expect(sanitized).not.toHaveProperty("discordWebhookUrl");
     expect(sanitized).not.toHaveProperty("discordBotUsername");
     expect(sanitized).not.toHaveProperty("discordBotAvatarUrl");
     expect(sanitized).not.toHaveProperty("pushplusToken");
+    expect(sanitized).not.toHaveProperty("dingtalkWebhookUrl");
+    expect(sanitized).not.toHaveProperty("dingtalkSecret");
+    expect(sanitized).not.toHaveProperty("dingtalkKeyword");
+    expect(sanitized).not.toHaveProperty("dingtalkTitleTemplate");
+    expect(sanitized).not.toHaveProperty("dingtalkContentTemplate");
     expect(JSON.stringify(sanitized)).not.toContain("secret");
     expect(JSON.stringify(sanitized)).not.toContain("push-token");
+    expect(JSON.stringify(sanitized)).not.toContain("ding-token");
+    expect(JSON.stringify(sanitized)).not.toContain("SECsecret");
+    expect(JSON.stringify(sanitized)).not.toContain("自定义标题");
+    expect(JSON.stringify(sanitized)).not.toContain("自定义正文");
   });
 
   it("returns a cloud backup provider error when manual snapshot provider is missing", async () => {

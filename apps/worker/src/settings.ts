@@ -4,6 +4,7 @@ import { ensureSettings, getCustomConfig, getTelegramBotBinding, mergeSettingsPa
 import { HttpError, readJson, requestLocale, successJson } from "./http";
 import { requireAuth } from "./auth";
 import { serverText } from "./server-i18n";
+import { refreshSubscriptionSchedulerState } from "./subscription-scheduler-state";
 import type { Env } from "./types";
 
 /**
@@ -29,7 +30,9 @@ export async function updateSettings(request: Request, env: Env): Promise<Respon
   // PATCH 语义由“当前设置 + 局部字段”合成，最终仍过完整 schema，防止删除隐式默认项。
   const next = mergeSettingsPatch(current, patch);
   await rejectInstalledTelegramBotSettingsChange(env, auth.user.id, current, next, locale);
-  return successJson(settingsPayloadSchema.parse({ settings: await putSettings(env, auth.user.id, next) }));
+  const settings = await putSettings(env, auth.user.id, next);
+  await refreshSubscriptionSchedulerState(env, auth.user.id, { resetAutoRenewCheck: false });
+  return successJson(settingsPayloadSchema.parse({ settings }));
 }
 
 /**

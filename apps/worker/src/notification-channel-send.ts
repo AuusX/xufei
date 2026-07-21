@@ -8,6 +8,7 @@ import { assertSafeOutboundUrl } from "./outbound-url-policy";
 import { sendServerChan } from "./notification-serverchan";
 import { sendDiscord } from "./notification-discord";
 import { sendPushPlus } from "./notification-pushplus";
+import { sendDingTalk } from "./notification-dingtalk";
 import { plainNotificationMessage, telegramNotificationMessage } from "./telegram-format";
 import { NotificationChannelError } from "./notification-errors";
 import {
@@ -35,6 +36,7 @@ export const notificationSenders = {
   telegram: sendTelegramChannel,
   notifyx: sendNotifyxChannel,
   webhook: ({ settings, message, locale }) => sendWebhook(settings, message, locale),
+  dingtalk: ({ settings, message, locale }) => sendDingTalk(settings, message, locale),
   wechat: sendWeChatChannel,
   bark: sendBarkChannel,
   email: ({ env, settings, message, locale, appUrl }) => sendEmail(env, settings, message, locale, appUrl),
@@ -144,9 +146,7 @@ async function sendWebhook(settings: ApiAppSettings, message: NotificationEmailM
     return;
   }
   headers.set("content-type", headers.get("content-type") ?? "application/json");
-  const body = settings.webhookPayload.trim()
-    ? applyTemplate(settings.webhookPayload, message)
-    : JSON.stringify({ title: message.title, content: message.content, timestamp: message.timestamp });
+  const body = renderWebhookPayloadTemplate(settings.webhookPayload, message, locale);
   const response = await sendNotificationRequest(endpoint, { method: "POST", headers, body }, "Webhook", locale, { secrets });
   await requireNotificationHttpOk(response, "Webhook", locale, { secrets });
 }
@@ -220,6 +220,27 @@ function headersSecrets(headers: Headers): string[] {
 function required(value: string, label: string, locale: AppLocale): string {
   if (value.trim()) return value.trim();
   throw new Error(serverFormat(locale, "common.requiredField", { label }));
+}
+
+export function renderWebhookPayloadTemplate(template: string, message: NotificationEmailMessage, locale: AppLocale): string {
+  if (!template.trim()) return JSON.stringify({ title: message.title, content: message.content, timestamp: message.timestamp });
+  let value: unknown;
+  try {
+    value = JSON.parse(template);
+  } catch {
+    throw new Error(serverText(locale, "validation.jsonParseFailed"));
+  }
+  // Webhook 模板必须先作为 JSON 解析，再只替换 string leaf；多行正文交给 JSON.stringify 转义。
+  return JSON.stringify(renderWebhookTemplateValue(value, message));
+}
+
+function renderWebhookTemplateValue(value: unknown, message: NotificationEmailMessage): unknown {
+  if (typeof value === "string") return applyTemplate(value, message);
+  if (Array.isArray(value)) return value.map((item) => renderWebhookTemplateValue(item, message));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, renderWebhookTemplateValue(item, message)]));
+  }
+  return value;
 }
 
 function applyTemplate(template: string, message: NotificationEmailMessage): string {

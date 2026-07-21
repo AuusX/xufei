@@ -240,7 +240,6 @@ export function StatisticsTrendChart({ data, defaultCurrency, onViewSubscription
                 <TrendItemBadgeCell label={formatTrendItemBadge(item, tooltipMode)} size="tooltip" />
                 <div className="min-w-0 leading-tight">
                   <p className="truncate font-medium text-foreground">{item.name}</p>
-                  <p className="truncate text-[11px] text-muted-foreground">{formatTrendItemMeta(item)}</p>
                 </div>
                 <p className="shrink-0 whitespace-nowrap text-right font-semibold tabular-nums text-foreground">
                   {formatCurrency(item.amount, defaultCurrency)}

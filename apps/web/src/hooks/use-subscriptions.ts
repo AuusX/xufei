@@ -13,7 +13,16 @@
  */
 
 import { useMemo } from "react";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions,
+  queryOptions,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+  type QueryFunctionContext,
+} from "@tanstack/react-query";
 import { subscriptionService, type SubscriptionFieldPatch, type SubscriptionListFilters } from "@/services/subscription-service";
 import type { Subscription, SubscriptionDraft } from "@/types/subscription";
 
@@ -21,6 +30,7 @@ const SUBSCRIPTIONS_QUERY_KEY = ["subscriptions"] as const;
 const SUBSCRIPTIONS_LIST_QUERY_KEY = [...SUBSCRIPTIONS_QUERY_KEY, "list"] as const;
 const SUBSCRIPTIONS_INFINITE_QUERY_KEY = [...SUBSCRIPTIONS_QUERY_KEY, "infinite"] as const;
 const SUBSCRIPTIONS_PAGE_QUERY_KEY = [...SUBSCRIPTIONS_QUERY_KEY, "page"] as const;
+const SUBSCRIPTIONS_STALE_TIME_MS = 60_000;
 
 interface UseSubscriptionsOptions {
   filters?: SubscriptionListFilters | undefined;
@@ -31,11 +41,37 @@ interface UseInfiniteSubscriptionsOptions {
   enabled?: boolean;
 }
 
+export function subscriptionsListQueryOptions(filters?: SubscriptionListFilters) {
+  return queryOptions({
+    queryKey: [...SUBSCRIPTIONS_LIST_QUERY_KEY, filters ?? null] as const,
+    queryFn: () => subscriptionService.list(filters),
+    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
+  });
+}
+
+export function subscriptionsInfiniteQueryOptions() {
+  return infiniteQueryOptions({
+    queryKey: SUBSCRIPTIONS_INFINITE_QUERY_KEY,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }: QueryFunctionContext<typeof SUBSCRIPTIONS_INFINITE_QUERY_KEY, string | null>) =>
+      subscriptionService.listPage(pageParam),
+    getNextPageParam: (lastPage: Awaited<ReturnType<typeof subscriptionService.listPage>>) => lastPage.nextCursor ?? undefined,
+    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
+  });
+}
+
+export function subscriptionsPageQueryOptions(cursor?: string | null, limit?: number) {
+  return queryOptions({
+    queryKey: [...SUBSCRIPTIONS_PAGE_QUERY_KEY, cursor ?? null, limit ?? subscriptionService.pageSize] as const,
+    queryFn: () => subscriptionService.listPage(cursor, limit),
+    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
+  });
+}
+
 /** useSubscriptions 保留全量列表入口，避免统计/导出逻辑自己拼分页结果造成口径漂移。 */
 export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
   return useQuery({
-    queryKey: [...SUBSCRIPTIONS_LIST_QUERY_KEY, options.filters ?? null] as const,
-    queryFn: () => subscriptionService.list(options.filters),
+    ...subscriptionsListQueryOptions(options.filters),
     enabled: options.enabled ?? true,
   });
 }
@@ -47,10 +83,7 @@ export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
  */
 export function useInfiniteSubscriptions(options: UseInfiniteSubscriptionsOptions = {}) {
   const query = useInfiniteQuery({
-    queryKey: SUBSCRIPTIONS_INFINITE_QUERY_KEY,
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }) => subscriptionService.listPage(pageParam),
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    ...subscriptionsInfiniteQueryOptions(),
     enabled: options.enabled ?? true,
   });
   const subscriptions = useMemo(
@@ -67,8 +100,7 @@ export function useInfiniteSubscriptions(options: UseInfiniteSubscriptionsOption
 /** useSubscriptionsPage 让局部视图显式绑定 cursor/limit，避免复用无限滚动缓存时读到错误页。 */
 export function useSubscriptionsPage(cursor?: string | null, limit?: number) {
   return useQuery({
-    queryKey: [...SUBSCRIPTIONS_PAGE_QUERY_KEY, cursor ?? null, limit ?? subscriptionService.pageSize] as const,
-    queryFn: () => subscriptionService.listPage(cursor, limit),
+    ...subscriptionsPageQueryOptions(cursor, limit),
   });
 }
 

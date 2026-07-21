@@ -1,7 +1,7 @@
 // 订阅弹窗提醒测试覆盖“不提醒”显性开关和一次性买断静默契约。
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { assertDateOnly } from "@/lib/time/date-only";
 import type { Subscription } from "@/types/subscription";
@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
     ],
   },
 }));
+const FIXED_DIALOG_NOW = new Date("2026-06-01T12:00:00.000Z");
 
 vi.mock("@/contexts/CustomConfigContext", () => ({
   useCustomConfig: () => ({ config: mocks.config }),
@@ -26,6 +27,12 @@ vi.mock("@/contexts/CustomConfigContext", () => ({
 vi.mock("@/hooks/use-settings", () => ({
   useSettings: () => ({
     data: { defaultCurrency: "USD", notificationReminderDays: 5 },
+  }),
+}));
+
+vi.mock("@/hooks/use-exchange-rates", () => ({
+  useExchangeRates: () => ({
+    convert: (amount: number) => amount,
   }),
 }));
 
@@ -38,6 +45,19 @@ beforeAll(() => {
   Element.prototype.setPointerCapture ??= vi.fn();
   Element.prototype.releasePointerCapture ??= vi.fn();
 });
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FIXED_DIALOG_NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function setupUser() {
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+}
 
 function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
   return {
@@ -86,7 +106,7 @@ describe("SubscriptionDialog reminders", () => {
   });
 
   it("exposes disabled reminders as a switch and restores the inherited default", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
 
     render(
       <TooltipProvider delayDuration={0}>
@@ -116,7 +136,7 @@ describe("SubscriptionDialog reminders", () => {
   });
 
   it("submits disabled reminders for recurring subscriptions from the switch", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -146,7 +166,7 @@ describe("SubscriptionDialog reminders", () => {
   });
 
   it("defaults one-time purchases to buyout and disabled reminders on submit", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -187,7 +207,7 @@ describe("SubscriptionDialog reminders", () => {
   });
 
   it("calculates and disables the expiry date when switching to one-time fixed term", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -234,7 +254,7 @@ describe("SubscriptionDialog reminders", () => {
   });
 
   it("renders buyout date help inline without disabled renewal controls", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(

@@ -20,6 +20,13 @@ type FakeD1Query = {
 function fakeEnv(handler: (query: FakeD1Query) => unknown | Promise<unknown>): Env {
   return {
     DB: {
+      async batch(statements: D1PreparedStatement[]) {
+        const results: D1Result[] = [];
+        for (const statement of statements) {
+          results.push(await statement.run());
+        }
+        return results;
+      },
       prepare(sql: string) {
         return {
           bind(...params: unknown[]) {
@@ -39,6 +46,10 @@ function fakeEnv(handler: (query: FakeD1Query) => unknown | Promise<unknown>): E
 
 function d1All<T>(results: T[]): D1Result<T> {
   return { results, success: true, meta: {} as D1Meta } as D1Result<T>;
+}
+
+function d1Run(changes = 0): D1Result {
+  return { results: [], success: true, meta: { changes } } as unknown as D1Result;
 }
 
 function settings(overrides: Partial<ApiAppSettings> = {}): ApiAppSettings {
@@ -71,7 +82,7 @@ describe("Cloudflare notification scheduler gate", () => {
     vi.setSystemTime(new Date("2026-01-09T07:00:00.000Z"));
     const subscriptionQueries: string[] = [];
     const env = fakeEnv(({ sql, method }) => {
-      if (method === "all" && sql.includes("SELECT id FROM users WHERE banned = 0")) return d1All([{ id: "usr_due" }]);
+      if (method === "all" && sql.includes("FROM subscription_scheduler_state AS scheduler")) return d1All([]);
       if (method === "first" && sql.includes("SELECT settings_json FROM settings")) {
         return { settings_json: JSON.stringify(settings()) };
       }
@@ -93,11 +104,13 @@ describe("Cloudflare notification scheduler gate", () => {
     vi.setSystemTime(new Date("2026-01-09T07:00:00.000Z"));
     const subscriptionQueries: string[] = [];
     const env = fakeEnv(({ sql, method }) => {
-      if (method === "all" && sql.includes("SELECT id FROM users WHERE banned = 0")) return d1All([{ id: "usr_due" }]);
+      if (method === "all" && sql.includes("FROM subscription_scheduler_state AS scheduler")) return d1All([{ user_id: "usr_due" }]);
       if (method === "first" && sql.includes("SELECT settings_json FROM settings")) {
         return { settings_json: JSON.stringify(settings()) };
       }
       if (method === "first" && sql.includes("FROM subscription_scheduler_state")) return schedulerState(1);
+      if (method === "first" && sql.includes("SUM(CASE WHEN auto_renew")) return { auto_renew_count: 0, repeat_reminder_count: 1 };
+      if (method === "run" && sql.includes("subscription_scheduler_state")) return d1Run(1);
       if (method === "all" && sql.includes("FROM subscriptions")) {
         subscriptionQueries.push(sql);
         return d1All([]);

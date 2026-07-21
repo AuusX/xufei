@@ -278,8 +278,8 @@ const Statistics = () => {
     );
   };
 
-  // 与参考项目保持一致：统计页在“订阅数据/设置/汇率”任一未就绪时展示骨架屏。
-  if (subscriptionsQuery.isPending || settingsQuery.isPending || ratesLoading) {
+  // 汇率 hook 有内置 fallback；远端刷新中继续渲染统计内容，避免切页后因为第三方汇率慢而整页回退骨架。
+  if (subscriptionsQuery.isPending || settingsQuery.isPending) {
     return (
       <div className="app-page bg-background">
         <Header onAddSubscription={handleAddSubscription} availableTags={availableTags} />

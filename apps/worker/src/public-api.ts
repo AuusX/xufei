@@ -15,13 +15,11 @@ import {
   publicApiTokenPlainSchema,
   type ApiToken,
 } from "@renewlet/shared/schemas/public-api";
-import { SUBSCRIPTION_STATUSES } from "@renewlet/shared/runtime";
 import { requireAuth } from "./auth";
 import { randomToken, sha256 } from "./crypto";
 import {
   API_TOKEN_COLUMNS_FROM_API_TOKENS,
   SUBSCRIPTION_COLUMNS,
-  countSubscriptions,
   getSettings,
   getSubscription,
   listApiTokenRows,
@@ -32,6 +30,7 @@ import {
   subscriptionCursor,
   toApiSubscription,
 } from "./db";
+import { getSubscriptionStats, getSubscriptionTotal } from "./subscription-derived-state";
 import { dateOnlyInZone } from "./subscription-renewal";
 import { bearerToken, HttpError, readJson, requestLocale, successJson } from "./http";
 import { serverText } from "./server-i18n";
@@ -161,26 +160,16 @@ export async function readPublicApiSubscriptionsForUser(
   return publicApiSubscriptionsListPayloadSchema.parse({
     subscriptions: pageRows.map(toApiSubscription),
     nextCursor,
-    total: await countSubscriptions(env, userId),
+    total: await getSubscriptionTotal(env, userId),
   });
 }
 
 export async function readPublicApiStatusForUser(env: Env, userId: string): Promise<z.infer<typeof publicApiStatusPayloadSchema>> {
-  const byStatus = Object.fromEntries(SUBSCRIPTION_STATUSES.map((status) => [status, 0])) as Record<(typeof SUBSCRIPTION_STATUSES)[number], number>;
-  const result = await env.DB.prepare(`
-    SELECT status, COUNT(*) AS count
-    FROM subscriptions
-    WHERE user_id = ?
-    GROUP BY status
-  `).bind(userId).all<{ status: string; count: number }>();
-  for (const row of result.results) {
-    if (row.status in byStatus) byStatus[row.status as keyof typeof byStatus] = row.count;
-  }
-  const total = Object.values(byStatus).reduce((sum, count) => sum + count, 0);
+  const stats = await getSubscriptionStats(env, userId);
   return publicApiStatusPayloadSchema.parse({
     generatedAt: nowIso(),
-    total,
-    byStatus,
+    total: stats.total,
+    byStatus: stats.byStatus,
   });
 }
 

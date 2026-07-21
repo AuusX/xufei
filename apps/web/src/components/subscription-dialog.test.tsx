@@ -1,7 +1,7 @@
 // 订阅弹窗测试覆盖新增/编辑状态机、默认货币同步和 date-only 自动推算边界。
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { assertDateOnly } from "@/lib/time/date-only";
 import type { CostSharingMember, Subscription, SubscriptionDraft } from "@/types/subscription";
@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     ],
   },
 }));
+const FIXED_DIALOG_NOW = new Date("2026-06-01T12:00:00.000Z");
 
 vi.mock("@/contexts/CustomConfigContext", () => ({
   useCustomConfig: () => ({
@@ -36,6 +37,12 @@ vi.mock("@/hooks/use-settings", () => ({
   }),
 }));
 
+vi.mock("@/hooks/use-exchange-rates", () => ({
+  useExchangeRates: () => ({
+    convert: (amount: number) => amount,
+  }),
+}));
+
 vi.mock("@/components/logo-picker", () => ({
   LogoPicker: () => null,
 }));
@@ -45,6 +52,19 @@ beforeAll(() => {
   Element.prototype.setPointerCapture ??= vi.fn();
   Element.prototype.releasePointerCapture ??= vi.fn();
 });
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FIXED_DIALOG_NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+function setupUser() {
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+}
 
 function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
   return {
@@ -78,7 +98,7 @@ function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
 
 describe("SubscriptionDialog", () => {
   it("shows field errors on empty create submit instead of relying on native validation", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn<(subscription: SubscriptionDraft) => void>();
 
     render(
@@ -146,7 +166,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("keeps cost sharing member rows in a bounded manager view", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onOpenChange = vi.fn();
     let submittedMembers: CostSharingMember[] = [];
     const onSubmit = vi.fn<(subscription: Subscription) => void>((subscription) => {
@@ -245,7 +265,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("closes the member manager when the parent subscription dialog closes", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const dialogProps = {
       mode: "edit" as const,
       onOpenChange: vi.fn(),
@@ -281,7 +301,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("keeps a manually selected create currency instead of syncing back to the default", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
 
     render(
       <TooltipProvider delayDuration={0}>
@@ -312,7 +332,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("defaults new subscriptions to manual renewal and submits explicit auto-renew opt-in", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -343,7 +363,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("keeps auto renewal off when switching from one-time back to a recurring cycle", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
 
     render(
       <TooltipProvider delayDuration={0}>
@@ -370,7 +390,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("submits custom billing cycles with selectable units", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -458,7 +478,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("opens the date picker on the month of the selected field value", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const subscription: Subscription = {
       id: "sub-1",
       name: "OpenAI",
@@ -507,7 +527,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("shows an inline error for historical subscriptions whose renewal date is before the start date", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -533,7 +553,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("disables manual renewal dates before the selected start date", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
 
     render(
       <TooltipProvider delayDuration={0}>
@@ -580,7 +600,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("reuses existing tags and creates new tags when editing", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -615,7 +635,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("commits pending tag text when submitting without Enter", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -640,7 +660,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("removes an edited tag chip before submitting", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
@@ -665,7 +685,7 @@ describe("SubscriptionDialog", () => {
   });
 
   it("submits edited website and notes while preserving the subscription id", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onSubmit = vi.fn();
 
     render(

@@ -37,8 +37,8 @@ describe("Cloudflare subscription renewal scheduler", () => {
     const settingsQueries: string[] = [];
     const subscriptionQueries: string[] = [];
     const env = fakeEnv(({ sql, method }) => {
-      if (method === "all" && sql.includes("SELECT id FROM users WHERE banned = 0")) {
-        return d1All([{ id: "usr_idle" }]);
+      if (method === "all" && sql.includes("FROM subscription_scheduler_state AS scheduler")) {
+        return d1All([]);
       }
       if (method === "first" && sql.includes("FROM subscription_scheduler_state")) {
         return {
@@ -62,7 +62,7 @@ describe("Cloudflare subscription renewal scheduler", () => {
     });
 
     await expect(renewAutoSubscriptionsForAllUsers(env, new Date("2026-01-09T07:00:00.000Z"))).resolves.toEqual({
-      usersProcessed: 1,
+      usersProcessed: 0,
       subscriptionsUpdated: 0,
     });
 

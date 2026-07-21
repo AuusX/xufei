@@ -474,7 +474,7 @@ function checkReleaseBranchWorkflowTriggers() {
     { path: ".github/workflows/build-smoke.yml", name: "Build Smoke" },
   ];
 
-  // Release 分支 push 不跑质量门；required checks 只能绑定 PR 或 tag job，避免被过滤的 workflow 长期 pending。
+  // main/release push 不跑分支质量门；合并前看 PR，发布看 tag，避免稳定版合入后和 Release Publish 重复。
   for (const workflow of workflows) {
     const content = readFileSync(join(repoRoot, workflow.path), "utf8");
     const pullRequestBlock = workflowTriggerBlock(content, "pull_request");
@@ -485,13 +485,27 @@ function checkReleaseBranchWorkflowTriggers() {
         throw new Error(`${workflow.name} pull_request trigger must keep branch snippet: ${snippet.trim()}`);
       }
     }
-    for (const snippet of ["      - dev", "      - main"]) {
+    for (const snippet of ["      - dev"]) {
       if (!pushBlock.includes(snippet)) {
         throw new Error(`${workflow.name} push trigger must keep branch snippet: ${snippet.trim()}`);
       }
     }
-    if (pushBlock.includes("release/")) {
-      throw new Error(`${workflow.name} push trigger must not include release branches; release checks run on PR and tag workflows.`);
+    for (const blockedBranch of ["      - main", "release/"]) {
+      if (pushBlock.includes(blockedBranch)) {
+        throw new Error(`${workflow.name} push trigger must not include ${blockedBranch.trim()}; release checks run on PR and tag workflows.`);
+      }
+    }
+  }
+
+  const releaseWorkflow = readFileSync(join(repoRoot, ".github/workflows/release-publish.yml"), "utf8");
+  for (const snippet of [
+    "Validate stable tag source",
+    "github.repository == 'zhiyingzzhou/renewlet' && steps.version.outputs.is-stable == 'true'",
+    "git fetch origin main:refs/remotes/origin/main",
+    "git merge-base --is-ancestor \"$TAG_SHA\" \"$MAIN_SHA\"",
+  ]) {
+    if (!releaseWorkflow.includes(snippet)) {
+      throw new Error(`release-publish.yml must keep stable tag source guard: ${snippet}`);
     }
   }
 

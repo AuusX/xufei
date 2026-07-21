@@ -57,8 +57,10 @@ import {
   authenticatorMfaMethodsForUser,
 } from "./mfa";
 import { isAccountSecuritySchemaError } from "./account-security-schema";
+import { refreshSubscriptionSchedulerState } from "./subscription-scheduler-state";
 
 const DEFAULT_SESSION_TTL_DAYS = 30;
+const SESSION_LAST_SEEN_TOUCH_INTERVAL_MS = 15 * 60 * 1000;
 
 /**
  * appStatus 暴露认证前应用能力状态。
@@ -109,6 +111,7 @@ export async function createInitialAdmin(request: Request, env: Env): Promise<Re
     VALUES (?, ?, ?, 'admin', 0, '', ?, ?, ?)
   `).bind(userId, body.email.trim(), body.name.trim(), await hashPassword(body.password), timestamp, timestamp).run();
   await ensureSettings(env, userId, locale);
+  await refreshSubscriptionSchedulerState(env, userId, { resetAutoRenewCheck: false });
   return ok(201);
 }
 
@@ -378,6 +381,7 @@ export async function adminCreateUser(request: Request, env: Env): Promise<Respo
     INSERT INTO users (id, email, name, role, banned, ban_reason, password_hash, created_at, updated_at)
     VALUES (?, ?, ?, ?, 0, '', ?, ?, ?)
   `).bind(user.id, user.email, user.name, user.role, user.password_hash, timestamp, timestamp).run();
+  await refreshSubscriptionSchedulerState(env, user.id, { resetAutoRenewCheck: false });
   return successJson(adminUserPayloadSchema.parse({ user: toAdminUser(user) }), { status: 201 });
 }
 
@@ -492,7 +496,7 @@ export async function requireAuth(request: Request, env: Env): Promise<AuthConte
     created_at: row.session_created_at,
     last_seen_at: row.session_last_seen_at,
   };
-  await env.DB.prepare("UPDATE sessions SET last_seen_at = ? WHERE id = ?").bind(nowIso(), session.id).run();
+  await touchSessionLastSeenIfStale(env, session.id, session.last_seen_at);
   return { token, user, session };
 }
 
@@ -521,6 +525,14 @@ function toSessionResponse(token: string, user: UserRow, expiresAt: string): Ses
       banned: user.banned === 1,
     },
   };
+}
+
+async function touchSessionLastSeenIfStale(env: Env, sessionId: string, lastSeenAt: string): Promise<void> {
+  const lastSeen = Date.parse(lastSeenAt);
+  const now = Date.now();
+  if (!Number.isNaN(lastSeen) && now - lastSeen < SESSION_LAST_SEEN_TOUCH_INTERVAL_MS) return;
+  // last_seen_at 只是会话活跃审计，不参与认证授权；节流写入避免所有只读 API 都放大成 D1 write。
+  await env.DB.prepare("UPDATE sessions SET last_seen_at = ? WHERE id = ?").bind(new Date(now).toISOString(), sessionId).run();
 }
 
 function setupEnabled(env: Env): boolean {

@@ -22,6 +22,9 @@ func TestSystemVersionComparison(t *testing.T) {
 	}{
 		{name: "patch update", current: "0.1.0", latest: "0.1.1", want: true},
 		{name: "minor update", current: "0.1.9", latest: "0.2.0", want: true},
+		{name: "hotfix patch update", current: "0.2.9", latest: "0.2.91", want: true},
+		{name: "hotfix patch increment", current: "0.2.91", latest: "0.2.92", want: true},
+		{name: "minor hotfix patch update", current: "0.3.2", latest: "0.3.21", want: true},
 		{name: "equal stable", current: "0.1.0", latest: "0.1.0", want: false},
 		{name: "ignore latest prerelease", current: "0.1.0", latest: "0.2.0-rc.1", want: false},
 		{name: "stable channel ignores current prerelease", current: "0.2.0-rc.1", latest: "0.2.0", want: false},

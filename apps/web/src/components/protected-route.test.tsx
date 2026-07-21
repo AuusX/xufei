@@ -54,20 +54,36 @@ describe("ProtectedRoute", () => {
   it("redirects unauthenticated users before rendering protected content", () => {
     mocks.useSession.mockReturnValue({ data: null, isPending: false });
 
-	renderProtectedRoute();
+    renderProtectedRoute();
 
-	expect(screen.queryByText("private settings")).not.toBeInTheDocument();
-	const locations = screen.getAllByTestId("location");
-	expect(locations[locations.length - 1]).toHaveTextContent("/login?next=%2Fsettings%3Ftab%3Dnotifications");
-});
+    expect(screen.queryByText("private settings")).not.toBeInTheDocument();
+    const locations = screen.getAllByTestId("location");
+    expect(locations[locations.length - 1]).toHaveTextContent("/login?next=%2Fsettings%3Ftab%3Dnotifications");
+  });
 
-  it("keeps protected content hidden while session validation is pending", () => {
+  it("shows the matching route skeleton while cold session validation is pending", () => {
     mocks.useSession.mockReturnValue({ data: null, isPending: true });
 
     renderProtectedRoute();
 
     expect(screen.queryByText("private settings")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-page-skeleton")).toHaveAttribute("aria-busy", "true");
     expect(screen.getByTestId("location")).toHaveTextContent("/settings?tab=notifications");
+  });
+
+  it("keeps rendering protected content while a cached session refreshes", () => {
+    mocks.useSession.mockReturnValue({
+      data: {
+        session: { id: "token-1" },
+        user: { id: "user-1", email: "alice@example.com", name: "Alice", role: "admin", banned: false },
+      },
+      isPending: true,
+    });
+
+    renderProtectedRoute();
+
+    expect(screen.getByText("private settings")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-page-skeleton")).not.toBeInTheDocument();
   });
 
   it("renders protected content for authenticated users", () => {

@@ -3,7 +3,7 @@
  *
  * 架构位置：按渠道展示凭据、模板和测试按钮；敏感配置的校验与发送仍由后端通知模块负责。
  *
- * 注意： Webhook/WeCom/Bark/Discord URL 最终会触发后端外连，展示层不能把“看起来像 URL”当作安全保证。
+ * 注意： Webhook/DingTalk/WeCom/Bark/Discord URL 最终会触发后端外连，展示层不能把“看起来像 URL”当作安全保证。
  */
 import { useState } from 'react';
 import { Bot, ExternalLink, Check, Trash2 } from 'lucide-react';
@@ -13,7 +13,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { NumericInput } from '@/components/ui/numeric-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Textarea } from '@/components/ui/textarea';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,12 +27,11 @@ import { useI18n } from '@/i18n/I18nProvider';
 import type { MessageKey } from '@/i18n/messages';
 import {
   CHANNEL_LABELS,
-  WEBHOOK_HEADERS_PLACEHOLDER,
-  WEBHOOK_PAYLOAD_PLACEHOLDER,
   type AppSettings,
   type NotificationChannel,
 } from '@/types/subscription';
 import { ChoiceRadioGroup, CheckboxSettingRow, LoadingButtonContent, type UpdateSetting } from './settings-shared-controls';
+import { NotificationDingTalkConfigPanel, NotificationWebhookConfigPanel } from './notification-webhook-dingtalk-configs';
 import type { SettingsTelegramBotCommandsController } from '../application/use-telegram-bot-commands-controller';
 
 type Translate = (key: MessageKey, params?: Record<string, string | number>) => string;
@@ -42,6 +40,7 @@ const NOTIFICATION_TEST_LABEL_KEYS: Record<NotificationChannel, MessageKey> = {
   telegram: "settings.testChannel.telegram",
   notifyx: "settings.testChannel.notifyx",
   webhook: "settings.testChannel.webhook",
+  dingtalk: "settings.testChannel.dingtalk",
   wechat: "settings.testChannel.wechat",
   email: "settings.testChannel.email",
   bark: "settings.testChannel.bark",
@@ -112,6 +111,8 @@ function getNotificationChannelHelp(channel: NotificationChannel, t: Translate):
       return { href: 'https://t.me/botfather', label: t("settings.help.telegram") };
     case 'webhook':
       return { href: 'https://en.wikipedia.org/wiki/Webhook', label: t("settings.help.webhook") };
+    case 'dingtalk':
+      return { href: 'https://dingtalk.apifox.cn/doc-3550006.md', label: t("settings.help.dingtalk") };
     case 'wechat':
       return { href: 'https://developer.work.weixin.qq.com/document/path/91770', label: t("settings.help.wechat") };
     case 'bark':
@@ -342,74 +343,11 @@ export function NotificationChannelConfigPanel({
       ) : null}
 
       {channel === 'webhook' ? (
-        <>
-          <div className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="webhookUrl">Webhook URL</Label>
-              <Input
-                id="webhookUrl"
-                name="webhookUrl"
-                type="url"
-                inputMode="url"
-                enterKeyHint="next"
-                autoCapitalize="none"
-                spellCheck={false}
-                placeholder="https://your-webhook-endpoint.com/path"
-                value={settings.webhookUrl}
-                disabled={disabled}
-                onChange={(e) => updateSetting('webhookUrl', e.target.value)}
-                className="border-border bg-secondary"
-              />
-              <p className="text-xs text-muted-foreground">
-                {t("settings.webhookGetPostHelp")}
-              </p>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="grid gap-2">
-                <Label htmlFor="webhookMethod">{t("settings.webhookMethod")}</Label>
-                <Select
-                  value={settings.webhookMethod}
-                  disabled={disabled}
-                  onValueChange={(value) => updateSetting('webhookMethod', value as 'GET' | 'POST')}
-                >
-                  <SelectTrigger className="border-border bg-secondary">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="POST">POST</SelectItem>
-                    <SelectItem value="GET">GET</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="webhookHeaders">{t("settings.webhookHeaders")}</Label>
-              <Textarea
-                id="webhookHeaders"
-                placeholder={WEBHOOK_HEADERS_PLACEHOLDER}
-                value={settings.webhookHeaders}
-                disabled={disabled}
-                onChange={(e) => updateSetting('webhookHeaders', e.target.value)}
-                className="min-h-[80px] border-border bg-secondary font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">{t("settings.webhookHeadersHelp")}</p>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="webhookPayload">{t("settings.webhookPayload")}</Label>
-              <Textarea
-                id="webhookPayload"
-                placeholder={WEBHOOK_PAYLOAD_PLACEHOLDER}
-                value={settings.webhookPayload}
-                disabled={disabled}
-                onChange={(e) => updateSetting('webhookPayload', e.target.value)}
-                className="min-h-[80px] border-border bg-secondary font-mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                {t("settings.webhookPayloadHelp")}
-              </p>
-            </div>
-          </div>
-          <div className="mt-4 flex justify-end">
+        <NotificationWebhookConfigPanel
+          settings={settings}
+          updateSetting={updateSetting}
+          disabled={disabled}
+          testButton={(
             <NotificationTestButton
               channel="webhook"
               label={testChannelLabel}
@@ -417,8 +355,25 @@ export function NotificationChannelConfigPanel({
               onTest={onTest}
               disabled={disabled}
             />
-          </div>
-        </>
+          )}
+        />
+      ) : null}
+
+      {channel === 'dingtalk' ? (
+        <NotificationDingTalkConfigPanel
+          settings={settings}
+          updateSetting={updateSetting}
+          disabled={disabled}
+          testButton={(
+            <NotificationTestButton
+              channel="dingtalk"
+              label={testChannelLabel}
+              testingChannel={testingChannel}
+              onTest={onTest}
+              disabled={disabled}
+            />
+          )}
+        />
       ) : null}
 
       {channel === 'wechat' ? (

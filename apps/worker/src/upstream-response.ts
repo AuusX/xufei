@@ -204,7 +204,7 @@ function normalizedUpstreamSecrets(secrets: readonly string[]): string[] {
 
 function redactSignedQueryValues(value: string): string {
   return value.replace(
-    /([?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|Expires|access_key|accessKey|api_key|apikey|token|sendkey|sendKey|key)=)[^&\s"'<>]+/gi,
+    /([?&](?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|AWSAccessKeyId|Signature|sign|Expires|access_key|accessKey|api_key|apikey|token|sendkey|sendKey|key)=)[^&\s"'<>]+/gi,
     "$1[redacted]",
   );
 }

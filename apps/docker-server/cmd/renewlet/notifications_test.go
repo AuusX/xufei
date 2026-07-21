@@ -550,7 +550,7 @@ func TestMergeSettingsSanitizesNotificationFields(t *testing.T) {
 	if settings.ExchangeRateProvider != "floatrates" {
 		t.Fatalf("expected exchange-rate provider fallback, got %q", settings.ExchangeRateProvider)
 	}
-	if settings.WebhookMethod != "POST" || settings.WechatMessageType != "text" || settings.BarkServerURL != "https://api.day.app" {
+	if settings.WebhookMethod != "POST" || settings.DingTalkMessageType != dingtalkMessageTypeMarkdown || settings.WechatMessageType != "text" || settings.BarkServerURL != "https://api.day.app" {
 		t.Fatalf("settings were not sanitized: %#v", settings)
 	}
 	if settings.WebhookHeaders != "" || settings.WebhookPayload != "" {

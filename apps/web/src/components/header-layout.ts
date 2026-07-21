@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 
 export const headerLayout = {
-  shell: "sticky top-0 z-50 border-b border-border bg-card/80 backdrop-blur-xl",
+  shell: "sticky top-0 z-50 border-b border-border bg-card/80 backdrop-blur-xl relative",
   inner: "mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6 sm:py-4",
   primaryCluster: "flex min-w-0 items-center gap-3 lg:gap-5 xl:gap-8",
   brandCluster: "flex min-w-0 items-center gap-3",

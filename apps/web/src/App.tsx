@@ -9,45 +9,29 @@
 import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppScrollRestoration } from "@/components/app-scroll-restoration";
-import {
-  AdminUsersPageSkeleton,
-  CalendarPageSkeleton,
-  DashboardPageSkeleton,
-  DocumentRouteSkeleton,
-  LightweightRouteSkeleton,
-  SettingsPageSkeleton,
-  StatisticsPageSkeleton,
-  SubscriptionsPageSkeleton,
-} from "@/components/loading-skeleton";
 import { ProtectedRoute } from "@/components/protected-route";
+import { lazyRouteLoader, routeFallbackForPathname } from "@/lib/route-resources";
 
-const Dashboard = lazy(() => import("@/pages/dashboard"));
-const Subscriptions = lazy(() => import("@/pages/subscriptions"));
-const Calendar = lazy(() => import("@/pages/calendar"));
-const Statistics = lazy(() => import("@/pages/statistics"));
-const Settings = lazy(() => import("@/pages/settings"));
-const Setup = lazy(() => import("@/pages/setup"));
-const Login = lazy(() => import("@/pages/login"));
-const Privacy = lazy(() => import("@/pages/privacy"));
-const Terms = lazy(() => import("@/pages/terms"));
-const PublicStatus = lazy(() => import("@/pages/public-status"));
-const AdminUsers = lazy(() => import("@/pages/admin/users"));
-const ForgotPassword = lazy(() => import("@/pages/forgot-password"));
-const ResetPassword = lazy(() => import("@/pages/reset-password"));
-const NotFound = lazy(() => import("@/pages/not-found"));
+const Dashboard = lazy(lazyRouteLoader("dashboard"));
+const Subscriptions = lazy(lazyRouteLoader("subscriptions"));
+const Calendar = lazy(lazyRouteLoader("calendar"));
+const Statistics = lazy(lazyRouteLoader("statistics"));
+const Settings = lazy(lazyRouteLoader("settings"));
+const Setup = lazy(lazyRouteLoader("setup"));
+const Login = lazy(lazyRouteLoader("login"));
+const Privacy = lazy(lazyRouteLoader("privacy"));
+const Terms = lazy(lazyRouteLoader("terms"));
+const PublicStatus = lazy(lazyRouteLoader("publicStatus"));
+const AdminUsers = lazy(lazyRouteLoader("adminUsers"));
+const ForgotPassword = lazy(lazyRouteLoader("forgotPassword"));
+const ResetPassword = lazy(lazyRouteLoader("resetPassword"));
+const NotFound = lazy(lazyRouteLoader("notFound"));
 
 function RouteFallback() {
   const { pathname } = useLocation();
 
-  // 懒加载 fallback 必须跟随目标路由结构；否则 /settings 会短暂显示仪表盘骨架并造成首屏错位。
-  if (pathname === "/") return <DashboardPageSkeleton />;
-  if (pathname === "/subscriptions") return <SubscriptionsPageSkeleton />;
-  if (pathname === "/calendar") return <CalendarPageSkeleton />;
-  if (pathname === "/statistics") return <StatisticsPageSkeleton />;
-  if (pathname === "/settings") return <SettingsPageSkeleton />;
-  if (pathname === "/admin/users") return <AdminUsersPageSkeleton />;
-  if (pathname === "/privacy" || pathname === "/terms") return <DocumentRouteSkeleton />;
-  return <LightweightRouteSkeleton />;
+  // 懒加载 fallback 与预热注册表共用路由事实源，避免新增页面时骨架和 chunk loader 分叉。
+  return routeFallbackForPathname(pathname);
 }
 
 export default function App() {

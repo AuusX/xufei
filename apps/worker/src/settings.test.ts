@@ -68,6 +68,12 @@ class SettingsTestStatement {
       const settingsJson = this.state.rows.get(userId);
       return settingsJson ? { settings_json: settingsJson } as T : null;
     }
+    if (this.sql.includes("FROM subscription_scheduler_state")) {
+      return null;
+    }
+    if (this.sql.includes("SUM(CASE WHEN auto_renew")) {
+      return { auto_renew_count: 0, repeat_reminder_count: 0 } as T;
+    }
     return null;
   }
 
@@ -82,6 +88,9 @@ class SettingsTestStatement {
       } else {
         this.state.rows.set(userId, settingsJson);
       }
+      return d1Result([]);
+    }
+    if (this.sql.includes("INSERT INTO subscription_scheduler_state")) {
       return d1Result([]);
     }
     throw new Error(`unexpected settings query: ${this.sql}`);
@@ -155,6 +164,30 @@ describe("Cloudflare settings initialization", () => {
     expect(settings.monthlyBudget).toBe(2333);
   });
 
+  it("recovers invalid stored DingTalk template fields without dropping other settings", async () => {
+    const existing = {
+      ...createDefaultAppSettings({ locale: "en-US" }),
+      monthlyBudget: 2333,
+      dingtalkTitleTemplate: "x".repeat(501),
+      dingtalkContentTemplate: 42,
+    };
+    const state: SettingsTestState = {
+      rows: new Map([[USER_ID, JSON.stringify(existing)]]),
+      inserts: [],
+    };
+    const env = {
+      DB: new SettingsTestDB(state) as unknown as D1Database,
+      ASSETS: {} as Fetcher,
+      ASSETS_BUCKET: {} as R2Bucket,
+    } as Env;
+
+    const settings = await ensureSettings(env, USER_ID, "zh-CN");
+
+    expect(settings.dingtalkTitleTemplate).toBe("");
+    expect(settings.dingtalkContentTemplate).toBe("");
+    expect(settings.monthlyBudget).toBe(2333);
+  });
+
   it("readSettings ensures a settings row from the request locale", async () => {
     const { env, state } = createEnv();
 
@@ -194,5 +227,14 @@ describe("Cloudflare settings initialization", () => {
     await expect(updateSettings(settingsRequest("PUT", "en-US", { telegramMessageFormat: "markdown" }), env))
       .rejects.toMatchObject({ status: 400, code: "INVALID_PAYLOAD" });
     expect(JSON.parse(state.rows.get(USER_ID) ?? "{}")).toMatchObject({ telegramMessageFormat: "html" });
+  });
+
+  it("rejects overly long DingTalk templates on write", async () => {
+    const { env } = createEnv(createDefaultAppSettings({ locale: "en-US" }));
+
+    await expect(updateSettings(settingsRequest("PUT", "en-US", { dingtalkTitleTemplate: "x".repeat(501) }), env))
+      .rejects.toMatchObject({ status: 400, code: "INVALID_PAYLOAD" });
+    await expect(updateSettings(settingsRequest("PUT", "en-US", { dingtalkContentTemplate: "x".repeat(20_001) }), env))
+      .rejects.toMatchObject({ status: 400, code: "INVALID_PAYLOAD" });
   });
 });

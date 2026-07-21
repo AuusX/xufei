@@ -1,5 +1,11 @@
 import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
-import { appSettingsSchema, settingsUpdateBodySchema, type ApiAppSettings } from "@renewlet/shared/schemas/settings";
+import {
+  appSettingsSchema,
+  DINGTALK_CONTENT_TEMPLATE_MAX_LENGTH,
+  DINGTALK_TITLE_TEMPLATE_MAX_LENGTH,
+  settingsUpdateBodySchema,
+  type ApiAppSettings,
+} from "@renewlet/shared/schemas/settings";
 import { apiSubscriptionSchema, type ApiSubscription } from "@renewlet/shared/schemas/subscriptions";
 import { customConfigSchema } from "@renewlet/shared/schemas/custom-config";
 import { cleanBuiltInIconSourceSettingsPatch, mergeBuiltInIconSourceSettings } from "@renewlet/shared/built-in-icons";
@@ -283,10 +289,38 @@ export function normalizeSettingsJson(value: string): ApiAppSettings {
 
 function normalizeStoredSettingsPatch(value: unknown): unknown {
   if (!isRecord(value)) return value;
-  // 写入 API 仍严格拒绝非法值；读取坏库时只把 Telegram 样式降回 plain，不让整份 settings 掉默认。
+  // 写入 API 仍严格拒绝非法值；读取坏库时只修复可恢复字段，不让整份 settings 掉默认。
   const telegramMessageFormat = value["telegramMessageFormat"];
-  if (telegramMessageFormat === undefined || telegramMessageFormat === "plain" || telegramMessageFormat === "html") return value;
-  return { ...value, telegramMessageFormat: "plain" };
+  const dingtalkMessageType = value["dingtalkMessageType"];
+  const dingtalkTitleTemplate = value["dingtalkTitleTemplate"];
+  const dingtalkContentTemplate = value["dingtalkContentTemplate"];
+  return {
+    ...value,
+    ...(
+      telegramMessageFormat === undefined || telegramMessageFormat === "plain" || telegramMessageFormat === "html"
+        ? {}
+        : { telegramMessageFormat: "plain" }
+    ),
+    ...(
+      dingtalkMessageType === undefined || dingtalkMessageType === "markdown" || dingtalkMessageType === "text"
+        ? {}
+        : { dingtalkMessageType: "markdown" }
+    ),
+    ...(
+      typeof dingtalkTitleTemplate === "string" && codePointLength(dingtalkTitleTemplate) <= DINGTALK_TITLE_TEMPLATE_MAX_LENGTH
+        ? {}
+        : { dingtalkTitleTemplate: "" }
+    ),
+    ...(
+      typeof dingtalkContentTemplate === "string" && codePointLength(dingtalkContentTemplate) <= DINGTALK_CONTENT_TEMPLATE_MAX_LENGTH
+        ? {}
+        : { dingtalkContentTemplate: "" }
+    ),
+  };
+}
+
+function codePointLength(value: string): number {
+  return Array.from(value).length;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -514,22 +548,17 @@ export async function deleteAssetMetadata(env: Env, userId: string, id: string):
 
 export async function listSubscriptionTags(env: Env, userId: string, limit = 200): Promise<string[]> {
   // 这些标签名会进入第三方 AI prompt；只传用户已经持久化的标签文本，不带历史订阅名称、金额或备注。
-  const rows = await env.DB.prepare("SELECT tags_json FROM subscriptions WHERE user_id = ? AND tags_json != '[]' ORDER BY updated_at DESC LIMIT 1000")
-    .bind(userId)
-    .all<{ tags_json: string }>();
-  const tags: string[] = [];
-  const seen = new Set<string>();
-  for (const row of rows.results) {
-    for (const tag of parseStringArray(row.tags_json)) {
-      const value = tag.trim();
-      const key = value.toLowerCase();
-      if (!value || seen.has(key)) continue;
-      seen.add(key);
-      tags.push(value);
-      if (tags.length >= limit) return tags;
-    }
-  }
-  return tags;
+  const rows = await env.DB.prepare(`
+    SELECT tag
+    FROM subscription_tags
+    WHERE user_id = ?
+    GROUP BY tag_norm
+    ORDER BY MAX(updated_at) DESC, tag_norm ASC
+    LIMIT ?
+  `)
+    .bind(userId, limit)
+    .all<{ tag: string }>();
+  return rows.results.map((row) => row.tag);
 }
 
 /** parseStringArray 用于读取历史 JSON 字段；坏值回落为空数组，不把脏数据继续传给前端。 */

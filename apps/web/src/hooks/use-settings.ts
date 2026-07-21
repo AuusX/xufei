@@ -8,7 +8,7 @@
  * 注意： 未登录返回 DEFAULT_SETTINGS 是为了让公共页面/登录前 Provider 能安全渲染；
  * 受保护页面仍由 AuthSync 控制访问。
  */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_SETTINGS,
   type AppSettings,
@@ -19,13 +19,17 @@ export { normalizeSettings };
 
 export const SETTINGS_QUERY_KEY = ["settings"] as const;
 
-export function useSettings() {
-  return useQuery({
+export function settingsQueryOptions() {
+  return queryOptions({
     queryKey: SETTINGS_QUERY_KEY,
     queryFn: () => settingsService.get(),
     // settings 是用户级配置真相源；刷新只由保存、导入和认证切换显式触发，避免虚拟列表 item 挂载放大成网络风暴。
     staleTime: Infinity,
   });
+}
+
+export function useSettings() {
+  return useQuery(settingsQueryOptions());
 }
 
 export function useUpdateSettings() {

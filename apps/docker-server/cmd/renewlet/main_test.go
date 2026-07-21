@@ -91,6 +91,31 @@ func TestExternalRequestOriginFallsBackWhenForwardedHostIsInvalid(t *testing.T) 
 	}
 }
 
+func TestStaticCacheControlSplitsAssetsFromHTMLFallback(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html":                  {Data: []byte("<!doctype html>")},
+		"assets/app.abc123.js":        {Data: []byte("console.log('renewlet')")},
+		"renewlet-theme-bootstrap.js": {Data: []byte("document.documentElement.classList.add('dark')")},
+	}
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/assets/app.abc123.js", want: "public, max-age=31536000, immutable"},
+		{path: "/assets/missing.js", want: "no-cache"},
+		{path: "/settings", want: "no-cache"},
+		{path: "/index.html", want: "no-cache"},
+		{path: "/renewlet-theme-bootstrap.js", want: "no-cache"},
+	}
+
+	for _, tt := range tests {
+		request := httptest.NewRequest(http.MethodGet, tt.path, nil)
+		if got := staticCacheControl(request, fsys); got != tt.want {
+			t.Fatalf("staticCacheControl(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
 func TestStaticFallbackSharesMuxWithProductAPIFallbacks(t *testing.T) {
 	app := newSchemaTestApp(t)
 	if err := ensureSchema(app); err != nil {
@@ -128,6 +153,17 @@ func TestStaticFallbackSharesMuxWithProductAPIFallbacks(t *testing.T) {
 		if got := spa.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 			t.Fatalf("expected static security headers for %s, got X-Content-Type-Options=%q", target, got)
 		}
+		if got := spa.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("expected SPA fallback cache policy for %s, got Cache-Control=%q", target, got)
+		}
+	}
+
+	asset := serve(http.MethodGet, "/assets/app.js")
+	if asset.Code != http.StatusOK {
+		t.Fatalf("expected asset request to return 200, got %d: %s", asset.Code, asset.Body.String())
+	}
+	if got := asset.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("expected immutable asset cache policy, got Cache-Control=%q", got)
 	}
 
 	notFound := serve(http.MethodGet, "/api/app/does-not-exist")

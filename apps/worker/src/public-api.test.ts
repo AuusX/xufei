@@ -107,6 +107,19 @@ class PublicApiTestStatement {
       const count = this.state.subscriptions.filter((row) => row.user_id === userId).length;
       return { count } as T;
     }
+    if (this.sql.includes("FROM subscription_user_stats")) {
+      const userId = String(this.values[0]);
+      const statusCounts: Record<string, number> = { active: 0, trial: 0, paused: 0, cancelled: 0, expired: 0 };
+      const rows = this.state.subscriptions.filter((row) => row.user_id === userId);
+      for (const row of rows) statusCounts[row.status] = (statusCounts[row.status] ?? 0) + 1;
+      return {
+        user_id: userId,
+        total_count: rows.length,
+        status_counts_json: JSON.stringify(statusCounts),
+        created_at: "2026-06-01T00:00:00.000Z",
+        updated_at: "2026-06-01T00:00:00.000Z",
+      } as T;
+    }
     if (this.sql.includes("SELECT settings_json FROM settings")) {
       return this.state.settingsJson === null ? null : { settings_json: this.state.settingsJson } as T;
     }

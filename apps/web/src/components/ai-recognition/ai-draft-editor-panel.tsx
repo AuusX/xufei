@@ -16,6 +16,7 @@ import type { AIDraftBlockingIssue, AIDraftBlockingIssueCode } from "@/modules/a
 import { formatImportMessage } from "@/modules/import-export/domain/import-message-format";
 import type { CustomConfig } from "@/types/config";
 import type { AppSettings } from "@/types/subscription";
+import type { SubscriptionFormState } from "@/types/subscription-form";
 
 interface AIDraftEditorPanelProps {
   draftId: string;
@@ -83,11 +84,21 @@ export function AIDraftEditorPanel({
     setFormData(aiDraftToSubscriptionFormState(draft, { settings, config }));
   }, [config, draft, initializationKey, settings]);
 
-  const markAutoDateSynced = useCallback(() => {
-    shouldSyncDraftRef.current = true;
-  }, []);
+  const syncAutoDatePatch = useCallback((patch: Pick<Partial<SubscriptionFormState>, "autoCalculate" | "nextBillingDate">) => {
+    // AI 未返回的核心字段要等用户确认；自动日期 effect 只能回写日期字段，不能顺手确认默认货币/周期。
+    const draftPatch: Partial<AiRecognizedSubscriptionDraft> = {};
+    if ("nextBillingDate" in patch) {
+      draftPatch.nextBillingDate = patch.nextBillingDate ?? null;
+    }
+    if ("autoCalculate" in patch) {
+      draftPatch.autoCalculateNextBillingDate = draft.billingCycle === "one-time" ? false : patch.autoCalculate ?? false;
+    }
+    if (Object.keys(draftPatch).length > 0) {
+      onChangeRef.current(draftPatch);
+    }
+  }, [draft.billingCycle]);
 
-  useSubscriptionFormAutoDates(formData, setFormData, billingReferenceDate, markAutoDateSynced);
+  useSubscriptionFormAutoDates(formData, setFormData, billingReferenceDate, syncAutoDatePatch);
 
   useEffect(() => {
     if (!shouldSyncDraftRef.current) return;

@@ -40,6 +40,7 @@ export const messages = [
   msg({ id: "channel.telegram", message: "Telegram" }),
   msg({ id: "channel.notifyx", message: "Notifyx" }),
   msg({ id: "channel.webhook", message: "Webhook 通知" }),
+  msg({ id: "channel.dingtalk", message: "钉钉机器人" }),
   msg({ id: "channel.wechat", message: "企业微信机器人" }),
   msg({ id: "channel.email", message: "邮件通知" }),
   msg({ id: "channel.bark", message: "Bark" }),

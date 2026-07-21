@@ -7,8 +7,8 @@
  *
  * 状态链路：
  * ```
- * 图片 src -> 判断是否私有资产 -> fetch(blob + auth) -> createObjectURL -> img
- * src 变化/卸载 -> abort fetch -> revokeObjectURL
+ * 图片 src -> 判断是否私有资产 -> 登录态内存缓存/in-flight 复用 -> object URL -> img
+ * src 变化/卸载 -> 释放引用 -> 空闲后 revokeObjectURL
  * ```
  *
  * 注意： object URL 必须在 src 变化或卸载时释放，否则长时间管理图标会造成内存泄漏。
@@ -24,6 +24,18 @@ type AuthorizedImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src" | "o
   onError?: (() => void) | undefined;
 };
 
+const AUTHORIZED_IMAGE_IDLE_REVOKE_MS = 60_000;
+
+interface AuthorizedImageCacheEntry {
+  authKey: string;
+  refs: number;
+  objectUrl: string | null;
+  promise: Promise<string>;
+  revokeTimer: ReturnType<typeof setTimeout> | null;
+}
+
+const authorizedImageCache = new Map<string, AuthorizedImageCacheEntry>();
+
 function isPrivateAssetUrl(src: string): boolean {
   if (src.startsWith("/api/app/assets/")) return true;
   try {
@@ -31,6 +43,87 @@ function isPrivateAssetUrl(src: string): boolean {
     return url.origin === window.location.origin && url.pathname.startsWith("/api/app/assets/");
   } catch {
     return false;
+  }
+}
+
+function authorizedImageAuthKey(headers: Record<string, string>): string {
+  return headers["Authorization"] ?? "";
+}
+
+function authorizedImageCacheKey(src: string, authKey: string): string {
+  // authKey 只存在内存 Map；用它隔离用户切换后的私有资产 blob URL，不写 storage、不进真实图片 URL。
+  return `${authKey}\n${src}`;
+}
+
+async function acquireAuthorizedImageObjectUrl(src: string, signal: AbortSignal): Promise<{ objectUrl: string; release: () => void }> {
+  const headers = getAuthHeader();
+  const authKey = authorizedImageAuthKey(headers);
+  clearIdleAuthorizedImageCacheForOtherAuth(authKey);
+  const key = authorizedImageCacheKey(src, authKey);
+  let entry = authorizedImageCache.get(key);
+  if (!entry) {
+    entry = {
+      authKey,
+      refs: 0,
+      objectUrl: null,
+      revokeTimer: null,
+      promise: fetchAuthorizedImageObjectUrl(src, headers),
+    };
+    authorizedImageCache.set(key, entry);
+  }
+  if (entry.revokeTimer) {
+    clearTimeout(entry.revokeTimer);
+    entry.revokeTimer = null;
+  }
+  entry.refs += 1;
+  try {
+    const objectUrl = await entry.promise;
+    if (signal.aborted) {
+      releaseAuthorizedImageObjectUrl(key);
+      throw new DOMException("Aborted", "AbortError");
+    }
+    return { objectUrl, release: () => releaseAuthorizedImageObjectUrl(key) };
+  } catch (error) {
+    releaseAuthorizedImageObjectUrl(key);
+    if (authorizedImageCache.get(key)?.refs === 0) authorizedImageCache.delete(key);
+    throw error;
+  }
+}
+
+async function fetchAuthorizedImageObjectUrl(src: string, headers: Record<string, string>): Promise<string> {
+  const response = await fetch(src, {
+    credentials: "include",
+    headers,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const authKey = authorizedImageAuthKey(headers);
+  const entry = authorizedImageCache.get(authorizedImageCacheKey(src, authKey));
+  if (entry) entry.objectUrl = objectUrl;
+  return objectUrl;
+}
+
+function releaseAuthorizedImageObjectUrl(key: string): void {
+  const entry = authorizedImageCache.get(key);
+  if (!entry) return;
+  entry.refs = Math.max(0, entry.refs - 1);
+  if (entry.refs > 0 || entry.revokeTimer) return;
+  // object URL 可能被同页多个 logo 共用；最后一个引用释放后短暂保留，吸收列表重排/分页切换造成的重复挂载。
+  entry.revokeTimer = setTimeout(() => {
+    if (entry.refs > 0) return;
+    if (entry.objectUrl) URL.revokeObjectURL(entry.objectUrl);
+    authorizedImageCache.delete(key);
+  }, AUTHORIZED_IMAGE_IDLE_REVOKE_MS);
+}
+
+function clearIdleAuthorizedImageCacheForOtherAuth(authKey: string): void {
+  for (const [key, entry] of authorizedImageCache) {
+    if (entry.authKey === authKey || entry.refs > 0) continue;
+    // 仍被旧组件引用的 URL 交给 release 流程收尾；这里只清空空闲项，避免用户切换时撤销正在渲染的 src。
+    if (entry.revokeTimer) clearTimeout(entry.revokeTimer);
+    if (entry.objectUrl) URL.revokeObjectURL(entry.objectUrl);
+    authorizedImageCache.delete(key);
   }
 }
 
@@ -51,22 +144,15 @@ function useAuthorizedImageSrc(src: string | undefined): { src: string | undefin
     }
 
     const controller = new AbortController();
-    let objectUrl: string | undefined;
+    let releaseObjectUrl: (() => void) | undefined;
 
     setResolvedSrc(undefined);
     void (async () => {
       try {
-        const response = await fetch(src, {
-          credentials: "include",
-          headers: getAuthHeader(),
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blob = await response.blob();
-        if (controller.signal.aborted) return;
+        const acquired = await acquireAuthorizedImageObjectUrl(src, controller.signal);
+        releaseObjectUrl = acquired.release;
         // 用 object URL 交给 <img> 渲染，可以保留浏览器图片解码能力，同时避免把认证 token 暴露在 URL 上。
-        objectUrl = URL.createObjectURL(blob);
-        setResolvedSrc(objectUrl);
+        setResolvedSrc(acquired.objectUrl);
       } catch {
         if (!controller.signal.aborted) setFailed(true);
       }
@@ -74,7 +160,7 @@ function useAuthorizedImageSrc(src: string | undefined): { src: string | undefin
 
     return () => {
       controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      releaseObjectUrl?.();
     };
   }, [shouldAuthorize, src]);
 

@@ -24,7 +24,14 @@ import { I18nProvider } from "@/i18n/I18nProvider";
 /** 应用级 Provider 组合（请将所有页面都包在里面）。 */
 export default function Providers({ children }: { children: React.ReactNode }) {
   // QueryClient 必须随应用生命周期稳定存在；认证切换、settings 保存和分页缓存都依赖同一个 cache graph。
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: 1,
+        staleTime: 15_000,
+      },
+    },
+  }));
 
   return (
     <QueryClientProvider client={queryClient}>
