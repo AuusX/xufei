@@ -14,7 +14,7 @@ import type { NotificationEmailMessage } from "@renewlet/shared/email-template";
 import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import { DEFAULT_SERVER_I18N_LOCALE } from "../../server-i18n";
 import type { Env } from "../../types";
-import { getCarpoolNotification, listActiveSubscriptions, type CarpoolNotificationConfig } from "./store";
+import { appendCarpoolNotificationLog, getCarpoolNotification, listActiveSubscriptions, type CarpoolNotificationConfig } from "./store";
 
 function overlayKey(subscriptionId: string, memberId: string): string {
   return `${subscriptionId} ${memberId}`;
@@ -76,21 +76,42 @@ function carpoolWebhookSettings(config: CarpoolNotificationConfig) {
   };
 }
 
-/** 通过拼车专属 webhook 发送一条消息（动态 import 以避开测试环境的 cloudflare:sockets）。 */
-async function sendViaCarpoolWebhook(env: Env, config: CarpoolNotificationConfig, message: NotificationEmailMessage): Promise<void> {
+/**
+ * 通过拼车专属 webhook 发送一条消息，并记录发送日志（成功/失败原因）。
+ * 动态 import 以避开测试环境的 cloudflare:sockets；失败会抛出（调用方决定是否吞掉）。
+ */
+async function sendCarpoolWebhook(
+  env: Env,
+  userId: string,
+  config: CarpoolNotificationConfig,
+  message: NotificationEmailMessage,
+  context: string,
+): Promise<void> {
   const { sendChannel } = await import("../../notification-channel-send");
-  await sendChannel(env, "webhook", carpoolWebhookSettings(config), message, DEFAULT_SERVER_I18N_LOCALE);
+  try {
+    await sendChannel(env, "webhook", carpoolWebhookSettings(config), message, DEFAULT_SERVER_I18N_LOCALE);
+    await appendCarpoolNotificationLog(env, userId, true, null, context);
+  } catch (error) {
+    await appendCarpoolNotificationLog(env, userId, false, error instanceof Error ? error.message : String(error), context);
+    throw error;
+  }
 }
 
-/** 供「测试」按钮调用：用给定配置发一条测试通知（配置无效会抛错，由路由转成错误响应）。 */
-export async function sendCarpoolTestNotification(env: Env, config: CarpoolNotificationConfig): Promise<void> {
-  await sendViaCarpoolWebhook(env, config, {
-    title: "拼车通知测试",
-    content: "这是一条来自「拼车」的测试通知。收到即说明 webhook 配置正确。",
-    timestamp: new Date().toISOString(),
-    hasPayload: false,
-    items: [],
-  });
+/** 供「测试」按钮调用：用给定配置发一条测试通知并记日志（配置无效会抛错，由路由转成错误响应）。 */
+export async function sendCarpoolTestNotification(env: Env, userId: string, config: CarpoolNotificationConfig): Promise<void> {
+  await sendCarpoolWebhook(
+    env,
+    userId,
+    config,
+    {
+      title: "拼车通知测试",
+      content: "这是一条来自「拼车」的测试通知。收到即说明 webhook 配置正确。",
+      timestamp: new Date().toISOString(),
+      hasPayload: false,
+      items: [],
+    },
+    "测试发送",
+  );
 }
 
 async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
@@ -112,10 +133,9 @@ async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
   if (due.length === 0) return;
 
   try {
-    await sendViaCarpoolWebhook(env, config, buildMessage(due, now));
-  } catch (error) {
-    // 发送失败也照常记 reminded_for，避免 webhook 抖动时每分钟重复轰炸；错误只记日志。
-    console.error("carpool_reminder_send_failed", { event: "carpool_reminder_send_failed", userId, error: error instanceof Error ? error.message : String(error) });
+    await sendCarpoolWebhook(env, userId, config, buildMessage(due, now), `到期提醒 ${due.length} 位车友`);
+  } catch {
+    // 发送失败（原因已写入通知日志）也照常记 reminded_for，避免 webhook 抖动时每分钟重复轰炸。
   }
 
   await env.DB.batch(

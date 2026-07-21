@@ -40,6 +40,7 @@ export interface CarpoolSubscription {
   status: string;
   nextBillingDate: string;
   account: string | null;
+  cardLast4: string | null;
   enabled: boolean;
   splitMode: CarpoolSplitMode;
   members: CarpoolMember[];
@@ -84,6 +85,7 @@ export interface SaveCarpoolMembersInput {
   enabled: boolean;
   splitMode: CarpoolSplitMode;
   account?: string;
+  cardLast4?: string;
   members: CarpoolMemberDraft[];
 }
 
@@ -208,4 +210,18 @@ export async function testCarpoolNotification(config: CarpoolNotification): Prom
     method: "POST",
     body: JSON.stringify(config),
   });
+}
+
+export interface CarpoolNotificationLog {
+  id: string;
+  createdAt: string;
+  ok: boolean;
+  error: string | null;
+  context: string | null;
+}
+
+/** 读取拼车通知发送历史（含失败原因）。 */
+export async function fetchCarpoolNotificationLog(): Promise<CarpoolNotificationLog[]> {
+  const data = await apiFetch<{ log: CarpoolNotificationLog[] } | null>("/api/custom/carpool/notification/log");
+  return data?.log ?? [];
 }
