@@ -1,6 +1,6 @@
 name: Build Smoke
 
-# 面向 fork 和上游分支同步的无密钥构建冒烟：只验证 Docker/Cloudflare 构建路径，不推镜像、不部署远端。
+# 面向 fork、PR 和 dev 分支的无密钥构建冒烟；main/release 发布构建由 PR 与 tag workflow 覆盖。
 on:
   pull_request:
     branches:
@@ -10,8 +10,6 @@ on:
   push:
     branches:
       - dev
-      - main
-      - "release/**"
   workflow_dispatch:
 
 permissions:

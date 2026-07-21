@@ -26,6 +26,8 @@ env:
 
 jobs:
   deploy:
+    # 官方生产 Worker 只能由 Release Publish 的 tag job 覆盖；自管入口在官方仓库只跑 dev，fork/main 仍保留同步部署路径。
+    if: ${{ github.repository != 'zhiyingzzhou/renewlet' || github.ref == 'refs/heads/dev' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
