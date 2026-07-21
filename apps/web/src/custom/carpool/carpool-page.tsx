@@ -24,6 +24,9 @@ import {
 
 const CARPOOL_QUERY_KEY = ["carpool", "subscriptions"] as const;
 
+/** 稳定的空数组引用：数据未加载时避免 useMemo 依赖每次渲染都变化。 */
+const EMPTY_SUBSCRIPTIONS: CarpoolSubscription[] = [];
+
 interface DraftMember {
   key: string;
   id?: string;
@@ -69,7 +72,7 @@ export default function CarpoolPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
 
-  const subscriptions = query.data ?? [];
+  const subscriptions = query.data ?? EMPTY_SUBSCRIPTIONS;
   const summary = useMemo(() => {
     const active = subscriptions.filter((item) => item.enabled && item.members.length > 0);
     const recoverable = active.reduce(

@@ -52,12 +52,12 @@ export interface SaveCarpoolMembersInput {
 function extractErrorMessage(payload: unknown): string | null {
   if (!payload || typeof payload !== "object") return null;
   const record = payload as Record<string, unknown>;
-  const error = record.error;
+  const error = record["error"];
   if (error && typeof error === "object" && "message" in error) {
-    const message = (error as Record<string, unknown>).message;
+    const message = (error as Record<string, unknown>)["message"];
     if (typeof message === "string") return message;
   }
-  return typeof record.message === "string" ? record.message : null;
+  return typeof record["message"] === "string" ? record["message"] : null;
 }
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
