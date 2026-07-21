@@ -103,24 +103,35 @@ function parseHeaders(raw: string): Headers {
   return headers;
 }
 
-/** 拼车专属 webhook 发送：支持纯文本或 JSON 负载，带 SSRF 校验与 10s 超时。 */
+function collectSecrets(headers: Headers): string[] {
+  const out: string[] = [];
+  headers.forEach((value, key) => {
+    const name = key.toLowerCase();
+    if (name === "authorization" || name.includes("token") || name.includes("secret") || name.includes("key") || name.includes("signature")) {
+      out.push(value);
+    }
+  });
+  return out;
+}
+
+/** 拼车专属 webhook 发送：支持纯文本或 JSON 负载。出站统一走上游 `sendNotificationRequest`（超时/SSRF/脱敏），不用裸 fetch。 */
 async function sendRawWebhook(config: CarpoolNotificationConfig, message: NotificationEmailMessage): Promise<void> {
-  const { assertSafeOutboundUrl } = await import("../../outbound-url-policy");
+  const [{ assertSafeOutboundUrl }, { sendNotificationRequest, requireNotificationHttpOk }] = await Promise.all([
+    import("../../outbound-url-policy"),
+    import("../../notification-http"),
+  ]);
   const url = await assertSafeOutboundUrl(config.webhookUrl, DEFAULT_SERVER_I18N_LOCALE);
 
   const headers = parseHeaders(config.webhookHeaders);
   const method = config.webhookMethod === "GET" ? "GET" : "POST";
-  const body = renderCarpoolPayload(config.webhookPayload, message);
   if (method !== "GET" && !headers.has("content-type")) headers.set("content-type", "text/plain; charset=utf-8");
 
-  const init: RequestInit = { method, headers, signal: AbortSignal.timeout(10_000) };
-  if (method !== "GET") init.body = body;
+  const init: RequestInit = { method, headers };
+  if (method !== "GET") init.body = renderCarpoolPayload(config.webhookPayload, message);
 
-  const response = await fetch(url.toString(), init);
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Webhook 返回 ${response.status}${text ? `：${text.slice(0, 200)}` : ""}`);
-  }
+  const secrets = collectSecrets(headers);
+  const response = await sendNotificationRequest(url, init, "Carpool", DEFAULT_SERVER_I18N_LOCALE, { secrets });
+  await requireNotificationHttpOk(response, "Carpool", DEFAULT_SERVER_I18N_LOCALE, { secrets });
 }
 
 /** 发送并记录日志（成功/失败原因）；失败会抛出，由调用方决定是否吞掉。 */
