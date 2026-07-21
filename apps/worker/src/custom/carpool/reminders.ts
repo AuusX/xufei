@@ -11,7 +11,6 @@
  */
 import type { NotificationEmailMessage } from "@renewlet/shared/email-template";
 import { getSettings } from "../../db";
-import { sendChannels } from "../../notification-channel-send";
 import { DEFAULT_SERVER_I18N_LOCALE } from "../../server-i18n";
 import type { Env } from "../../types";
 import { listActiveSubscriptions } from "./store";
@@ -82,6 +81,9 @@ async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
 
   const settings = await getSettings(env, userId);
   if (settings.enabledChannels.length > 0) {
+    // 动态 import：notification-channel-send 传递依赖 smtp.ts → `cloudflare:sockets`（Workers 专有模块），
+    // 顶层静态引入会让 Node 下的 vitest 在加载 index.ts 时解析失败；只在真正发送时按需加载。
+    const { sendChannels } = await import("../../notification-channel-send");
     // sendChannels 是「尽力发送」，不抛异常；返回的 summary 这里不需要。
     await sendChannels(env, settings.enabledChannels, settings, buildMessage(due, now), DEFAULT_SERVER_I18N_LOCALE);
   }
