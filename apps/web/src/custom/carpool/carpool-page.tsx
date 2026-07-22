@@ -11,7 +11,7 @@
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Bot, CarFront, ChevronLeft, Copy, CreditCard, Loader2, Mail, MessageCircle, Plus, Trash2 } from "lucide-react";
+import { Bell, Bot, CarFront, ChevronLeft, CreditCard, Loader2, Mail, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Header } from "@/components/header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -22,6 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import { NotificationDialog } from "@/custom/carpool/notification-dialog";
+import { CopyButton } from "@/custom/carpool/copy-button";
 import {
   addSubscriptionToPlan,
   createCarpoolPlan,
@@ -30,6 +31,7 @@ import {
   fetchCarpoolPlans,
   fetchCarpoolSubscriptions,
   removeSubscriptionFromPlan,
+  renewCarpoolMember,
   saveCarpoolMembers,
   type CarpoolBillingCycle,
   type CarpoolMember,
@@ -91,31 +93,6 @@ function expiryBadge(member: CarpoolMember): { text: string; className: string }
 function memberPayText(member: CarpoolMember, currency: string): string {
   if (member.monthlyAmountCny != null) return `${formatCny(member.monthlyAmountCny)}/月`;
   return `${formatMoney(member.amount, currency)}/月`;
-}
-
-/** 点击复制字段内容的小图标按钮（在可点击卡片内用 stopPropagation 阻止冒泡打开编辑器）。 */
-function CopyButton({ value }: { value: string }) {
-  const { toast } = useToast();
-  return (
-    <button
-      type="button"
-      aria-label="复制"
-      className="shrink-0 text-muted-foreground transition hover:text-foreground"
-      onClick={(e) => {
-        e.stopPropagation();
-        if (!navigator.clipboard) {
-          toast({ title: "复制失败", description: "浏览器不支持或非安全上下文", variant: "destructive" });
-          return;
-        }
-        void navigator.clipboard.writeText(value).then(
-          () => toast({ title: "已复制" }),
-          () => toast({ title: "复制失败", variant: "destructive" }),
-        );
-      }}
-    >
-      <Copy className="h-3 w-3" />
-    </button>
-  );
 }
 
 interface DraftMember {
@@ -379,6 +356,16 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
     onSuccess: () => { invalidate(); setEditingSubId(null); setDraft(null); toast({ title: "已保存拼车信息" }); },
     onError: onMutationError("保存失败"),
   });
+  const renewMemberMutation = useMutation({
+    mutationFn: (variables: { subscriptionId: string; memberId: string }) => renewCarpoolMember(variables.subscriptionId, variables.memberId),
+    onSuccess: (result, variables) => {
+      invalidate();
+      // 同步更新打开中的草稿，避免丢失其他未保存改动。
+      setDraft((c) => (c ? { ...c, members: c.members.map((m) => (m.id === variables.memberId ? { ...m, expiryDate: result.newExpiry ?? m.expiryDate, autoCalcExpiry: false, status: "active" } : m)) } : c));
+      toast({ title: "已续费", description: result.newExpiry ? `新到期日 ${result.newExpiry}` : undefined });
+    },
+    onError: onMutationError("续费失败"),
+  });
 
   const startEditing = (subscription: CarpoolSubscription) => {
     setEditingSubId(subscription.id);
@@ -518,6 +505,8 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
               onAddMember={() => setDraft((c) => (c ? { ...c, members: [...c.members, newDraftMember()] } : c))}
               onRemoveMember={(memberKey) => setDraft((c) => (c ? { ...c, members: c.members.filter((m) => m.key !== memberKey) } : c))}
               onUpdateMember={updateMember}
+              onRenewMember={(memberId) => renewMemberMutation.mutate({ subscriptionId: editingSubscription.id, memberId })}
+              renewing={renewMemberMutation.isPending}
               onRemoveFromPlan={() => { if (window.confirm(`把「${editingSubscription.name}」移出本计划？订阅本身不会被删除。`)) removeMutation.mutate(editingSubscription.id); }}
               onCancel={closeEditor}
               onSave={() => save(editingSubscription)}
@@ -639,6 +628,8 @@ interface CarpoolEditorProps {
   onAddMember: () => void;
   onRemoveMember: (memberKey: string) => void;
   onUpdateMember: (memberKey: string, patch: Partial<DraftMember>) => void;
+  onRenewMember: (memberId: string) => void;
+  renewing: boolean;
   onRemoveFromPlan: () => void;
   onCancel: () => void;
   onSave: () => void;
@@ -681,9 +672,16 @@ function CarpoolEditor(props: CarpoolEditorProps) {
             <div key={member.key} className="rounded-md border p-3">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">车友</span>
-                <Button variant="ghost" size="icon" aria-label="删除车友" className="h-7 w-7" onClick={() => props.onRemoveMember(member.key)}>
-                  <Trash2 className="h-4 w-4 text-destructive" />
-                </Button>
+                <div className="flex items-center gap-1">
+                  {member.id ? (
+                    <Button variant="outline" size="sm" className="h-7 text-xs" disabled={props.renewing} onClick={() => { if (member.id) props.onRenewMember(member.id); }}>
+                      <RefreshCw className="mr-1 h-3.5 w-3.5" /> 续费
+                    </Button>
+                  ) : null}
+                  <Button variant="ghost" size="icon" aria-label="删除车友" className="h-7 w-7" onClick={() => props.onRemoveMember(member.key)}>
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <div>
