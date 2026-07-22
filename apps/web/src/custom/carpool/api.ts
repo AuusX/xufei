@@ -186,6 +186,15 @@ export async function saveCarpoolMembers(subscriptionId: string, input: SaveCarp
   );
 }
 
+/** 手动续费一个成员：到期日 +1 个扣费周期、重置提醒；返回新的到期日。 */
+export async function renewCarpoolMember(subscriptionId: string, memberId: string): Promise<{ newExpiry: string | null }> {
+  const data = await apiFetch<{ ok: boolean; newExpiry: string | null } | null>(
+    `/api/custom/carpool/subscriptions/${encodeURIComponent(subscriptionId)}/members/${encodeURIComponent(memberId)}/renew`,
+    { method: "POST" },
+  );
+  return { newExpiry: data?.newExpiry ?? null };
+}
+
 export interface CarpoolNotification {
   enabled: boolean;
   webhookUrl: string;

@@ -33,6 +33,8 @@ interface DueMember {
   subName: string;
   memberId: string;
   memberName: string;
+  wechat: string | null;
+  email: string | null;
   expiry: string;
   days: number;
 }
@@ -51,13 +53,17 @@ async function fetchRemindedMap(env: Env, userId: string): Promise<Map<string, s
 }
 
 function buildMessage(due: DueMember[], now: Date): NotificationEmailMessage {
-  const lines = due.map((d) => {
+  const blocks = due.map((d) => {
     const when = d.days < 0 ? `已过期 ${-d.days} 天` : d.days === 0 ? "今天到期" : `${d.days} 天后到期`;
-    return `· ${d.subName} — ${d.memberName}：${when}（${d.expiry}）`;
+    const lines = [d.subName, `车友：${d.memberName}`];
+    if (d.wechat) lines.push(`微信：${d.wechat}`);
+    if (d.email) lines.push(`邮箱：${d.email}`);
+    lines.push(`到期：${d.expiry}（${when}）`);
+    return lines.join("\n");
   });
   return {
-    title: "拼车到期提醒",
-    content: `以下拼车车友即将到期或已过期：\n${lines.join("\n")}`,
+    title: "拼车通知提醒",
+    content: `以下拼车车友即将到期或已过期：\n\n${blocks.join("\n\n")}`,
     timestamp: now.toISOString(),
     hasPayload: false,
     items: [],
@@ -123,6 +129,12 @@ async function sendRawWebhook(config: CarpoolNotificationConfig, message: Notifi
   const url = await assertSafeOutboundUrl(config.webhookUrl, DEFAULT_SERVER_I18N_LOCALE);
 
   const headers = parseHeaders(config.webhookHeaders);
+  // 请求头的值里也支持 {title}/{timestamp} 占位符（如 ntfy 的 Title 头）；不替换 {content}（多行会破坏请求头）。
+  for (const [key, value] of [...headers]) {
+    if (value.includes("{title}") || value.includes("{timestamp}")) {
+      headers.set(key, value.replaceAll("{title}", message.title).replaceAll("{timestamp}", message.timestamp));
+    }
+  }
   const method = config.webhookMethod === "GET" ? "GET" : "POST";
   if (method !== "GET" && !headers.has("content-type")) headers.set("content-type", "text/plain; charset=utf-8");
 
@@ -181,7 +193,7 @@ async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
       const days = daysBetween(now, member.effectiveExpiry);
       if (days === null || days > member.reminderDays) continue; // 还没进入提醒窗口
       if (remindedMap.get(overlayKey(sub.id, member.id)) === member.effectiveExpiry) continue; // 已提醒过该到期日
-      due.push({ subId: sub.id, subName: sub.name, memberId: member.id, memberName: member.name, expiry: member.effectiveExpiry, days });
+      due.push({ subId: sub.id, subName: sub.name, memberId: member.id, memberName: member.name, wechat: member.wechat, email: member.email, expiry: member.effectiveExpiry, days });
     }
   }
   if (due.length === 0) return;

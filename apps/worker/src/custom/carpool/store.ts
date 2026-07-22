@@ -21,116 +21,10 @@ import type { BillingCycle, CustomCycleUnit } from "@renewlet/shared/runtime";
 import { toSubscriptionMonthlyAmount } from "@renewlet/shared/subscription-billing";
 import { addBillingCycles } from "@renewlet/shared/subscription-renewal";
 import type { Env } from "../../types";
+import { ensureCarpoolSchema } from "./schema";
 
 export type CarpoolMemberStatus = "active" | "paused" | "expired";
 export type CarpoolBillingCycle = "monthly" | "quarterly" | "yearly" | "custom";
-
-const CREATE_TABLE_STATEMENTS = [
-  `CREATE TABLE IF NOT EXISTS carpool_member_meta (
-    user_id TEXT NOT NULL,
-    subscription_id TEXT NOT NULL,
-    member_id TEXT NOT NULL,
-    join_date TEXT,
-    expiry_date TEXT,
-    status TEXT,
-    billing_cycle TEXT,
-    custom_days INTEGER,
-    auto_calc_expiry INTEGER,
-    reminder_days INTEGER,
-    wechat TEXT,
-    email TEXT,
-    amount_cny REAL,
-    reminded_for TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, subscription_id, member_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS carpool_subscription_meta (
-    user_id TEXT NOT NULL,
-    subscription_id TEXT NOT NULL,
-    account TEXT,
-    card_last4 TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (user_id, subscription_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS carpool_plan (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS carpool_plan_subscription (
-    user_id TEXT NOT NULL,
-    plan_id TEXT NOT NULL,
-    subscription_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (plan_id, subscription_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS carpool_notification (
-    user_id TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 0,
-    webhook_url TEXT,
-    webhook_method TEXT,
-    webhook_headers TEXT,
-    webhook_payload TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (user_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS carpool_notification_log (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    ok INTEGER NOT NULL,
-    error TEXT,
-    context TEXT
-  )`,
-];
-
-// 旧版 carpool_member_meta 只有 join_date/expiry_date；这些列在已存在的表上用 ALTER 幂等补齐。
-const MEMBER_META_ADDED_COLUMNS: Array<[name: string, def: string]> = [
-  ["status", "TEXT"],
-  ["billing_cycle", "TEXT"],
-  ["custom_days", "INTEGER"],
-  ["auto_calc_expiry", "INTEGER"],
-  ["reminder_days", "INTEGER"],
-  ["wechat", "TEXT"],
-  ["email", "TEXT"],
-  ["amount_cny", "REAL"],
-  ["reminded_for", "TEXT"],
-];
-
-const SUBSCRIPTION_META_ADDED_COLUMNS: Array<[name: string, def: string]> = [["card_last4", "TEXT"]];
-
-/** 幂等补列：只对表上缺失的列执行 ALTER ADD COLUMN。 */
-async function migrateColumns(env: Env, table: string, columns: Array<[name: string, def: string]>): Promise<void> {
-  const info = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
-  const existing = new Set((info.results ?? []).map((row) => row.name));
-  for (const [name, def] of columns) {
-    if (!existing.has(name)) await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`).run();
-  }
-}
-
-let schemaReady: Promise<void> | null = null;
-
-/** 懒建自定义表并补齐旧表缺列；失败时清空缓存以便下次请求重试。 */
-export function ensureCarpoolSchema(env: Env): Promise<void> {
-  if (!schemaReady) {
-    schemaReady = (async () => {
-      await env.DB.batch(CREATE_TABLE_STATEMENTS.map((sql) => env.DB.prepare(sql)));
-      await migrateColumns(env, "carpool_member_meta", MEMBER_META_ADDED_COLUMNS);
-      await migrateColumns(env, "carpool_subscription_meta", SUBSCRIPTION_META_ADDED_COLUMNS);
-    })()
-      .then(() => undefined)
-      .catch((error) => {
-        schemaReady = null;
-        throw error;
-      });
-  }
-  return schemaReady;
-}
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -679,6 +573,44 @@ export async function saveCarpoolMembers(
 
   await env.DB.batch(statements);
   return true;
+}
+
+/**
+ * 手动续费一个成员：把到期日往后推一个扣费周期，清除提醒去重标记（reminded_for），并置为「使用中」。
+ *
+ * 有效到期日：开启自动计算时按「上车时间 + 周期」得出，否则用手填到期日；两者都没有则以今天为基准。
+ * 续费后写入**显式**到期日并关闭自动计算——这样可反复续费而不改动上车时间，且新到期日能重新触发提醒。
+ */
+export async function renewCarpoolMember(
+  env: Env,
+  userId: string,
+  subscriptionId: string,
+  memberId: string,
+): Promise<{ ok: boolean; newExpiry: string | null }> {
+  await ensureCarpoolSchema(env);
+  const row = await env.DB.prepare(
+    `SELECT join_date, expiry_date, billing_cycle, custom_days, auto_calc_expiry
+     FROM carpool_member_meta WHERE user_id = ? AND subscription_id = ? AND member_id = ? LIMIT 1`,
+  )
+    .bind(userId, subscriptionId, memberId)
+    .first<{ join_date: string | null; expiry_date: string | null; billing_cycle: string | null; custom_days: number | null; auto_calc_expiry: number | null }>();
+  if (!row) return { ok: false, newExpiry: null };
+
+  const cycle = toBillingCycle(row.billing_cycle);
+  const customDays = row.custom_days ?? null;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const current = row.auto_calc_expiry === 1 && row.join_date ? addCycle(row.join_date, cycle, customDays) : row.expiry_date;
+  // 从「当前到期日」续一个周期；若已过期或无到期日，则从今天起算，保证续费后到期日落在未来。
+  const base = current && current >= todayStr ? current : todayStr;
+  const newExpiry = addCycle(base, cycle, customDays) ?? base;
+
+  await env.DB.prepare(
+    `UPDATE carpool_member_meta SET expiry_date = ?, auto_calc_expiry = 0, status = 'active', reminded_for = NULL, updated_at = ?
+     WHERE user_id = ? AND subscription_id = ? AND member_id = ?`,
+  )
+    .bind(newExpiry, new Date().toISOString(), userId, subscriptionId, memberId)
+    .run();
+  return { ok: true, newExpiry };
 }
 
 /** 拼车专属通知配置（只支持 webhook；系统 webhook 是给订阅用的，这里独立一份，字段照搬系统 webhook）。 */

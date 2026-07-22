@@ -21,6 +21,7 @@ import {
   listCarpoolPlans,
   removeSubscriptionFromPlan,
   renameCarpoolPlan,
+  renewCarpoolMember,
   saveCarpoolMembers,
   saveCarpoolNotification,
 } from "./store";
@@ -155,6 +156,17 @@ export function registerCarpoolRoutes(app: Hono<AppBindings>): void {
     const found = await saveCarpoolMembers(c.env, auth.user.id, subscriptionId, body);
     if (!found) return errorResponse(404, "Subscription not found", "NOT_FOUND");
     return successJson({ ok: true });
+  });
+
+  // 手动续费一个成员：到期日 +1 个扣费周期、清除提醒去重、置为使用中。
+  app.post("/api/custom/carpool/subscriptions/:id/members/:memberId/renew", async (c) => {
+    const auth = await requireAuth(c.req.raw, c.env);
+    const subscriptionId = c.req.param("id");
+    const memberId = c.req.param("memberId");
+    if (!subscriptionId || !memberId) return errorResponse(400, "Missing id", "INVALID_PAYLOAD");
+    const result = await renewCarpoolMember(c.env, auth.user.id, subscriptionId, memberId);
+    if (!result.ok) return errorResponse(404, "Member not found", "NOT_FOUND");
+    return successJson({ ok: true, newExpiry: result.newExpiry });
   });
 
   // ---- 拼车专属通知（webhook） ----

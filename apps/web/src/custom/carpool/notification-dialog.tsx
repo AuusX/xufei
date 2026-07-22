@@ -73,8 +73,8 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
             </select>
           </div>
           <div>
-            <Label className="text-xs">请求头（JSON，可留空）</Label>
-            <Textarea rows={2} value={form.webhookHeaders} placeholder={'{"Content-Type":"application/json"}'} onChange={(e) => update({ webhookHeaders: e.target.value })} />
+            <Label className="text-xs">请求头（JSON，可留空；值里也支持 {"{title}"} / {"{timestamp}"} 占位符，如 ntfy 的 Title 头）</Label>
+            <Textarea rows={2} value={form.webhookHeaders} placeholder={'{"Title":"{title}","Content-Type":"text/plain"}'} onChange={(e) => update({ webhookHeaders: e.target.value })} />
           </div>
           <div>
             <Label className="text-xs">请求负载模板（可用 {"{title}"} / {"{content}"} 占位符）</Label>
