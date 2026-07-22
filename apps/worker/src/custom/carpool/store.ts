@@ -136,6 +136,25 @@ function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+const AVERAGE_DAYS_PER_MONTH = 30;
+
+/**
+ * 把成员「按其扣费周期支付的整期金额」折算成月均，与月均总价口径一致。
+ * 例：车友季付 ¥240 → 每月 ¥80；年付 ¥1200 → 每月 ¥100。
+ */
+function carpoolAmountToMonthly(amount: number, cycle: CarpoolBillingCycle, customDays: number | null): number {
+  switch (cycle) {
+    case "monthly":
+      return amount;
+    case "quarterly":
+      return amount / 3;
+    case "yearly":
+      return amount / 12;
+    case "custom":
+      return customDays && customDays > 0 ? (amount / customDays) * AVERAGE_DAYS_PER_MONTH : amount;
+  }
+}
+
 function toMemberStatus(value: string | null | undefined): CarpoolMemberStatus {
   return value === "paused" || value === "expired" ? value : "active";
 }
@@ -176,7 +195,10 @@ export interface CarpoolMemberMeta {
 
 /** 提供给前端的成员视图：cost-sharing 成员 + 计算金额 + overlay 字段 + 计算出的到期日。 */
 export interface CarpoolMemberView extends CostSharingMember, CarpoolMemberMeta {
+  /** 成员的月均分摊金额（订阅货币）：自定义金额按成员扣费周期折算成月均，均摊份额按月均总价平分。 */
   amount: number;
+  /** 成员实付人民币的月均值（= amountCny 按成员扣费周期折算）；用于「成员应收合计」等月度口径展示。amountCny 仍是整期原值，供编辑回填。 */
+  monthlyAmountCny: number | null;
   /** 实际到期日：开启自动计算时由上车时间+周期得出，否则用手填的到期时间。 */
   effectiveExpiry: string | null;
 }
@@ -355,13 +377,19 @@ function buildSubscriptionView(
   );
   let memberTotal = 0;
   const members: CarpoolMemberView[] = costSharing.members.map((member) => {
-    const amount = calculateCostSharingMemberAmount(costSharing, member, monthlyPrice);
-    memberTotal += amount;
     const meta = overlayMap.get(overlayKey(row.id, member.id)) ?? defaultMeta();
+    // 成员金额也折算成月均，与月均总价同一口径：自定义金额是「成员按其扣费周期支付的整期金额」，按成员周期折算；
+    // 均摊份额由月均总价平分（calculateCostSharingMemberAmount 已用 monthlyPrice），本身已是月均。
+    const rawAmount = calculateCostSharingMemberAmount(costSharing, member, monthlyPrice);
+    const amount = costSharing.splitMode === "custom"
+      ? roundMoney(carpoolAmountToMonthly(rawAmount, meta.billingCycle, meta.customDays))
+      : rawAmount;
+    const monthlyAmountCny = meta.amountCny != null ? roundMoney(carpoolAmountToMonthly(meta.amountCny, meta.billingCycle, meta.customDays)) : null;
+    memberTotal += amount;
     const effectiveExpiry = meta.autoCalcExpiry && meta.joinDate
       ? addCycle(meta.joinDate, meta.billingCycle, meta.customDays)
       : meta.expiryDate;
-    return { ...member, ...meta, amount, effectiveExpiry };
+    return { ...member, ...meta, amount, monthlyAmountCny, effectiveExpiry };
   });
   return {
     id: row.id,
@@ -385,7 +413,7 @@ function computeStats(subscriptions: CarpoolSubscriptionView[]): CarpoolPlanStat
   let receivableTotal = 0;
   for (const sub of subscriptions) {
     if (sub.enabled && sub.members.length > 0) activeCars += 1;
-    for (const member of sub.members) receivableTotal += member.amountCny ?? 0;
+    for (const member of sub.members) receivableTotal += member.monthlyAmountCny ?? 0;
   }
   return {
     totalCars: subscriptions.length,

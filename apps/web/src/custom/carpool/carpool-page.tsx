@@ -5,8 +5,9 @@
  *  1. 计划列表：创建拼车计划、设置拼车通知（独立 webhook，见 notification-dialog.tsx）。
  *  2. 计划详情：订阅以「小轿车卡片」网格呈现（一行 2-3 辆，结构固定），点整张卡片打开弹窗管理。
  *
- * 付款金额按人民币录入并换算成订阅货币写入 cost_sharing；成员应收合计以人民币汇总。车辆有 gpt账号 +
- * 信用卡尾数两项。微信/邮箱/账号/卡号可一键复制。全部经 `/api/custom/carpool/*`，不改上游。
+ * 付款金额按人民币录入（按成员扣费周期），换算成订阅货币写入 cost_sharing；卡片与「月应收合计」统一按
+ * 月均展示（订阅整期价与成员整期付款都折算成每月）。车辆有 gpt账号 + 信用卡尾数两项。微信/邮箱/账号/卡号
+ * 可一键复制。全部经 `/api/custom/carpool/*`，不改上游。
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -88,8 +89,8 @@ function expiryBadge(member: CarpoolMember): { text: string; className: string }
 }
 
 function memberPayText(member: CarpoolMember, currency: string): string {
-  if (member.amountCny != null) return formatCny(member.amountCny);
-  return formatMoney(member.amount, currency);
+  if (member.monthlyAmountCny != null) return `${formatCny(member.monthlyAmountCny)}/月`;
+  return `${formatMoney(member.amount, currency)}/月`;
 }
 
 /** 点击复制字段内容的小图标按钮（在可点击卡片内用 stopPropagation 阻止冒泡打开编辑器）。 */
@@ -210,7 +211,7 @@ function StatRow({ stats }: { stats: CarpoolPlanStats }) {
     { label: "总车数", value: String(stats.totalCars) },
     { label: "进行中的拼车", value: String(stats.activeCars), accent: true },
     { label: "空车", value: String(stats.emptyCars) },
-    { label: "成员应收合计", value: formatCny(stats.receivableTotal) },
+    { label: "月应收合计", value: formatCny(stats.receivableTotal) },
   ];
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
