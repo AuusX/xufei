@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "renewlet",
+  "name": "xufei",
   "main": "apps/worker/src/index.ts",
   "compatibility_date": "2026-06-24",
   "compatibility_flags": [
