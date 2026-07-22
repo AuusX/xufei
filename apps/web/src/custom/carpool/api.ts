@@ -29,6 +29,8 @@ export interface CarpoolMember {
   wechat: string | null;
   email: string | null;
   amountCny: number | null;
+  /** 成员实付人民币的月均值（按成员扣费周期折算）；用于卡片/合计的按月展示。amountCny 仍是整期原值，供编辑回填。 */
+  monthlyAmountCny: number | null;
 }
 
 export interface CarpoolSubscription {
