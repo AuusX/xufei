@@ -35,6 +35,7 @@ export interface CarpoolSubscription {
   id: string;
   name: string;
   logo: string | null;
+  /** 月均价格（非月付订阅已按平均每月折算，而非整期总价）。 */
   price: number;
   currency: string;
   status: string;
@@ -44,6 +45,7 @@ export interface CarpoolSubscription {
   enabled: boolean;
   splitMode: CarpoolSplitMode;
   members: CarpoolMember[];
+  /** 你自己承担的月均份额。 */
   yourShare: number;
 }
 

@@ -473,7 +473,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
                 >
                   <option value="">{available.length ? "选择一个正在续费的订阅…" : "没有可添加的订阅"}</option>
                   {available.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}（{formatMoney(s.price, s.currency)}）</option>
+                    <option key={s.id} value={s.id}>{s.name}（{formatMoney(s.price, s.currency)}/月）</option>
                   ))}
                 </select>
               </div>
@@ -585,16 +585,31 @@ function CarCard({ subscription: sub, onManage }: { subscription: CarpoolSubscri
                     {badge ? <span className={`rounded px-1 text-[11px] ${badge.className}`}>{badge.text}</span> : null}
                   </span>
                 </div>
-                {member.wechat || member.email ? (
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                {/* 固定两行：第一行微信、第二行邮箱，各占一行并截断超长内容，缺失时占位「—」，保证每张卡片等高。 */}
+                <div className="mt-0.5 space-y-0.5 text-[11px] text-muted-foreground">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <MessageCircle className="h-3 w-3 shrink-0" />
                     {member.wechat ? (
-                      <span className="flex items-center gap-1"><MessageCircle className="h-3 w-3 shrink-0" />{member.wechat}<CopyButton value={member.wechat} /></span>
-                    ) : null}
-                    {member.email ? (
-                      <span className="flex min-w-0 items-center gap-1"><Mail className="h-3 w-3 shrink-0" /><span className="truncate">{member.email}</span><CopyButton value={member.email} /></span>
-                    ) : null}
+                      <>
+                        <span className="truncate">{member.wechat}</span>
+                        <CopyButton value={member.wechat} />
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground/50">—</span>
+                    )}
                   </div>
-                ) : null}
+                  <div className="flex min-w-0 items-center gap-1">
+                    <Mail className="h-3 w-3 shrink-0" />
+                    {member.email ? (
+                      <>
+                        <span className="truncate">{member.email}</span>
+                        <CopyButton value={member.email} />
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground/50">—</span>
+                    )}
+                  </div>
+                </div>
               </div>
             );
           })
@@ -604,7 +619,7 @@ function CarCard({ subscription: sub, onManage }: { subscription: CarpoolSubscri
       </div>
 
       <div className="border-t px-4 py-2 text-xs text-muted-foreground">
-        总价 {formatMoney(sub.price, sub.currency)} · 你承担 {formatMoney(sub.yourShare, sub.currency)}
+        总价 {formatMoney(sub.price, sub.currency)}/月 · 你承担 {formatMoney(sub.yourShare, sub.currency)}/月
       </div>
     </div>
   );
