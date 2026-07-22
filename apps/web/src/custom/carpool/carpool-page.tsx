@@ -473,7 +473,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
                 >
                   <option value="">{available.length ? "选择一个正在续费的订阅…" : "没有可添加的订阅"}</option>
                   {available.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}（{formatMoney(s.price, s.currency)}）</option>
+                    <option key={s.id} value={s.id}>{s.name}（{formatMoney(s.price, s.currency)}/月）</option>
                   ))}
                 </select>
               </div>
@@ -604,7 +604,7 @@ function CarCard({ subscription: sub, onManage }: { subscription: CarpoolSubscri
       </div>
 
       <div className="border-t px-4 py-2 text-xs text-muted-foreground">
-        总价 {formatMoney(sub.price, sub.currency)} · 你承担 {formatMoney(sub.yourShare, sub.currency)}
+        总价 {formatMoney(sub.price, sub.currency)}/月 · 你承担 {formatMoney(sub.yourShare, sub.currency)}/月
       </div>
     </div>
   );

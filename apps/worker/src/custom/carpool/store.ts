@@ -17,6 +17,8 @@ import {
   type CostSharingMember,
   type CostSharingSplitMode,
 } from "@renewlet/shared/cost-sharing";
+import type { BillingCycle, CustomCycleUnit } from "@renewlet/shared/runtime";
+import { toSubscriptionMonthlyAmount } from "@renewlet/shared/subscription-billing";
 import { addBillingCycles } from "@renewlet/shared/subscription-renewal";
 import type { Env } from "../../types";
 
@@ -184,6 +186,7 @@ export interface CarpoolSubscriptionView {
   id: string;
   name: string;
   logo: string | null;
+  /** 月均价格：非月付订阅（年付/季付/固定服务期一次性等）按平均每月折算，而非整期总价。 */
   price: number;
   currency: string;
   status: string;
@@ -195,7 +198,7 @@ export interface CarpoolSubscriptionView {
   enabled: boolean;
   splitMode: CostSharingSplitMode;
   members: CarpoolMemberView[];
-  /** 你自己承担的份额（= 订阅总价 − 各成员应收合计，下限 0）。 */
+  /** 你自己承担的月均份额（= 月均总价 − 各成员应收合计，下限 0）。 */
   yourShare: number;
 }
 
@@ -226,6 +229,11 @@ interface SubscriptionRow {
   status: string;
   next_billing_date: string;
   cost_sharing_json: string | null;
+  billing_cycle: BillingCycle;
+  custom_days: number | null;
+  custom_cycle_unit: CustomCycleUnit | null;
+  one_time_term_count: number | null;
+  one_time_term_unit: CustomCycleUnit | null;
 }
 
 interface OverlayRow {
@@ -334,9 +342,20 @@ function buildSubscriptionView(
   carMetaMap: Map<string, CarMeta>,
 ): CarpoolSubscriptionView {
   const costSharing = parseCostSharing(row.cost_sharing_json);
+  // 非月付订阅（年付/季付/固定服务期一次性等）按月均折算：拼车展示的是每月成本，而不是整期总价。
+  // 复用应用统计用的 toSubscriptionMonthlyAmount，保持与「月均花费」口径一致（一次性买断无服务期折算为 0）。
+  const monthlyPrice = roundMoney(
+    toSubscriptionMonthlyAmount(row.price, {
+      billingCycle: row.billing_cycle,
+      customDays: row.custom_days,
+      customCycleUnit: row.custom_cycle_unit,
+      oneTimeTermCount: row.one_time_term_count,
+      oneTimeTermUnit: row.one_time_term_unit,
+    }),
+  );
   let memberTotal = 0;
   const members: CarpoolMemberView[] = costSharing.members.map((member) => {
-    const amount = calculateCostSharingMemberAmount(costSharing, member, row.price);
+    const amount = calculateCostSharingMemberAmount(costSharing, member, monthlyPrice);
     memberTotal += amount;
     const meta = overlayMap.get(overlayKey(row.id, member.id)) ?? defaultMeta();
     const effectiveExpiry = meta.autoCalcExpiry && meta.joinDate
@@ -348,7 +367,7 @@ function buildSubscriptionView(
     id: row.id,
     name: row.name,
     logo: row.logo,
-    price: row.price,
+    price: monthlyPrice,
     currency: row.currency,
     status: row.status,
     nextBillingDate: row.next_billing_date,
@@ -357,7 +376,7 @@ function buildSubscriptionView(
     enabled: costSharing.enabled,
     splitMode: costSharing.splitMode,
     members,
-    yourShare: Math.max(roundMoney(row.price - memberTotal), 0),
+    yourShare: Math.max(roundMoney(monthlyPrice - memberTotal), 0),
   };
 }
 
@@ -376,7 +395,8 @@ function computeStats(subscriptions: CarpoolSubscriptionView[]): CarpoolPlanStat
   };
 }
 
-const SUBSCRIPTION_COLUMNS = "id, name, logo, price, currency, status, next_billing_date, cost_sharing_json";
+const SUBSCRIPTION_COLUMNS =
+  "id, name, logo, price, currency, status, next_billing_date, cost_sharing_json, billing_cycle, custom_days, custom_cycle_unit, one_time_term_count, one_time_term_unit";
 
 /** 列出用户所有 `active`（正在续费）订阅，用于把订阅加入计划的选择器。 */
 export async function listActiveSubscriptions(env: Env, userId: string): Promise<CarpoolSubscriptionView[]> {
