@@ -19,7 +19,7 @@ import {
 } from "@renewlet/shared/cost-sharing";
 import type { BillingCycle, CustomCycleUnit } from "@renewlet/shared/runtime";
 import { toSubscriptionMonthlyAmount } from "@renewlet/shared/subscription-billing";
-import { addBillingCycles } from "@renewlet/shared/subscription-renewal";
+import { addBillingCycles, calculateNextBillingDate } from "@renewlet/shared/subscription-renewal";
 import type { Env } from "../../types";
 import { ensureCarpoolSchema } from "./schema";
 
@@ -69,6 +69,37 @@ function addCycle(dateStr: string, cycle: CarpoolBillingCycle, customDays: numbe
     );
   } catch {
     return null;
+  }
+}
+
+/** 把 YYYY-MM-DD 往后推一天；用作「必须晚于今天」的阈值。 */
+function nextDay(dateStr: string): string {
+  return new Date(new Date(`${dateStr}T00:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * 续费后的新到期日：以成员**当前到期日**为锚点整期推进，直到晚于今天。
+ *
+ * 锚点必须是原到期日而不是「点击续费的当天」——否则每次给过期车友续费，到期日都会挪到点击那天的
+ * 日子上（如上车 7/5、8/21 点续费就变成 9/21），看起来像算错了。过期多期时一次推进到最近的未来
+ * 到期日；没有可用到期日时才退回以今天为锚点。
+ */
+export function nextRenewalExpiry(
+  current: string | null,
+  cycle: CarpoolBillingCycle,
+  customDays: number | null,
+  today: string,
+): string {
+  const anchor = current && /^\d{4}-\d{2}-\d{2}$/.test(current) ? current : today;
+  try {
+    return calculateNextBillingDate(
+      anchor,
+      cycle === "yearly" ? "annual" : cycle,
+      cycle === "custom" ? customDays : undefined,
+      nextDay(today),
+    );
+  } catch {
+    return addCycle(anchor, cycle, customDays) ?? anchor;
   }
 }
 
@@ -576,10 +607,12 @@ export async function saveCarpoolMembers(
 }
 
 /**
- * 手动续费一个成员：把到期日往后推一个扣费周期，清除提醒去重标记（reminded_for），并置为「使用中」。
+ * 手动续费一个成员：把到期日按其扣费周期往后推，清除提醒去重标记（reminded_for），并置为「使用中」。
  *
  * 有效到期日：开启自动计算时按「上车时间 + 周期」得出，否则用手填到期日；两者都没有则以今天为基准。
- * 续费后写入**显式**到期日并关闭自动计算——这样可反复续费而不改动上车时间，且新到期日能重新触发提醒。
+ * 推进以**原到期日**为锚点（见 nextRenewalExpiry），所以「几号到期」保持不变；已过期多期时一次推进
+ * 到最近的未来到期日。续费后写入**显式**到期日并关闭自动计算——这样可反复续费而不改动上车时间，
+ * 且新到期日能重新触发提醒。
  */
 export async function renewCarpoolMember(
   env: Env,
@@ -600,9 +633,8 @@ export async function renewCarpoolMember(
   const customDays = row.custom_days ?? null;
   const todayStr = new Date().toISOString().slice(0, 10);
   const current = row.auto_calc_expiry === 1 && row.join_date ? addCycle(row.join_date, cycle, customDays) : row.expiry_date;
-  // 从「当前到期日」续一个周期；若已过期或无到期日，则从今天起算，保证续费后到期日落在未来。
-  const base = current && current >= todayStr ? current : todayStr;
-  const newExpiry = addCycle(base, cycle, customDays) ?? base;
+  // 从当前到期日整期推进（保留「到期日是几号」），已过期则一次推进到最近的未来到期日。
+  const newExpiry = nextRenewalExpiry(current, cycle, customDays, todayStr);
 
   await env.DB.prepare(
     `UPDATE carpool_member_meta SET expiry_date = ?, auto_calc_expiry = 0, status = 'active', reminded_for = NULL, updated_at = ?

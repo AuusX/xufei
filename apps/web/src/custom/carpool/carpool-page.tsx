@@ -154,7 +154,8 @@ function toDraft(subscription: CarpoolSubscription, subToCny: (amount: number) =
         name: member.name,
         amountCny: cny != null ? String(cny) : "",
         joinDate: member.joinDate ?? "",
-        expiryDate: member.expiryDate ?? "",
+        // 用生效到期日：开「自动计算到期」时 expiryDate 可能还是切换前的旧值，直接显示会和卡片对不上。
+        expiryDate: member.effectiveExpiry ?? member.expiryDate ?? "",
         status: member.status,
         billingCycle: member.billingCycle,
         customDays: member.customDays != null ? String(member.customDays) : "",
