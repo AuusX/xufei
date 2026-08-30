@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout generated repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.ref_name }}
@@ -96,17 +96,32 @@ jobs:
             return match;
           }
 
+          function findQueueProducer(config, binding) {
+            return Array.isArray(config.queues?.producers)
+              ? config.queues.producers.find((item) => item && typeof item === "object" && item.binding === binding)
+              : undefined;
+          }
+
+          function findQueueConsumer(config, queueName) {
+            return Array.isArray(config.queues?.consumers)
+              ? config.queues.consumers.find((item) => item && typeof item === "object" && item.queue === queueName)
+              : undefined;
+          }
+
           const config = JSON.parse(stripJsoncComments(readFileSync("wrangler.jsonc", "utf8")));
           const d1 = findBinding(config, "d1_databases", "DB");
           const r2 = findBinding(config, "r2_buckets", "ASSETS_BUCKET");
+          const queue = findQueueProducer(config, "MEDIA_ICON_INDEX_REFRESH_QUEUE");
+          const queueConsumer = queue?.queue ? findQueueConsumer(config, queue.queue) : undefined;
           writeFileSync(
             process.env.PRESERVE_PATH,
             JSON.stringify({
               name: config.name,
-              main: config.main,
               database_name: d1.database_name,
               database_id: d1.database_id,
               bucket_name: r2.bucket_name,
+              media_icon_index_refresh_queue_name: queue?.queue,
+              media_icon_index_refresh_dead_letter_queue_name: queueConsumer?.dead_letter_queue,
               vars: config.vars && typeof config.vars === "object" && !Array.isArray(config.vars) ? config.vars : {},
             }),
           );
@@ -117,6 +132,7 @@ jobs:
           upstream_ref="FETCH_HEAD"
           upstream_sha="$(git rev-parse --short=12 "${upstream_ref}")"
 
+          # 生成仓库和上游没有 fork 关系；这里只同步文件树，并保留用户仓库里的 Cloudflare 资源配置和 workflow 入口。
           # 读取二次开发排除清单：这些路径（含整棵子目录）不随上游镜像被覆盖或删除。
           exclude_args=()
           if [ -f .upstream-sync-keep ]; then
@@ -128,7 +144,7 @@ jobs:
             done < .upstream-sync-keep
           fi
 
-          # 生成仓库和上游没有 fork 关系；这里只同步文件树，并保留用户仓库里的 Cloudflare 资源配置、workflow 入口和二次开发目录。
+          # 只同步文件树，并保留二次开发目录（见 .upstream-sync-keep）与仓库自有的 Cloudflare 配置 / workflow 入口。
           git restore --source "${upstream_ref}" --staged --worktree -- ':/' "${exclude_args[@]}"
 
           if [ -f "${workflows_present}" ]; then
@@ -188,15 +204,40 @@ jobs:
             return match;
           }
 
+          function findQueueProducer(config, binding) {
+            return Array.isArray(config.queues?.producers)
+              ? config.queues.producers.find((item) => item && typeof item === "object" && item.binding === binding)
+              : undefined;
+          }
+
+          function findQueueConsumer(config, queueName) {
+            return Array.isArray(config.queues?.consumers)
+              ? config.queues.consumers.find((item) => item && typeof item === "object" && item.queue === queueName)
+              : undefined;
+          }
+
           const preserved = JSON.parse(readFileSync(process.env.PRESERVE_PATH, "utf8"));
           const config = JSON.parse(stripJsoncComments(readFileSync("wrangler.jsonc", "utf8")));
           const d1 = findBinding(config, "d1_databases", "DB");
           const r2 = findBinding(config, "r2_buckets", "ASSETS_BUCKET");
+          const queue = findQueueProducer(config, "MEDIA_ICON_INDEX_REFRESH_QUEUE");
           config.name = preserved.name;
-          if (preserved.main) config.main = preserved.main;
           d1.database_name = preserved.database_name;
           d1.database_id = preserved.database_id;
           r2.bucket_name = preserved.bucket_name;
+          if (queue && preserved.media_icon_index_refresh_queue_name) {
+            const templateQueueName = queue.queue;
+            queue.queue = preserved.media_icon_index_refresh_queue_name;
+            const consumer =
+              findQueueConsumer(config, templateQueueName) ??
+              findQueueConsumer(config, preserved.media_icon_index_refresh_queue_name);
+            if (consumer) {
+              consumer.queue = preserved.media_icon_index_refresh_queue_name;
+              if (preserved.media_icon_index_refresh_dead_letter_queue_name) {
+                consumer.dead_letter_queue = preserved.media_icon_index_refresh_dead_letter_queue_name;
+              }
+            }
+          }
           config.vars = {
             ...(config.vars && typeof config.vars === "object" && !Array.isArray(config.vars) ? config.vars : {}),
             ...preserved.vars,
@@ -213,8 +254,6 @@ jobs:
                 echo "::error title=Local patch failed::${patch_file} did not apply cleanly after the upstream sync. No commit was created and nothing was pushed. Resolve the conflict manually (see patches/README.md)."
                 exit 1
               fi
-            done
-          fi
 
           git add -A
           if git diff --cached --quiet; then

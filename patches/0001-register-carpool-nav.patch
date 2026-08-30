@@ -1,26 +1,26 @@
 diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
-index fa57889..5e3dc0e 100644
+index 6de2c316..cad36b8f 100644
 --- a/apps/web/src/App.tsx
 +++ b/apps/web/src/App.tsx
-@@ -26,6 +26,8 @@ const AdminUsers = lazy(lazyRouteLoader("adminUsers"));
- const ForgotPassword = lazy(lazyRouteLoader("forgotPassword"));
- const ResetPassword = lazy(lazyRouteLoader("resetPassword"));
- const NotFound = lazy(lazyRouteLoader("notFound"));
+@@ -22,6 +22,8 @@ const Subscriptions = lazy(lazyRouteLoader("subscriptions"));
+ const Calendar = lazy(lazyRouteLoader("calendar"));
+ const Statistics = lazy(lazyRouteLoader("statistics"));
+ const Settings = lazy(lazyRouteLoader("settings"));
 +// 二次开发栏目：拼车（直接懒加载 custom 目录，不进上游 route-resources 注册表）。
 +const Carpool = lazy(() => import("@/custom/carpool/carpool-page"));
- 
- function RouteFallback() {
-   const { pathname } = useLocation();
-@@ -44,6 +46,7 @@ export default function App() {
-           <Route path="/subscriptions" element={<ProtectedRoute><Subscriptions /></ProtectedRoute>} />
-           <Route path="/calendar" element={<ProtectedRoute><Calendar /></ProtectedRoute>} />
-           <Route path="/statistics" element={<ProtectedRoute><Statistics /></ProtectedRoute>} />
-+          <Route path="/carpool" element={<ProtectedRoute><Carpool /></ProtectedRoute>} />
-           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-           <Route path="/admin/users" element={<ProtectedRoute adminOnly><AdminUsers /></ProtectedRoute>} />
+ const Setup = lazy(lazyRouteLoader("setup"));
+ const Login = lazy(lazyRouteLoader("login"));
+ const Privacy = lazy(lazyRouteLoader("privacy"));
+@@ -51,6 +53,7 @@ export default function App() {
+             <Route path="calendar" element={<Calendar />} />
+             <Route path="statistics" element={<Statistics />} />
+             <Route path="settings" element={<Settings />} />
++            <Route path="carpool" element={<Carpool />} />
+             <Route path="admin/users" element={<ProtectedRoute adminOnly><AdminUsers /></ProtectedRoute>} />
+           </Route>
            <Route path="/setup" element={<Setup />} />
 diff --git a/apps/web/src/components/header.tsx b/apps/web/src/components/header.tsx
-index 2ae67c3..09f828d 100644
+index 0601e673..7514829b 100644
 --- a/apps/web/src/components/header.tsx
 +++ b/apps/web/src/components/header.tsx
 @@ -11,7 +11,7 @@
@@ -29,10 +29,10 @@ index 2ae67c3..09f828d 100644
  import { useRouter } from '@/lib/router';
 -import { LayoutDashboard, List, CalendarDays, BarChart3, Settings, Sun, Moon, LogOut } from 'lucide-react';
 +import { LayoutDashboard, List, CalendarDays, BarChart3, Settings, Sun, Moon, LogOut, CarFront } from 'lucide-react';
- import { useEffect, useState } from 'react';
- import { useQueryClient } from '@tanstack/react-query';
+ import { useState } from 'react';
  import type { ReactNode } from 'react';
-@@ -38,12 +38,13 @@ interface HeaderProps {
+ import type { SubscriptionFormSubmission } from '@/types/subscription';
+@@ -37,15 +37,16 @@ interface HeaderProps {
    subscriptionActions?: ReactNode;
  }
  
@@ -45,11 +45,14 @@ index 2ae67c3..09f828d 100644
 +const navItems: Array<{ path: string; labelKey?: MessageKey; label?: string; icon: NavIconKey }> = [
    { path: '/', labelKey: 'nav.dashboard', icon: "dashboard" },
    { path: '/subscriptions', labelKey: 'nav.subscriptions', icon: "subscriptions" },
-+  { path: '/carpool', label: '拼车', icon: "carpool" },
    { path: '/calendar', labelKey: 'nav.calendar', icon: "calendar" },
    { path: '/statistics', labelKey: 'nav.statistics', icon: "statistics" },
    { path: '/settings', labelKey: 'nav.settings', icon: "settings" },
-@@ -61,6 +62,8 @@ function renderNavIcon(icon: NavIconKey, className: string) {
++  { path: '/carpool', label: '拼车', icon: "carpool" },
+ ];
+ 
+ function renderNavIcon(icon: NavIconKey, className: string) {
+@@ -60,6 +61,8 @@ function renderNavIcon(icon: NavIconKey, className: string) {
        return <BarChart3 className={className} />;
      case "settings":
        return <Settings className={className} />;
@@ -58,16 +61,16 @@ index 2ae67c3..09f828d 100644
    }
  }
  
-@@ -71,6 +74,8 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
+@@ -68,6 +71,8 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
+   const router = useRouter();
    const { theme, setTheme } = useTheme();
-   const { toast } = useToast();
    const { t } = useI18n();
 +  // 二次开发栏目用字面 label，不进 i18n catalog；上游项仍走 t(labelKey)。
-+  const navLabel = (item: { labelKey?: MessageKey; label?: string }) => item.label ?? (item.labelKey ? t(item.labelKey) : "");
++  const navLabel = (navItem: { labelKey?: MessageKey; label?: string }) => navItem.label ?? (navItem.labelKey ? t(navItem.labelKey) : "");
    const { data: sessionData } = authClient.useSession();
    const [systemDialogOpen, setSystemDialogOpen] = useState(false);
    const isAuthenticated = Boolean(sessionData?.user);
-@@ -146,11 +151,11 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
+@@ -132,11 +137,11 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
                  key={item.path}
                  href={item.path}
                  end={item.path === "/"}
@@ -81,7 +84,7 @@ index 2ae67c3..09f828d 100644
                </NavLink>
              ))}
            </nav>
-@@ -198,7 +203,7 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
+@@ -184,7 +189,7 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
              className={({ isActive }) => getHeaderMobileNavLinkClass(isActive)}
            >
              {renderNavIcon(item.icon, headerLayout.mobileNavIcon)}

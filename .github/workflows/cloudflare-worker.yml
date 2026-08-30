@@ -12,16 +12,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # 同一仓库的 D1 migration/backfill/deploy 是一个不可中断序列；新 push 只能排队，不能取消正在写库的 run。
+  group: cloudflare-worker-${{ github.repository }}
+  cancel-in-progress: false
 
 env:
   CI_WRANGLER_CONFIG: wrangler.generated.jsonc
+  CI_WRANGLER_MAINTENANCE_CONFIG: wrangler.maintenance.generated.jsonc
   CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
   CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
   WORKER_NAME: ${{ secrets.WORKER_NAME }}
   D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
   R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+  CLOUDFLARE_OBSERVABILITY_PROFILE: development
   RENEWLET_COMMIT: ${{ github.sha }}
 
 jobs:
@@ -29,15 +32,15 @@ jobs:
     # 官方生产 Worker 只能由 Release Publish 的 tag job 覆盖；自管入口在官方仓库只跑 dev，fork/main 仍保留同步部署路径。
     if: ${{ github.repository != 'zhiyingzzhou/renewlet' || github.ref == 'refs/heads/dev' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6.0.0
+        uses: actions/setup-node@v7.0.0
         with:
-          node-version: 24
+          node-version: 24.19.0
 
       - name: Enable Corepack
         run: corepack enable
@@ -90,10 +93,6 @@ jobs:
         if: steps.deployment-secrets.outputs.ready == 'true'
         run: pnpm cloudflare:config:ci
 
-      - name: Apply D1 migrations
+      - name: Deploy Renewlet through the exclusive migration orchestrator
         if: steps.deployment-secrets.outputs.ready == 'true'
-        run: pnpm exec wrangler d1 migrations apply DB --remote --config "$CI_WRANGLER_CONFIG"
-
-      - name: Deploy Worker
-        if: steps.deployment-secrets.outputs.ready == 'true'
-        run: pnpm exec wrangler deploy --config "$CI_WRANGLER_CONFIG"
+        run: pnpm deploy -- --config "$CI_WRANGLER_CONFIG" --maintenance-config "$CI_WRANGLER_MAINTENANCE_CONFIG"
