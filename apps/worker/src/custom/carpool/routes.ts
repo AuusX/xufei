@@ -14,17 +14,15 @@ import {
   addSubscriptionToPlan,
   createCarpoolPlan,
   deleteCarpoolPlan,
-  getCarpoolNotification,
   getCarpoolPlanDetail,
   listActiveSubscriptions,
-  listCarpoolNotificationLog,
   listCarpoolPlans,
   removeSubscriptionFromPlan,
   renameCarpoolPlan,
   renewCarpoolMember,
   saveCarpoolMembers,
-  saveCarpoolNotification,
 } from "./store";
+import { getCarpoolNotification, listCarpoolNotificationLog, saveCarpoolNotification } from "./notification-store";
 import { sendCarpoolTestNotification } from "./reminders";
 
 // 与上游 index.ts 的 AppBindings 保持一致，这样 registerCarpoolRoutes(app) 能直接接收上游的 app。
@@ -36,21 +34,31 @@ const addSubscriptionSchema = z.object({ subscriptionId: z.string().min(1).max(6
 const notificationConfigSchema = z
   .object({
     enabled: z.boolean(),
-    webhookUrl: z.string().trim().max(2000),
+    // 只接受能解析的 http(s) 地址：保存时就报错，而不是等到定时推送时静默失败。
+    webhookUrl: z
+      .string()
+      .trim()
+      .max(2000)
+      .refine((value) => value === "" || /^https?:\/\/\S+$/i.test(value), "Webhook 地址必须以 http:// 或 https:// 开头"),
     webhookMethod: z.enum(["GET", "POST"]),
     webhookHeaders: z.string().max(20_000),
     webhookPayload: z.string().max(100_000),
   })
   .strict();
 
+// 日期一律 YYYY-MM-DD：放行别的形状会让到期徽标、提醒和续费同时变成静默空操作。
+const dateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "日期格式必须是 YYYY-MM-DD");
+
+// 上限与上游 costSharingSchema 对齐（name ≤80、成员 ≤20、金额 ≤1e9）：写进上游不认的形状会让
+// 整个订阅接口 500，见 contract.ts。
 const memberInputSchema = z
   .object({
-    id: z.string().min(1).max(64).optional(),
-    name: z.string().trim().min(1).max(100),
+    id: z.string().min(1).max(80).optional(),
+    name: z.string().trim().min(1).max(80),
     note: z.string().trim().max(500).optional(),
-    customAmount: z.number().finite().nonnegative().optional(),
-    joinDate: z.string().max(32).optional(),
-    expiryDate: z.string().max(32).optional(),
+    customAmount: z.number().finite().nonnegative().max(1_000_000_000).optional(),
+    joinDate: dateOnlySchema.optional(),
+    expiryDate: dateOnlySchema.optional(),
     status: z.enum(["active", "paused", "expired"]).optional(),
     billingCycle: z.enum(["monthly", "quarterly", "yearly", "custom"]).optional(),
     customDays: z.number().int().positive().max(3660).optional(),
@@ -58,7 +66,7 @@ const memberInputSchema = z
     reminderDays: z.number().int().min(-1).max(365).optional(),
     wechat: z.string().trim().max(100).optional(),
     email: z.string().trim().max(200).optional(),
-    amountCny: z.number().finite().nonnegative().optional(),
+    amountCny: z.number().finite().nonnegative().max(1_000_000_000).optional(),
   })
   .strict();
 
@@ -68,7 +76,13 @@ const saveMembersSchema = z
     splitMode: z.enum(["equal", "custom"]),
     account: z.string().trim().max(200).optional(),
     cardLast4: z.string().trim().max(50).optional(),
-    members: z.array(memberInputSchema).max(50),
+    members: z
+      .array(memberInputSchema)
+      .max(20)
+      .refine((members) => {
+        const ids = members.flatMap((member) => (member.id ? [member.id] : []));
+        return new Set(ids).size === ids.length;
+      }, "车友 ID 重复"),
   })
   .strict();
 
@@ -153,8 +167,11 @@ export function registerCarpoolRoutes(app: Hono<AppBindings>): void {
     const subscriptionId = c.req.param("id");
     if (!subscriptionId) return errorResponse(400, "Missing subscription id", "INVALID_PAYLOAD");
     const body = await readJson(c.req.raw, saveMembersSchema, requestLocale(c.req.raw));
-    const found = await saveCarpoolMembers(c.env, auth.user.id, subscriptionId, body);
-    if (!found) return errorResponse(404, "Subscription not found", "NOT_FOUND");
+    const result = await saveCarpoolMembers(c.env, auth.user.id, subscriptionId, body);
+    if (!result.ok) {
+      if (result.reason === "not_found") return errorResponse(404, "Subscription not found", "NOT_FOUND");
+      return errorResponse(400, result.message, "INVALID_PAYLOAD");
+    }
     return successJson({ ok: true });
   });
 

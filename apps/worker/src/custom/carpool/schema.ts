@@ -70,6 +70,14 @@ const CREATE_TABLE_STATEMENTS = [
   )`,
 ];
 
+// 所有查询都先按 user_id 过滤，但 carpool_plan / carpool_plan_subscription / 日志表的主键都不以
+// user_id 开头，会退化成全表扫描；这几个索引把它们变回点查。
+const CREATE_INDEX_STATEMENTS = [
+  `CREATE INDEX IF NOT EXISTS idx_carpool_plan_user ON carpool_plan (user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_carpool_plan_sub_user ON carpool_plan_subscription (user_id, plan_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_carpool_notification_log_user ON carpool_notification_log (user_id, created_at)`,
+];
+
 // 旧版 carpool_member_meta 只有 join_date/expiry_date；这些列在已存在的表上用 ALTER 幂等补齐。
 const MEMBER_META_ADDED_COLUMNS: Array<[name: string, def: string]> = [
   ["status", "TEXT"],
@@ -90,7 +98,13 @@ async function migrateColumns(env: Env, table: string, columns: Array<[name: str
   const info = await env.DB.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
   const existing = new Set((info.results ?? []).map((row) => row.name));
   for (const [name, def] of columns) {
-    if (!existing.has(name)) await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`).run();
+    if (existing.has(name)) continue;
+    try {
+      await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${def}`).run();
+    } catch (error) {
+      // 两个 isolate 可能同时 PRAGMA 到「缺列」再各自 ALTER；后到的那个报 duplicate column，视为已补齐。
+      if (!/duplicate column/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    }
   }
 }
 
@@ -103,6 +117,7 @@ export function ensureCarpoolSchema(env: Env): Promise<void> {
       await env.DB.batch(CREATE_TABLE_STATEMENTS.map((sql) => env.DB.prepare(sql)));
       await migrateColumns(env, "carpool_member_meta", MEMBER_META_ADDED_COLUMNS);
       await migrateColumns(env, "carpool_subscription_meta", SUBSCRIPTION_META_ADDED_COLUMNS);
+      await env.DB.batch(CREATE_INDEX_STATEMENTS.map((sql) => env.DB.prepare(sql)));
     })()
       .then(() => undefined)
       .catch((error) => {

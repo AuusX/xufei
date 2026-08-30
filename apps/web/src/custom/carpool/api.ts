@@ -31,6 +31,8 @@ export interface CarpoolMember {
   amountCny: number | null;
   /** 成员实付人民币的月均值（按成员扣费周期折算）；用于卡片/合计的按月展示。amountCny 仍是整期原值，供编辑回填。 */
   monthlyAmountCny: number | null;
+  /** 这个月是否收得到他的钱（在车上且未过期）；暂停/已过期的不计入应收，也不抵扣「你承担」。 */
+  collectible: boolean;
 }
 
 export interface CarpoolSubscription {
@@ -55,7 +57,8 @@ export interface CarpoolPlanStats {
   totalCars: number;
   activeCars: number;
   emptyCars: number;
-  receivableTotal: number;
+  /** 每月应收，按币种分桶（前端用实时汇率折成人民币合计）。只含「本月收得到」的车友。 */
+  receivableByCurrency: Record<string, number>;
 }
 
 export interface CarpoolPlanSummary {
