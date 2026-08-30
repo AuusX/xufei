@@ -13,7 +13,6 @@
  * 注意：`assertSafeOutboundUrl` 只在真正发送时 `import()`，避免测试加载 index.ts 时牵连（与 cloudflare:sockets 同理）。
  */
 import type { NotificationEmailMessage } from "@renewlet/shared/email-template";
-import { dateOnlyInZone } from "../../notification-schedule";
 import { DEFAULT_SERVER_I18N_LOCALE } from "../../server-i18n";
 import type { Env } from "../../types";
 import {
@@ -24,7 +23,7 @@ import {
 } from "./notification-store";
 import { ensureCarpoolSchema } from "./schema";
 import { listActiveSubscriptions, listPlannedSubscriptionIds, purgeOrphanCarpoolRows } from "./store";
-import { hourInZone, userTimezone } from "./time";
+import { dateOnlyInZone, hourInZone, userTimezone } from "./time";
 
 /** 只在用户本地时间的这个整点推送：既避免半夜打扰，也把每分钟的全量扫描降到每天一小时。 */
 const REMIND_HOUR = 9;
