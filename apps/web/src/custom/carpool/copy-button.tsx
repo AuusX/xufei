@@ -9,6 +9,10 @@ export function CopyButton({ value }: { value: string }) {
       type="button"
       aria-label="复制"
       className="shrink-0 text-muted-foreground transition hover:text-foreground"
+      // 卡片整体也是可点击的，且它的 onKeyDown 会 preventDefault：不在这里拦住键盘事件的话，
+      // Tab 过来按回车不会复制，反而会打开「管理拼车」弹窗。
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.stopPropagation(); }}
+      onKeyUp={(e) => { if (e.key === " ") e.stopPropagation(); }}
       onClick={(e) => {
         e.stopPropagation();
         if (!navigator.clipboard) {

@@ -6,26 +6,44 @@
  * 负载为 JSON）——JSON 模板走 JSON 替换并转义，纯文本模板原样替换，兼容 ntfy 等纯文本 webhook；
  * URL 走上游 `assertSafeOutboundUrl` 做 SSRF 校验。
  *
- * Cron 每分钟触发，用 `carpool_member_meta.reminded_for` 去重：每个到期日只发一次（发送成败都记）。
+ * Cron 每分钟触发，但只在**用户本地时间 9 点**这一小时内真正干活（其余分钟一读设置就返回）；
+ * 用 `carpool_member_meta.reminded_for` 对每个到期日去重，且**只有发送成功才记**——发送失败改为走
+ * 冷却重试，避免 webhook 抖一下就把那条提醒永久吞掉。
  *
  * 注意：`assertSafeOutboundUrl` 只在真正发送时 `import()`，避免测试加载 index.ts 时牵连（与 cloudflare:sockets 同理）。
  */
 import type { NotificationEmailMessage } from "@renewlet/shared/email-template";
+import { dateOnlyInZone } from "../../notification-schedule";
 import { DEFAULT_SERVER_I18N_LOCALE } from "../../server-i18n";
 import type { Env } from "../../types";
-import { appendCarpoolNotificationLog, getCarpoolNotification, listActiveSubscriptions, type CarpoolNotificationConfig } from "./store";
+import {
+  appendCarpoolNotificationLog,
+  getCarpoolNotification,
+  lastNotificationFailedWithin,
+  type CarpoolNotificationConfig,
+} from "./notification-store";
+import { ensureCarpoolSchema } from "./schema";
+import { listActiveSubscriptions, listPlannedSubscriptionIds, purgeOrphanCarpoolRows } from "./store";
+import { hourInZone, userTimezone } from "./time";
+
+/** 只在用户本地时间的这个整点推送：既避免半夜打扰，也把每分钟的全量扫描降到每天一小时。 */
+const REMIND_HOUR = 9;
+/** 发送失败后的冷却：期间不重试，冷却过后再试（失败不再记 reminded_for，所以不会丢提醒）。 */
+const FAILURE_COOLDOWN_MS = 30 * 60_000;
+/** 单条消息最多带多少位车友，避免 body 过大被 ntfy/企业微信等拒收。 */
+const MAX_MEMBERS_PER_MESSAGE = 20;
 
 function overlayKey(subscriptionId: string, memberId: string): string {
   return `${subscriptionId} ${memberId}`;
 }
 
-/** 到期日与「今天」相差的天数（UTC，date-only）；负数=已过期。 */
-function daysBetween(now: Date, expiry: string): number | null {
+/** 到期日与「今天」相差的天数（date-only）；负数=已过期。today 由调用方按用户时区算好。 */
+function daysBetween(today: string, expiry: string): number | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expiry)) return null;
   const target = new Date(`${expiry}T00:00:00Z`).getTime();
-  if (Number.isNaN(target)) return null;
-  const today = new Date(`${now.toISOString().slice(0, 10)}T00:00:00Z`).getTime();
-  return Math.round((target - today) / 86_400_000);
+  const base = new Date(`${today}T00:00:00Z`).getTime();
+  if (Number.isNaN(target) || Number.isNaN(base)) return null;
+  return Math.round((target - base) / 86_400_000);
 }
 
 interface DueMember {
@@ -184,13 +202,26 @@ async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
   const config = await getCarpoolNotification(env, userId);
   if (!config.enabled || !config.webhookUrl.trim()) return;
 
-  const [subs, remindedMap] = await Promise.all([listActiveSubscriptions(env, userId), fetchRemindedMap(env, userId)]);
+  // 时区 + 整点闸门放在所有重查询之前：cron 每分钟触发，但一天只需要跑一次。
+  const timezone = await userTimezone(env, userId);
+  if (hourInZone(now, timezone) !== REMIND_HOUR) return;
+  if (await lastNotificationFailedWithin(env, userId, now, FAILURE_COOLDOWN_MS)) return;
+
+  const today = dateOnlyInZone(now, timezone);
+  const [subs, remindedMap, plannedIds] = await Promise.all([
+    listActiveSubscriptions(env, userId),
+    fetchRemindedMap(env, userId),
+    listPlannedSubscriptionIds(env, userId),
+  ]);
 
   const due: DueMember[] = [];
   for (const sub of subs) {
+    if (!plannedIds.has(sub.id)) continue; // 已移出拼车计划的车不再提醒（界面上已经找不到它了）
+    if (!sub.enabled) continue; // 车本身没开启拼车
     for (const member of sub.members) {
+      if (member.status !== "active") continue; // 暂停/已过期是手动标记的「不在车上」
       if (member.reminderDays < 0 || !member.effectiveExpiry) continue;
-      const days = daysBetween(now, member.effectiveExpiry);
+      const days = daysBetween(today, member.effectiveExpiry);
       if (days === null || days > member.reminderDays) continue; // 还没进入提醒窗口
       if (remindedMap.get(overlayKey(sub.id, member.id)) === member.effectiveExpiry) continue; // 已提醒过该到期日
       due.push({ subId: sub.id, subName: sub.name, memberId: member.id, memberName: member.name, wechat: member.wechat, email: member.email, expiry: member.effectiveExpiry, days });
@@ -198,14 +229,21 @@ async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
   }
   if (due.length === 0) return;
 
-  try {
-    await sendCarpoolWebhook(env, userId, config, buildMessage(due, now), `到期提醒 ${due.length} 位车友`);
-  } catch {
-    // 发送失败（原因已写入通知日志）也照常记 reminded_for，避免 webhook 抖动时每分钟重复轰炸。
+  // 分批发送：成功的那批才记 reminded_for。发送失败**不记**，等冷却过后重试，避免一次抖动就永久漏发。
+  const delivered: DueMember[] = [];
+  for (let index = 0; index < due.length; index += MAX_MEMBERS_PER_MESSAGE) {
+    const batch = due.slice(index, index + MAX_MEMBERS_PER_MESSAGE);
+    try {
+      await sendCarpoolWebhook(env, userId, config, buildMessage(batch, now), `到期提醒 ${batch.length} 位车友`);
+      delivered.push(...batch);
+    } catch {
+      break; // 失败原因已写入通知日志；剩下的留到下一轮
+    }
   }
+  if (delivered.length === 0) return;
 
   await env.DB.batch(
-    due.map((d) =>
+    delivered.map((d) =>
       env.DB.prepare(`UPDATE carpool_member_meta SET reminded_for = ? WHERE user_id = ? AND subscription_id = ? AND member_id = ?`).bind(
         d.expiry,
         userId,
@@ -218,7 +256,10 @@ async function remindUser(env: Env, userId: string, now: Date): Promise<void> {
 
 /** Cron 入口：为所有开启了拼车通知的用户发送到期推送。 */
 export async function runCarpoolReminders(env: Env): Promise<void> {
+  // 全新部署时拼车表还不存在（懒建表只在有人访问拼车页时跑过），这里先补上再查。
+  await ensureCarpoolSchema(env);
   const now = new Date();
+  await purgeOrphanCarpoolRows(env);
   const enabled = await env.DB.prepare(`SELECT user_id FROM carpool_notification WHERE enabled = 1`).all<{ user_id: string }>();
 
   for (const { user_id: userId } of enabled.results ?? []) {

@@ -31,8 +31,22 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
   const query = useQuery({ queryKey: NOTIFICATION_KEY, queryFn: fetchCarpoolNotification, enabled: open });
   const logQuery = useQuery({ queryKey: NOTIFICATION_LOG_KEY, queryFn: fetchCarpoolNotificationLog, enabled: open });
   const [form, setForm] = useState<CarpoolNotification>(EMPTY_NOTIFICATION);
+  /** 表单只在「本次打开」第一次拿到配置时灌入。 */
+  const [seeded, setSeeded] = useState(false);
 
-  useEffect(() => { if (query.data) setForm(query.data); }, [query.data]);
+  useEffect(() => {
+    if (!open) {
+      // 关闭即丢弃未保存的编辑：否则「取消」后再打开，之前放弃的内容还在，一保存就写进去了。
+      setSeeded(false);
+      setForm(EMPTY_NOTIFICATION);
+      return;
+    }
+    // 后台刷新（窗口重新聚焦等）会产生新的 query.data 引用；不加这个闸门，正在输入的内容会被覆盖回旧值。
+    if (!seeded && query.data) {
+      setSeeded(true);
+      setForm(query.data);
+    }
+  }, [open, query.data, seeded]);
 
   const refreshLog = () => void queryClient.invalidateQueries({ queryKey: NOTIFICATION_LOG_KEY });
   const saveMutation = useMutation({
@@ -48,14 +62,23 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
 
   const update = (patch: Partial<CarpoolNotification>) => setForm((f) => ({ ...f, ...patch }));
   const log = logQuery.data ?? [];
+  // 配置没读出来之前不许保存：表单此时是空的，保存会把线上正常的 webhook 覆盖成空配置。
+  const configReady = query.isSuccess && seeded;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+      {/* explicit：这里全是手输的 URL / 请求头 / 模板，误按 Esc 不能把没保存的内容丢掉。 */}
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto" dismissMode="explicit">
         <DialogHeader><DialogTitle>设置拼车通知（Webhook）</DialogTitle></DialogHeader>
         <p className="text-sm text-muted-foreground">
           拼车到期提醒走这里配置的 webhook（独立于系统订阅通知）。URL 必须是 <b>HTTPS</b> 且非内网/本机地址。
+          提醒在**你所在时区的每天上午 9 点**推送。
         </p>
+        {query.isError ? (
+          <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            配置读取失败：{query.error instanceof Error ? query.error.message : "请稍后重试"}。为避免覆盖已有配置，保存已暂时禁用。
+          </p>
+        ) : null}
         <div className="space-y-4">
           <label className="flex items-center gap-2 text-sm">
             <Switch checked={form.enabled} onCheckedChange={(v) => update({ enabled: v })} />
@@ -89,7 +112,7 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
           </Button>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>取消</Button>
-            <Button size="sm" disabled={saveMutation.isPending} onClick={() => saveMutation.mutate(form)}>
+            <Button size="sm" disabled={saveMutation.isPending || !configReady} onClick={() => saveMutation.mutate(form)}>
               {saveMutation.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
               保存
             </Button>
@@ -103,6 +126,9 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
           </div>
           {logQuery.isPending ? (
             <p className="text-xs text-muted-foreground">加载中…</p>
+          ) : logQuery.isError ? (
+            // 「读不到记录」不能显示成「没有记录」——用户点开就是来看失败原因的。
+            <p className="text-xs text-destructive">发送历史读取失败：{logQuery.error instanceof Error ? logQuery.error.message : "请稍后重试"}</p>
           ) : log.length === 0 ? (
             <p className="text-xs text-muted-foreground">还没有发送记录。配置好后点「发送测试」，或等到期提醒触发。</p>
           ) : (

@@ -6,23 +6,26 @@
  *  2. 计划详情：订阅以「小轿车卡片」网格呈现（一行 2-3 辆，结构固定），点整张卡片打开弹窗管理。
  *
  * 付款金额按人民币录入（按成员扣费周期），换算成订阅货币写入 cost_sharing；卡片与「月应收合计」统一按
- * 月均展示（订阅整期价与成员整期付款都折算成每月）。车辆有 gpt账号 + 信用卡尾数两项。微信/邮箱/账号/卡号
- * 可一键复制。全部经 `/api/custom/carpool/*`，不改上游。
+ * 月均展示（订阅整期价与成员整期付款都折算成每月），应收由后端按币种分桶、这里用实时汇率折成人民币。
+ * 车辆有 gpt账号 + 信用卡尾数两项。微信/邮箱/账号/卡号可一键复制。全部经 `/api/custom/carpool/*`，不改上游。
+ *
+ * 编辑弹窗的草稿结构与保存前校验在 carpool-draft.ts，表单渲染在 carpool-editor.tsx。
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Bot, CarFront, ChevronLeft, CreditCard, Loader2, Mail, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Bell, Bot, CarFront, ChevronLeft, CreditCard, Loader2, Mail, MessageCircle, Plus, Trash2 } from "lucide-react";
 import { Header } from "@/components/header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import { NotificationDialog } from "@/custom/carpool/notification-dialog";
 import { CopyButton } from "@/custom/carpool/copy-button";
+import { CarpoolEditor } from "@/custom/carpool/carpool-editor";
+import { buildMembersPayload, newDraftMember, toDraft, type Draft, type DraftMember } from "@/custom/carpool/carpool-draft";
 import {
   addSubscriptionToPlan,
   createCarpoolPlan,
@@ -33,11 +36,9 @@ import {
   removeSubscriptionFromPlan,
   renewCarpoolMember,
   saveCarpoolMembers,
-  type CarpoolBillingCycle,
   type CarpoolMember,
   type CarpoolMemberStatus,
   type CarpoolPlanStats,
-  type CarpoolSplitMode,
   type CarpoolSubscription,
 } from "@/custom/carpool/api";
 
@@ -46,19 +47,7 @@ const ACTIVE_SUBS_KEY = ["carpool", "active-subscriptions"] as const;
 const planKey = (planId: string) => ["carpool", "plan", planId] as const;
 const CNY = "CNY";
 
-const STATUS_OPTIONS: Array<{ value: CarpoolMemberStatus; label: string }> = [
-  { value: "active", label: "使用中" },
-  { value: "paused", label: "暂停" },
-  { value: "expired", label: "已过期" },
-];
-const CYCLE_OPTIONS: Array<{ value: CarpoolBillingCycle; label: string }> = [
-  { value: "monthly", label: "月付" },
-  { value: "quarterly", label: "季付" },
-  { value: "yearly", label: "年付" },
-  { value: "custom", label: "自定义天数" },
-];
 const STATUS_LABEL: Record<CarpoolMemberStatus, string> = { active: "使用中", paused: "暂停", expired: "已过期" };
-const SELECT_CLASS = "mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
 function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -95,79 +84,6 @@ function memberPayText(member: CarpoolMember, currency: string): string {
   return `${formatMoney(member.amount, currency)}/月`;
 }
 
-interface DraftMember {
-  key: string;
-  id?: string;
-  name: string;
-  amountCny: string;
-  joinDate: string;
-  expiryDate: string;
-  status: CarpoolMemberStatus;
-  billingCycle: CarpoolBillingCycle;
-  customDays: string;
-  autoCalcExpiry: boolean;
-  reminderDays: string;
-  wechat: string;
-  email: string;
-}
-
-interface Draft {
-  enabled: boolean;
-  splitMode: CarpoolSplitMode;
-  account: string;
-  cardLast4: string;
-  members: DraftMember[];
-}
-
-function newDraftMember(): DraftMember {
-  return {
-    key: crypto.randomUUID(),
-    name: "",
-    amountCny: "",
-    joinDate: "",
-    expiryDate: "",
-    status: "active",
-    billingCycle: "monthly",
-    customDays: "",
-    autoCalcExpiry: false,
-    reminderDays: "",
-    wechat: "",
-    email: "",
-  };
-}
-
-function toDraft(subscription: CarpoolSubscription, subToCny: (amount: number) => number): Draft {
-  return {
-    enabled: subscription.enabled,
-    splitMode: subscription.splitMode,
-    account: subscription.account ?? "",
-    cardLast4: subscription.cardLast4 ?? "",
-    members: subscription.members.map((member) => {
-      const cny = member.amountCny != null
-        ? member.amountCny
-        : member.customAmount != null
-          ? round2(subToCny(member.customAmount))
-          : null;
-      return {
-        key: member.id,
-        id: member.id,
-        name: member.name,
-        amountCny: cny != null ? String(cny) : "",
-        joinDate: member.joinDate ?? "",
-        // 用生效到期日：开「自动计算到期」时 expiryDate 可能还是切换前的旧值，直接显示会和卡片对不上。
-        expiryDate: member.effectiveExpiry ?? member.expiryDate ?? "",
-        status: member.status,
-        billingCycle: member.billingCycle,
-        customDays: member.customDays != null ? String(member.customDays) : "",
-        autoCalcExpiry: member.autoCalcExpiry,
-        reminderDays: member.reminderDays >= 0 ? String(member.reminderDays) : "",
-        wechat: member.wechat ?? "",
-        email: member.email ?? "",
-      };
-    }),
-  };
-}
-
 export default function CarpoolPage() {
   const [openPlanId, setOpenPlanId] = useState<string | null>(null);
   return (
@@ -184,21 +100,35 @@ export default function CarpoolPage() {
   );
 }
 
+/**
+ * 计划统计条。应收由后端按币种分桶返回，这里用**实时汇率**折成人民币合计——均摊的车没有人民币原值，
+ * 后端换算不了（Worker 侧没有汇率源），只在前端才能算对。
+ */
 function StatRow({ stats }: { stats: CarpoolPlanStats }) {
+  const { convert, error: ratesError } = useExchangeRates();
+  const receivable = Object.entries(stats.receivableByCurrency).reduce(
+    (total, [currency, amount]) => total + (currency === CNY ? amount : convert(amount, currency, CNY)),
+    0,
+  );
   const items: Array<{ label: string; value: string; accent?: boolean }> = [
     { label: "总车数", value: String(stats.totalCars) },
     { label: "进行中的拼车", value: String(stats.activeCars), accent: true },
     { label: "空车", value: String(stats.emptyCars) },
-    { label: "月应收合计", value: formatCny(stats.receivableTotal) },
+    { label: "月应收合计", value: formatCny(receivable) },
   ];
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {items.map((item) => (
-        <div key={item.label} className="rounded-lg border bg-card px-3 py-2">
-          <div className={`text-xl font-semibold ${item.accent ? "text-primary" : ""}`}>{item.value}</div>
-          <div className="text-xs text-muted-foreground">{item.label}</div>
-        </div>
-      ))}
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {items.map((item) => (
+          <div key={item.label} className="rounded-lg border bg-card px-3 py-2">
+            <div className={`text-xl font-semibold ${item.accent ? "text-primary" : ""}`}>{item.value}</div>
+            <div className="text-xs text-muted-foreground">{item.label}</div>
+          </div>
+        ))}
+      </div>
+      {ratesError ? (
+        <p className="text-xs text-amber-600 dark:text-amber-400">汇率获取失败，外币金额按内置快照折算，可能与实时汇率有差异。</p>
+      ) : null}
     </div>
   );
 }
@@ -367,6 +297,8 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
     },
     onError: onMutationError("续费失败"),
   });
+  // 只让正在续费的那一行转圈；用一个全局 isPending 会把同车其他车友的按钮一起变灰。
+  const renewingMemberId = renewMemberMutation.isPending ? renewMemberMutation.variables?.memberId ?? null : null;
 
   const startEditing = (subscription: CarpoolSubscription) => {
     setEditingSubId(subscription.id);
@@ -378,38 +310,14 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
 
   const save = (subscription: CarpoolSubscription) => {
     if (!draft) return;
-    const members = draft.members
-      .filter((m) => m.name.trim().length > 0)
-      .map((m) => {
-        const cny = Number.parseFloat(m.amountCny);
-        const hasCny = draft.splitMode === "custom" && Number.isFinite(cny) && cny >= 0;
-        const customDays = Number.parseInt(m.customDays, 10);
-        const reminderDays = Number.parseInt(m.reminderDays, 10);
-        return {
-          ...(m.id ? { id: m.id } : {}),
-          name: m.name.trim(),
-          ...(hasCny ? { customAmount: round2(convert(cny, CNY, subscription.currency)), amountCny: cny } : {}),
-          ...(m.joinDate ? { joinDate: m.joinDate } : {}),
-          ...(m.expiryDate ? { expiryDate: m.expiryDate } : {}),
-          status: m.status,
-          billingCycle: m.billingCycle,
-          ...(m.billingCycle === "custom" && Number.isFinite(customDays) && customDays > 0 ? { customDays } : {}),
-          autoCalcExpiry: m.autoCalcExpiry,
-          ...(Number.isFinite(reminderDays) && reminderDays >= 0 ? { reminderDays } : {}),
-          ...(m.wechat.trim() ? { wechat: m.wechat.trim() } : {}),
-          ...(m.email.trim() ? { email: m.email.trim() } : {}),
-        };
-      });
-    saveMembersMutation.mutate({
-      id: subscription.id,
-      input: {
-        enabled: draft.enabled,
-        splitMode: draft.splitMode,
-        ...(draft.account.trim() ? { account: draft.account.trim() } : {}),
-        ...(draft.cardLast4.trim() ? { cardLast4: draft.cardLast4.trim() } : {}),
-        members,
-      },
-    });
+    // 校验放在这里而不是「静默丢掉不合格的成员」：以前姓名留空的车友会连同日期/微信/金额一起被悄悄
+    // 删掉，还提示「已保存」。
+    const built = buildMembersPayload(draft, (cny) => convert(cny, CNY, subscription.currency));
+    if (!built.ok) {
+      toast({ title: "还不能保存", description: built.message, variant: "destructive" });
+      return;
+    }
+    saveMembersMutation.mutate({ id: subscription.id, input: built.payload });
   };
 
   const plan = planQuery.data;
@@ -439,6 +347,12 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
       {planQuery.isPending ? (
         <div className="flex items-center justify-center py-16 text-muted-foreground">
           <Loader2 className="mr-2 h-5 w-5 animate-spin" /> 加载中…
+        </div>
+      ) : planQuery.isError ? (
+        // 加载失败和「真的被删了」必须分开说：以前网络/登录出问题也显示「已被删除」，很吓人。
+        <div className="py-16 text-center">
+          <p className="text-destructive">加载失败：{planQuery.error instanceof Error ? planQuery.error.message : "请稍后重试"}</p>
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => void planQuery.refetch()}>重试</Button>
         </div>
       ) : !plan ? (
         <div className="py-16 text-center text-destructive">计划不存在或已被删除。</div>
@@ -488,7 +402,8 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
       )}
 
       <Dialog open={editingSubId !== null} onOpenChange={(open) => { if (!open) closeEditor(); }}>
-        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
+        {/* explicit：编辑器里全是手输内容，误按 Esc / 点弹窗外面不能把整份草稿丢掉。 */}
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto" dismissMode="explicit">
           <DialogHeader>
             <DialogTitle>管理拼车{editingSubscription ? ` · ${editingSubscription.name}` : ""}</DialogTitle>
           </DialogHeader>
@@ -507,7 +422,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
               onRemoveMember={(memberKey) => setDraft((c) => (c ? { ...c, members: c.members.filter((m) => m.key !== memberKey) } : c))}
               onUpdateMember={updateMember}
               onRenewMember={(memberId) => renewMemberMutation.mutate({ subscriptionId: editingSubscription.id, memberId })}
-              renewing={renewMemberMutation.isPending}
+              renewingMemberId={renewingMemberId}
               onRemoveFromPlan={() => { if (window.confirm(`把「${editingSubscription.name}」移出本计划？订阅本身不会被删除。`)) removeMutation.mutate(editingSubscription.id); }}
               onCancel={closeEditor}
               onSave={() => save(editingSubscription)}
@@ -564,12 +479,14 @@ function CarCard({ subscription: sub, onManage }: { subscription: CarpoolSubscri
         {sub.members.length > 0 ? (
           sub.members.map((member) => {
             const badge = expiryBadge(member);
+            // 已过期的人不再显示「使用中」——否则同一行会同时挂着「使用中」和「已过期」两个互相矛盾的标签。
+            const statusChip = member.status !== "active" ? STATUS_LABEL[member.status] : member.collectible ? STATUS_LABEL.active : null;
             return (
               <div key={member.id} className="border-t py-1.5 text-sm first:border-t-0">
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex min-w-0 items-center gap-1.5">
                     <span className="truncate font-medium">{member.name}</span>
-                    <span className="shrink-0 rounded bg-muted px-1 text-[11px] text-muted-foreground">{STATUS_LABEL[member.status]}</span>
+                    {statusChip ? <span className="shrink-0 rounded bg-muted px-1 text-[11px] text-muted-foreground">{statusChip}</span> : null}
                   </span>
                   <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
                     <span>{memberPayText(member, sub.currency)}</span>
@@ -611,168 +528,6 @@ function CarCard({ subscription: sub, onManage }: { subscription: CarpoolSubscri
 
       <div className="border-t px-4 py-2 text-xs text-muted-foreground">
         总价 {formatMoney(sub.price, sub.currency)}/月 · 你承担 {formatMoney(sub.yourShare, sub.currency)}/月
-      </div>
-    </div>
-  );
-}
-
-interface CarpoolEditorProps {
-  draft: Draft;
-  currency: string;
-  saving: boolean;
-  removing: boolean;
-  cnyToCurrency: (cny: number) => number;
-  onAccount: (account: string) => void;
-  onCardLast4: (cardLast4: string) => void;
-  onToggleEnabled: (enabled: boolean) => void;
-  onSplitMode: (mode: CarpoolSplitMode) => void;
-  onAddMember: () => void;
-  onRemoveMember: (memberKey: string) => void;
-  onUpdateMember: (memberKey: string, patch: Partial<DraftMember>) => void;
-  onRenewMember: (memberId: string) => void;
-  renewing: boolean;
-  onRemoveFromPlan: () => void;
-  onCancel: () => void;
-  onSave: () => void;
-}
-
-function CarpoolEditor(props: CarpoolEditorProps) {
-  const { draft, currency, saving } = props;
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <Label className="text-xs">车辆信息 · gpt账号</Label>
-          <Input value={draft.account} placeholder="例如：共享的 GPT 账号 / 登录邮箱" onChange={(e) => props.onAccount(e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-xs">车辆信息 · 信用卡尾数</Label>
-          <Input value={draft.cardLast4} maxLength={8} placeholder="如 1234" onChange={(e) => props.onCardLast4(e.target.value)} />
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-6">
-        <label className="flex items-center gap-2 text-sm">
-          <Switch checked={draft.enabled} onCheckedChange={props.onToggleEnabled} />
-          启用拼车
-        </label>
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">分摊方式</span>
-          <Button variant={draft.splitMode === "equal" ? "default" : "outline"} size="sm" onClick={() => props.onSplitMode("equal")}>均摊</Button>
-          <Button variant={draft.splitMode === "custom" ? "default" : "outline"} size="sm" onClick={() => props.onSplitMode("custom")}>自定义金额</Button>
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        {draft.members.map((member) => {
-          const cny = Number.parseFloat(member.amountCny);
-          const preview = draft.splitMode === "custom" && Number.isFinite(cny) && cny >= 0 && currency !== "CNY"
-            ? `≈ ${formatMoney(props.cnyToCurrency(cny), currency)}`
-            : "";
-          return (
-            <div key={member.key} className="rounded-md border p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-xs font-medium text-muted-foreground">车友</span>
-                <div className="flex items-center gap-1">
-                  {member.id ? (
-                    <Button variant="outline" size="sm" className="h-7 text-xs" disabled={props.renewing} onClick={() => { if (member.id) props.onRenewMember(member.id); }}>
-                      <RefreshCw className="mr-1 h-3.5 w-3.5" /> 续费
-                    </Button>
-                  ) : null}
-                  <Button variant="ghost" size="icon" aria-label="删除车友" className="h-7 w-7" onClick={() => props.onRemoveMember(member.key)}>
-                    <Trash2 className="h-4 w-4 text-destructive" />
-                  </Button>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                <div>
-                  <Label className="text-xs">姓名/备注</Label>
-                  <Input value={member.name} placeholder="车友" onChange={(e) => props.onUpdateMember(member.key, { name: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">状态</Label>
-                  <select className={SELECT_CLASS} value={member.status} onChange={(e) => props.onUpdateMember(member.key, { status: e.target.value as CarpoolMemberStatus })}>
-                    {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <Label className="text-xs">微信</Label>
-                  <Input value={member.wechat} placeholder="微信号" onChange={(e) => props.onUpdateMember(member.key, { wechat: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">邮箱</Label>
-                  <Input value={member.email} placeholder="邮箱" onChange={(e) => props.onUpdateMember(member.key, { email: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">付款金额 (¥ 人民币)</Label>
-                  <Input
-                    type="number"
-                    inputMode="decimal"
-                    min="0"
-                    step="0.01"
-                    disabled={draft.splitMode !== "custom"}
-                    value={member.amountCny}
-                    placeholder={draft.splitMode === "custom" ? "¥ 0.00" : "均摊自动计算"}
-                    onChange={(e) => props.onUpdateMember(member.key, { amountCny: e.target.value })}
-                  />
-                  {preview ? <div className="mt-0.5 text-[11px] text-muted-foreground">{preview}</div> : null}
-                </div>
-                <div>
-                  <Label className="text-xs">扣费周期</Label>
-                  <select className={SELECT_CLASS} value={member.billingCycle} onChange={(e) => props.onUpdateMember(member.key, { billingCycle: e.target.value as CarpoolBillingCycle })}>
-                    {CYCLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
-                {member.billingCycle === "custom" ? (
-                  <div>
-                    <Label className="text-xs">自定义天数</Label>
-                    <Input type="number" min="1" step="1" value={member.customDays} placeholder="天" onChange={(e) => props.onUpdateMember(member.key, { customDays: e.target.value })} />
-                  </div>
-                ) : null}
-                <div>
-                  <Label className="text-xs">上车时间</Label>
-                  <Input type="date" value={member.joinDate} onChange={(e) => props.onUpdateMember(member.key, { joinDate: e.target.value })} />
-                </div>
-                <div>
-                  <Label className="text-xs">到期时间</Label>
-                  <Input
-                    type="date"
-                    disabled={member.autoCalcExpiry}
-                    value={member.expiryDate}
-                    placeholder={member.autoCalcExpiry ? "自动计算" : ""}
-                    onChange={(e) => props.onUpdateMember(member.key, { expiryDate: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <Label className="text-xs">到期提醒(提前天数)</Label>
-                  <Input type="number" min="0" step="1" value={member.reminderDays} placeholder="留空=不提醒" onChange={(e) => props.onUpdateMember(member.key, { reminderDays: e.target.value })} />
-                </div>
-                <label className="flex items-center gap-2 self-end pb-2 text-xs">
-                  <Switch checked={member.autoCalcExpiry} onCheckedChange={(v) => props.onUpdateMember(member.key, { autoCalcExpiry: v })} />
-                  自动计算到期
-                </label>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={props.onAddMember}>
-            <Plus className="mr-1 h-4 w-4" /> 添加车友
-          </Button>
-          <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={props.removing} onClick={props.onRemoveFromPlan}>
-            <Trash2 className="mr-1 h-4 w-4" /> 移出计划
-          </Button>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={props.onCancel} disabled={saving}>取消</Button>
-          <Button size="sm" onClick={props.onSave} disabled={saving}>
-            {saving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
-            保存
-          </Button>
-        </div>
       </div>
     </div>
   );
