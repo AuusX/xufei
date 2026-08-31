@@ -1,11 +1,11 @@
 /**
  * 拼车 API 客户端（前端）。
  *
- * 复用应用既有的产品会话头 `getProductAuthHeader()` 与 locale 头；成功响应统一是 `{ data: ... }` 信封。
+ * 复用应用既有的产品会话头 `getProductCsrfHeader()` 与 locale 头；成功响应统一是 `{ data: ... }` 信封。
  * 类型在此本地声明，与后端 `apps/worker/src/custom/carpool/store.ts` 的返回结构对应。
  */
 import { getLocaleHeaders } from "@/i18n/api-locale";
-import { getProductAuthHeader } from "@/services/product-session";
+import { getProductCsrfHeader } from "@/services/product-session";
 
 export type CarpoolSplitMode = "equal" | "custom";
 export type CarpoolMemberStatus = "active" | "paused" | "expired";
@@ -110,7 +110,7 @@ function extractErrorMessage(payload: unknown): string | null {
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body) headers.set("content-type", "application/json");
-  for (const [key, value] of Object.entries(getProductAuthHeader())) headers.set(key, value);
+  for (const [key, value] of Object.entries(getProductCsrfHeader())) headers.set(key, value);
   for (const [key, value] of Object.entries(getLocaleHeaders())) {
     if (!headers.has(key)) headers.set(key, value);
   }

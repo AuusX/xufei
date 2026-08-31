@@ -9,6 +9,7 @@
  * 所以写库前先在这里过一遍上游同一个 schema，把问题变成一个能看懂的 400。
  */
 import type { CostSharing } from "@renewlet/shared/cost-sharing";
+import { moneyToNumber } from "@renewlet/shared/money";
 import { costSharingSchema } from "@renewlet/shared/schemas/subscriptions";
 
 /** 上游校验里出现的问题翻译成给用户看的中文提示。 */
@@ -36,7 +37,7 @@ export function costSharingContractError(costSharing: CostSharing): string | nul
   if (path.startsWith("members")) {
     if (costSharing.members.length > 20) return "一辆车最多 20 位车友";
     if (costSharing.members.some((member) => member.name.length > 80)) return "车友姓名最长 80 个字";
-    if (costSharing.members.some((member) => (member.customAmount ?? 0) > 1_000_000_000)) return "付款金额过大";
+    if (costSharing.members.some((member) => moneyToNumber(member.customAmount) > 1_000_000_000)) return "付款金额过大";
   }
   return `拼车数据不符合订阅端要求（${raw}）`;
 }

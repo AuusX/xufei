@@ -17,6 +17,7 @@ import {
   type CostSharingMember,
   type CostSharingSplitMode,
 } from "@renewlet/shared/cost-sharing";
+import { moneyFromNumber, moneyFromUnknown, moneyToNumber, type MoneyString } from "@renewlet/shared/money";
 import type { BillingCycle, CustomCycleUnit } from "@renewlet/shared/runtime";
 import { toSubscriptionMonthlyAmount } from "@renewlet/shared/subscription-billing";
 import { addBillingCycles, calculateNextBillingDate } from "@renewlet/shared/subscription-renewal";
@@ -39,6 +40,11 @@ function roundMoney(value: number): number {
  * 直接复用应用自己的 `toSubscriptionMonthlyAmount`，避免拼车再维护一套「一个月算几天」的常量。
  */
 function carpoolAmountToMonthly(amount: number, cycle: CarpoolBillingCycle, customDays: number | null): number {
+  // 「自定义天数」但天数缺失的历史数据，上游的 requireCustomBillingCycle 会抛错；这里按整期=一个月兜底，
+  // 免得一条脏 overlay 行让整个拼车页 500（新写入路径已强制要求填天数）。
+  if (cycle === "custom" && (typeof customDays !== "number" || !Number.isInteger(customDays) || customDays <= 0)) {
+    return amount;
+  }
   return toSubscriptionMonthlyAmount(amount, {
     billingCycle: cycle === "yearly" ? "annual" : cycle,
     customDays: cycle === "custom" ? customDays : null,
@@ -63,6 +69,8 @@ function addCycle(dateStr: string, cycle: CarpoolBillingCycle, customDays: numbe
       cycle === "yearly" ? "annual" : cycle,
       1,
       cycle === "custom" ? customDays : undefined,
+      // 上游 requireCustomBillingCycle 现在要求显式单位，缺了会抛错（旧版默认按天）。
+      "day",
     );
   } catch {
     return null;
@@ -94,6 +102,8 @@ export function nextRenewalExpiry(
       cycle === "yearly" ? "annual" : cycle,
       cycle === "custom" ? customDays : undefined,
       nextDay(today),
+      // 同上：自定义周期必须显式给单位，否则整期推进会抛错被 catch 吞掉，续费变成原地不动。
+      "day",
     );
   } catch {
     return addCycle(anchor, cycle, customDays) ?? anchor;
@@ -116,7 +126,9 @@ export interface CarpoolMemberMeta {
 }
 
 /** 提供给前端的成员视图：cost-sharing 成员 + 计算金额 + overlay 字段 + 计算出的到期日。 */
-export interface CarpoolMemberView extends CostSharingMember, CarpoolMemberMeta {
+export interface CarpoolMemberView extends Omit<CostSharingMember, "customAmount">, CarpoolMemberMeta {
+  /** 成员自定义金额（订阅货币、整期原值）。上游内部存 MoneyString，拼车对外统一给数字。 */
+  customAmount?: number | undefined;
   /** 成员的月均分摊金额（订阅货币）：自定义金额按成员扣费周期折算成月均，均摊份额按月均总价平分。 */
   amount: number;
   /** 成员实付人民币的月均值（= amountCny 按成员扣费周期折算）；用于「成员应收合计」等月度口径展示。amountCny 仍是整期原值，供编辑回填。 */
@@ -217,6 +229,12 @@ function defaultMeta(): CarpoolMemberMeta {
   };
 }
 
+/** 把上游可能是 MoneyString / number / 脏值的金额收敛成 MoneyString。 */
+function moneyFromUnknownOrUndefined(value: unknown): MoneyString | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return moneyFromUnknown(value) ?? undefined;
+}
+
 /** 把 D1 里的 cost_sharing_json 收敛成安全的 CostSharing；空对象 / 脏数据视为未开启。 */
 function parseCostSharing(raw: string | null): CostSharing {
   const fallback: CostSharing = { enabled: false, splitMode: "equal", members: [] };
@@ -227,14 +245,19 @@ function parseCostSharing(raw: string | null): CostSharing {
     return {
       enabled: Boolean(parsed.enabled),
       splitMode: parsed.splitMode === "custom" ? "custom" : "equal",
+      // collectionReminder / joinedDate 是订阅页「家庭共享」侧的设置，拼车 UI 不管理它们：
+      // 原样带过去，否则在拼车里保存一次就把用户在订阅页设的收款提醒清掉了。
+      ...(parsed.collectionReminder ? { collectionReminder: parsed.collectionReminder } : {}),
       members: parsed.members
         .filter((member): member is CostSharingMember => Boolean(member) && typeof member === "object" && typeof (member as CostSharingMember).id === "string")
         .map((member) => ({
           id: member.id,
           name: typeof member.name === "string" ? member.name : "",
           note: typeof member.note === "string" ? member.note : undefined,
+          ...(member.joinedDate ? { joinedDate: member.joinedDate } : {}),
           currency: typeof member.currency === "string" ? member.currency : undefined,
-          customAmount: typeof member.customAmount === "number" ? member.customAmount : undefined,
+          // 上游把金额改成了 MoneyString（十进制字符串），这里统一收敛一次再用。
+          customAmount: moneyFromUnknownOrUndefined(member.customAmount),
         })),
     };
   } catch {
@@ -339,7 +362,9 @@ function buildSubscriptionView(
     // 暂停/已过期的车友这个月收不到钱：不计入应收，也不抵扣「你承担」（他那份由你先垫着）。
     const collectible = meta.status === "active" && (!effectiveExpiry || effectiveExpiry >= today);
     if (collectible) memberTotal += amount;
-    return { ...member, ...meta, amount, monthlyAmountCny, effectiveExpiry, collectible };
+    // 对外仍给数字金额：拼车前端用它回填人民币输入框，不需要感知上游的 MoneyString 表示。
+    const customAmount = member.customAmount === undefined ? undefined : moneyToNumber(member.customAmount);
+    return { ...member, ...meta, customAmount, amount, monthlyAmountCny, effectiveExpiry, collectible };
   });
   return {
     id: row.id,
@@ -632,9 +657,10 @@ export async function saveCarpoolMembers(
       id,
       name: member.name.trim(),
       ...(member.note?.trim() ? { note: member.note.trim() } : prior?.note ? { note: prior.note } : {}),
+      ...(prior?.joinedDate ? { joinedDate: prior.joinedDate } : {}),
       ...(prior?.currency ? { currency: prior.currency } : {}),
-      // 上游契约要求 custom 模式下**每个**成员都带金额；留空按 0 写入，绝不能省略。
-      ...(input.splitMode === "custom" ? { customAmount: typeof member.customAmount === "number" ? member.customAmount : 0 } : {}),
+      // 上游契约要求 custom 模式下**每个**成员都带金额；留空按 0 写入，绝不能省略。金额是 MoneyString。
+      ...(input.splitMode === "custom" ? { customAmount: moneyFromNumber(typeof member.customAmount === "number" ? member.customAmount : 0) } : {}),
     };
     return { costMember, input: member };
   });
@@ -643,7 +669,12 @@ export async function saveCarpoolMembers(
   const enabled = input.enabled && hasMembers;
   // 关掉拼车开关**不能**丢成员：仍写完整成员数组，只把 enabled 置 false（上游 isCostSharingEnabled
   // 同样按 enabled && members.length 判断）。只有真的一个成员都没有时才写空对象（上游约定=未开启分摊）。
-  const costSharing: CostSharing = { enabled, splitMode: input.splitMode, members: members.map((m) => m.costMember) };
+  const costSharing: CostSharing = {
+    enabled,
+    splitMode: input.splitMode,
+    members: members.map((m) => m.costMember),
+    ...(previous.collectionReminder ? { collectionReminder: previous.collectionReminder } : {}),
+  };
   const invalid = hasMembers ? costSharingContractError(costSharing) : null;
   if (invalid) return { ok: false, reason: "invalid", message: invalid };
   const costSharingJson = hasMembers ? JSON.stringify(costSharing) : "{}";
