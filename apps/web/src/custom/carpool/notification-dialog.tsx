@@ -142,7 +142,7 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
                   <div className="min-w-0">
                     <span className="text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</span>
                     {entry.context ? <span className="ml-2 text-muted-foreground">· {entry.context}</span> : null}
-                    {!entry.ok && entry.error ? <div className="break-words text-destructive">{entry.error}</div> : null}
+                    {!entry.ok && entry.error ? <div className="wrap-break-word text-destructive">{entry.error}</div> : null}
                   </div>
                 </li>
               ))}
