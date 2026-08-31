@@ -1,5 +1,6 @@
 // 通知内容测试保护前端预览与服务端通知语义一致，尤其是本地时间、重复提醒和空内容展示。
 import { describe, expect, it } from "vitest";
+import { assertDateOnly } from "@/lib/time/date-only";
 import { DEFAULT_SETTINGS } from "@/types/subscription";
 import {
   buildDueNotification,
@@ -39,7 +40,7 @@ describe("notification-content", () => {
         {
           id: "sub-1",
           name: "Netflix",
-          price: 10,
+          price: "10",
           currency: "USD",
           status: "active",
           nextBillingDate: "2026-01-13",
@@ -48,7 +49,7 @@ describe("notification-content", () => {
         {
           id: "sub-2",
           name: "Trial",
-          price: 0,
+          price: "0",
           currency: "USD",
           status: "trial",
           nextBillingDate: "2026-02-01",
@@ -85,7 +86,7 @@ describe("notification-content", () => {
         {
           id: "sub-inherit",
           name: "Inherited SaaS",
-          price: 10,
+          price: "10",
           currency: "USD",
           status: "active",
           nextBillingDate: "2026-01-15",
@@ -114,7 +115,7 @@ describe("notification-content", () => {
         {
           id: "sub-quiet",
           name: "Quiet SaaS",
-          price: 10,
+          price: "10",
           currency: "USD",
           status: "active",
           nextBillingDate: "2026-01-10",
@@ -127,15 +128,15 @@ describe("notification-content", () => {
     expect(content.items).toEqual([]);
   });
 
-  it("builds English notification content when settings locale is English", () => {
+  it("builds English notification content when the account preference is English", () => {
     const content = buildDueNotification(
       new Date("2026-01-10T00:00:00.000Z"),
-      { ...DEFAULT_SETTINGS, locale: "en-US", timezone: "UTC", showExpired: false },
+      { ...DEFAULT_SETTINGS, localePreference: "en-US", timezone: "UTC", showExpired: false },
       [
         {
           id: "sub-1",
           name: "Netflix",
-          price: 10,
+          price: "10",
           currency: "USD",
           status: "active",
           nextBillingDate: "2026-01-13",
@@ -157,7 +158,7 @@ describe("notification-content", () => {
         {
           id: "bad",
           name: "Broken",
-          price: 10,
+          price: "10",
           currency: "USD",
           status: "active",
           nextBillingDate: "2026-02-31",
@@ -175,7 +176,7 @@ describe("notification-content", () => {
     const subscription = {
       id: "expired",
       name: "Old service",
-      price: 5,
+      price: "5",
       currency: "USD",
       status: "active" as const,
       nextBillingDate: "2026-01-01",
@@ -207,7 +208,7 @@ describe("notification-content", () => {
         {
           id: "fixed-term",
           name: "Discounted membership",
-          price: 120,
+          price: "120",
           currency: "USD",
           status: "active",
           billingCycle: "one-time",
@@ -240,7 +241,7 @@ describe("notification-content", () => {
         {
           id: "buyout",
           name: "Lifetime license",
-          price: 199,
+          price: "199",
           currency: "USD",
           status: "active",
           billingCycle: "one-time",
@@ -262,7 +263,7 @@ describe("notification-content", () => {
         {
           id: "expired-fixed-term",
           name: "Expired membership",
-          price: 120,
+          price: "120",
           currency: "USD",
           status: "active",
           billingCycle: "one-time",
@@ -278,5 +279,75 @@ describe("notification-content", () => {
       expect.objectContaining({ type: "expired", subscriptionId: "expired-fixed-term" }),
     ]);
     expect(content.content).toContain("已过期");
+  });
+
+  it("builds cost sharing collection reminders from member joined dates", () => {
+    const content = buildDueNotification(
+      new Date("2026-01-07T00:00:00.000Z"),
+      { ...DEFAULT_SETTINGS, timezone: "UTC", showExpired: false },
+      [
+        {
+          id: "family",
+          name: "Family Plan",
+          price: "30",
+          currency: "USD",
+          status: "active",
+          billingCycle: "monthly",
+          startDate: null,
+          nextBillingDate: "2026-12-31",
+          reminderDays: -2,
+          costSharing: {
+            enabled: true,
+            splitMode: "equal",
+            collectionReminder: { enabled: true, reminderDays: 3 },
+            members: [
+              { id: "partner", name: "Partner", joinedDate: assertDateOnly("2025-12-10"), currency: "USD" },
+              { id: "friend", name: "Friend", joinedDate: assertDateOnly("2025-12-11"), currency: "USD" },
+            ],
+          },
+        },
+      ],
+    );
+
+    expect(content.items).toEqual([
+      expect.objectContaining({
+        type: "costSharing",
+        subscriptionId: "family",
+        targetDate: "2026-01-10",
+        reminderDays: 3,
+        costSharing: { memberName: "Partner", amount: "10", currency: "USD" },
+      }),
+    ]);
+    expect(content.content).toContain("家庭共享收款");
+    expect(content.content).toContain("Partner");
+  });
+
+  it("skips cost sharing collection reminders for one-time buyouts", () => {
+    const content = buildDueNotification(
+      new Date("2026-01-07T00:00:00.000Z"),
+      { ...DEFAULT_SETTINGS, timezone: "UTC", showExpired: false },
+      [
+        {
+          id: "buyout-family",
+          name: "Lifetime Family",
+          price: "30",
+          currency: "USD",
+          status: "active",
+          billingCycle: "one-time",
+          startDate: "2025-12-10",
+          nextBillingDate: "2026-01-10",
+          reminderDays: -2,
+          costSharing: {
+            enabled: true,
+            splitMode: "equal",
+            collectionReminder: { enabled: true, reminderDays: 3 },
+            members: [{ id: "partner", name: "Partner", joinedDate: assertDateOnly("2025-12-10"), currency: "USD" }],
+          },
+        },
+      ],
+    );
+
+    expect(content.hasPayload).toBe(false);
+    expect(content.items).toEqual([]);
   });
 });

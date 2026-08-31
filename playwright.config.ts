@@ -5,6 +5,10 @@ import { defineConfig, devices } from "@playwright/test";
 // 还没关联 tsconfig.playwright.json 时误报 process/node 内置类型缺失。
 const env = process.env;
 
+// Playwright 会为 reporter 设置 FORCE_COLOR；继承 NO_COLOR 会让 Node 在每个 webServer 子进程重复打印冲突告警。
+delete env.NO_COLOR;
+delete env.no_color;
+
 // 本地 E2E 依赖 127.0.0.1 上的 Go server 和 Vite。继承用户代理配置时，
 // localhost 请求可能被转发到外部代理，导致 healthcheck 或 API 等待随机失败。
 for (const key of ["NO_PROXY", "no_proxy"]) {
@@ -30,6 +34,9 @@ const e2eClientPort = 45173;
 const e2eServerURL = `http://127.0.0.1:${e2eServerPort}`;
 const e2eClientURL = `http://127.0.0.1:${e2eClientPort}`;
 const adminStorageState = "e2e/.auth/admin.json";
+const browserExecutablePath = env.RENEWLET_E2E_BROWSER_EXECUTABLE?.trim();
+// 本地可能遇到 Playwright CDN/TLS 被代理拦截；只在显式传入时用系统浏览器，CI 仍使用 hermetic 浏览器。
+const localBrowserFallback = browserExecutablePath ? { launchOptions: { executablePath: browserExecutablePath } } : {};
 
 // 端口必须保持拆分：43190 只给 PocketBase/Go API，浏览器页面只从 45173 的 Vite 入口进入。
 // 如果把 baseURL 指到后端端口，headed 调试会看到 PocketBase UI 而不是 Renewlet 前端。
@@ -50,6 +57,7 @@ export default defineConfig({
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
     video: "retain-on-failure",
+    ...localBrowserFallback,
   },
   webServer: [
     {
@@ -67,7 +75,8 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: `pnpm --dir apps/web exec vite --host 127.0.0.1 --port ${e2eClientPort} --strictPort`,
+      // 每轮强制重建 optimizer，确保 Worker 首次加载不依赖开发机残留的暖缓存。
+      command: `pnpm --dir apps/web exec vite --force --host 127.0.0.1 --port ${e2eClientPort} --strictPort`,
       env: {
         ...proxyEnv,
         VITE_DEV_PROXY_TARGET: e2eServerURL,
@@ -89,7 +98,13 @@ export default defineConfig({
     {
       name: "desktop",
       dependencies: ["setup"],
-      testMatch: ["**/subscriptions.spec.ts", "**/settings.spec.ts", "**/statistics.spec.ts"],
+      testMatch: [
+        "**/calendar-feed-management.spec.ts",
+        "**/subscriptions.spec.ts",
+        "**/settings.spec.ts",
+        "**/statistics.spec.ts",
+        "**/release-smoke.spec.ts",
+      ],
       use: {
         ...devices["Desktop Chrome"],
         storageState: adminStorageState,

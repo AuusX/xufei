@@ -1,6 +1,13 @@
 /** shared runtime 常量是 Go DTO、Cloudflare Worker 和前端 schema 的共同枚举边界。 */
-export const SUPPORTED_LOCALES = ["zh-CN", "en-US"] as const;
-export type Locale = (typeof SUPPORTED_LOCALES)[number];
+export {
+  DEFAULT_LOCALE_PREFERENCE,
+  FALLBACK_LOCALE,
+  LOCALE_PREFERENCES,
+  SOURCE_LOCALE,
+  SUPPORTED_LOCALES,
+  type Locale,
+  type LocalePreference,
+} from "./i18n-config";
 
 export const THEME_MODES = ["light", "dark", "system"] as const;
 export type ThemeMode = (typeof THEME_MODES)[number];
@@ -16,7 +23,7 @@ export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 export const BILLING_CYCLES = ["weekly", "monthly", "quarterly", "semi-annual", "annual", "custom", "one-time"] as const;
 export type BillingCycle = (typeof BILLING_CYCLES)[number];
 
-/** 自定义扣费周期单位是跨 Go/PocketBase、D1 和前端日期算法的共同契约；旧 custom 数据缺省按 day 读取。 */
+/** 自定义扣费周期单位是跨 Go/PocketBase、D1 和前端日期算法的共同契约；产品 API 不允许缺省。 */
 export const CUSTOM_CYCLE_UNITS = ["day", "week", "month", "year"] as const;
 export type CustomCycleUnit = (typeof CUSTOM_CYCLE_UNITS)[number];
 
@@ -30,7 +37,7 @@ export type RepeatReminderInterval = (typeof REPEAT_REMINDER_INTERVALS)[number];
 export const REPEAT_REMINDER_WINDOWS = ["24h", "48h", "72h", "full"] as const;
 export type RepeatReminderWindow = (typeof REPEAT_REMINDER_WINDOWS)[number];
 
-export const EXCHANGE_RATE_PROVIDERS = ["exchange-api", "floatrates"] as const;
+export const EXCHANGE_RATE_PROVIDERS = ["frankfurter", "floatrates", "exchange-api"] as const;
 export type ExchangeRateProvider = (typeof EXCHANGE_RATE_PROVIDERS)[number];
 
 /** 跨 Go/PocketBase、D1 和前端的 date-only 品牌类型，避免续费日期被误当成带时区 instant。 */
@@ -70,10 +77,10 @@ export function isValidTimeZone(value: string): boolean {
 }
 
 export function normalizeExchangeRateProvider(value: unknown): ExchangeRateProvider {
-  // frankfurter 是旧 UI 文案/缓存里的历史值；彻底切到 exchange-api 前先在边界归一。
-  if (value === "exchange-api" || value === "frankfurter") return "exchange-api";
+  if (value === "frankfurter") return "frankfurter";
   if (value === "floatrates") return "floatrates";
-  return "floatrates";
+  if (value === "exchange-api") return "exchange-api";
+  return "frankfurter";
 }
 
 export function isValidReminderDays(value: number): boolean {

@@ -81,7 +81,7 @@ export function AIRecognitionStreamPanel({
     <aside
       data-testid="ai-recognition-stream-panel"
       className={cn(
-        "max-h-full w-full min-w-0 max-w-[28rem] overflow-y-auto rounded-lg border border-border bg-card/95 p-3 shadow-lg shadow-black/10",
+        "max-h-full w-full min-w-0 max-w-md overflow-y-auto rounded-lg border border-border bg-card/95 p-3 shadow-lg shadow-black/10",
         mobile ? "space-y-2" : "space-y-3",
       )}
       role="status"
@@ -160,7 +160,7 @@ export function AIRecognitionStreamPanel({
             <MessageSquareText className="h-3.5 w-3.5" />
             {t("aiRecognition.streamTextPreview")}
           </div>
-          <p className="line-clamp-3 whitespace-pre-wrap break-words text-xs leading-5 text-foreground">
+          <p className="line-clamp-3 whitespace-pre-wrap wrap-break-word text-xs leading-5 text-foreground">
             {textPreview}
           </p>
         </section>
@@ -175,7 +175,7 @@ export function AIRecognitionStreamPanel({
             </span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-180" />
           </summary>
-          <pre className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-words font-sans text-xs leading-5 text-foreground">
+          <pre className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap wrap-break-word font-sans text-xs leading-5 text-foreground">
             {reasoningText}
           </pre>
         </details>

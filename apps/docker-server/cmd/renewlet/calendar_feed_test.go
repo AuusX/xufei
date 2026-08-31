@@ -20,14 +20,14 @@ func TestCalendarFeedLifecycleAndICSRoute(t *testing.T) {
 	}
 	user, token := createRouteTestUser(t, app, "calendar")
 	settings := defaultAppSettings()
-	settings.Locale = "en-US"
+	settings.LocalePreference = string(preferenceEnUS)
 	settings.Timezone = "UTC"
 	settings.NotificationReminderDays = 5
 	createCalendarFeedTestSettings(t, app, user, settings)
 	createCalendarFeedTestCustomConfig(t, app, user.Id)
 	createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
 		Name:            "Active Plan",
-		Price:           12.5,
+		Price:           "12.5",
 		BillingCycle:    "monthly",
 		Category:        "developer_tools",
 		Status:          "active",
@@ -59,6 +59,9 @@ func TestCalendarFeedLifecycleAndICSRoute(t *testing.T) {
 	if createRes.Code != http.StatusOK {
 		t.Fatalf("expected calendar feed create 200, got %d: %s", createRes.Code, createRes.Body.String())
 	}
+	if got := createRes.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected calendar feed create no-store, got %q", got)
+	}
 	createBody := decodeAPISuccessDataForTest[calendarFeedCreateResponse](t, createRes.Body.Bytes())
 	if !createBody.CalendarFeed.Enabled || createBody.CalendarFeed.FeedURL == "" {
 		t.Fatalf("unexpected create response: %#v", createBody)
@@ -71,6 +74,9 @@ func TestCalendarFeedLifecycleAndICSRoute(t *testing.T) {
 	statusRes = serveTestRequest(t, app, http.MethodGet, "/api/app/calendar-feed", "", token)
 	if statusRes.Code != http.StatusOK || !strings.Contains(statusRes.Body.String(), createBody.CalendarFeed.FeedURL) || !strings.Contains(statusRes.Body.String(), `"enabled":true`) {
 		t.Fatalf("expected enabled status with feedUrl, got %d: %s", statusRes.Code, statusRes.Body.String())
+	}
+	if got := statusRes.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("expected calendar feed status no-store, got %q", got)
 	}
 
 	icsRes := serveTestRequest(t, app, http.MethodGet, calendarFeedRequestTarget(t, createBody.CalendarFeed.FeedURL), "", "")
@@ -151,7 +157,7 @@ func TestSubscriptionCalendarFeedLifecycleAndICSRoute(t *testing.T) {
 	}
 	user, token := createRouteTestUser(t, app, "calendar-subscription")
 	settings := defaultAppSettings()
-	settings.Locale = "en-US"
+	settings.LocalePreference = string(preferenceEnUS)
 	settings.Timezone = "UTC"
 	settings.NotificationReminderDays = 5
 	createCalendarFeedTestSettings(t, app, user, settings)
@@ -164,7 +170,7 @@ func TestSubscriptionCalendarFeedLifecycleAndICSRoute(t *testing.T) {
 	})
 	paused := createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
 		Name:            "Paused Plan",
-		Price:           9,
+		Price:           "9",
 		BillingCycle:    "monthly",
 		Category:        "developer_tools",
 		Status:          "paused",
@@ -265,14 +271,14 @@ func TestSubscriptionCalendarICSDownload(t *testing.T) {
 	user, token := createRouteTestUser(t, app, "calendar-download")
 	otherUser, otherToken := createRouteTestUser(t, app, "calendar-download-other")
 	settings := defaultAppSettings()
-	settings.Locale = "en-US"
+	settings.LocalePreference = string(preferenceEnUS)
 	settings.Timezone = "UTC"
 	settings.NotificationReminderDays = 5
 	createCalendarFeedTestSettings(t, app, user, settings)
 	createCalendarFeedTestCustomConfig(t, app, user.Id)
 	paused := createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
 		Name:            "Paused Plan",
-		Price:           9,
+		Price:           "9",
 		BillingCycle:    "monthly",
 		Category:        "developer_tools",
 		Status:          "paused",
@@ -395,12 +401,12 @@ func TestCalendarFeedUsesBuiltInLabelsWhenCustomConfigIsMissing(t *testing.T) {
 	}
 	user, token := createRouteTestUser(t, app, "calendar-built-in-labels")
 	settings := defaultAppSettings()
-	settings.Locale = "zh-CN"
+	settings.LocalePreference = string(preferenceZhCN)
 	settings.Timezone = "UTC"
 	createCalendarFeedTestSettings(t, app, user, settings)
 	createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
 		Name:            "Sentry Team",
-		Price:           26,
+		Price:           "26",
 		BillingCycle:    "monthly",
 		Category:        "developer_tools",
 		Status:          "active",
@@ -441,12 +447,12 @@ func TestCalendarFeedDescribesCustomCycleUnit(t *testing.T) {
 	}
 	user, token := createRouteTestUser(t, app, "calendar-custom-cycle")
 	settings := defaultAppSettings()
-	settings.Locale = "zh-CN"
+	settings.LocalePreference = string(preferenceZhCN)
 	settings.Timezone = "UTC"
 	createCalendarFeedTestSettings(t, app, user, settings)
 	createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
 		Name:            "Three Year Plan",
-		Price:           360,
+		Price:           "360",
 		BillingCycle:    "custom",
 		CustomDays:      3,
 		CustomCycleUnit: "year",
@@ -478,7 +484,7 @@ func TestCalendarFeedUsesBuiltInLabelsWhenCustomConfigMissesEntry(t *testing.T) 
 	}
 	user, token := createRouteTestUser(t, app, "calendar-missing-config-labels")
 	settings := defaultAppSettings()
-	settings.Locale = "zh-CN"
+	settings.LocalePreference = string(preferenceZhCN)
 	settings.Timezone = "UTC"
 	createCalendarFeedTestSettings(t, app, user, settings)
 	createCalendarFeedTestCustomConfig(t, app, user.Id, func(config *customConfigPayload) {
@@ -487,7 +493,7 @@ func TestCalendarFeedUsesBuiltInLabelsWhenCustomConfigMissesEntry(t *testing.T) 
 	})
 	createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
 		Name:            "Missing Config Plan",
-		Price:           26,
+		Price:           "26",
 		BillingCycle:    "monthly",
 		Category:        "developer_tools",
 		Status:          "active",
@@ -529,12 +535,12 @@ func TestCalendarFeedPreservesUnknownConfigValues(t *testing.T) {
 	}
 	user, token := createRouteTestUser(t, app, "calendar-unknown-labels")
 	settings := defaultAppSettings()
-	settings.Locale = "en-US"
+	settings.LocalePreference = string(preferenceEnUS)
 	settings.Timezone = "UTC"
 	createCalendarFeedTestSettings(t, app, user, settings)
 	createCalendarFeedTestSubscription(t, app, user.Id, calendarFeedTestSubscription{
 		Name:            "Unknown Plan",
-		Price:           7,
+		Price:           "7",
 		BillingCycle:    "monthly",
 		Category:        "internal_ops",
 		Status:          "active",
@@ -586,7 +592,7 @@ func TestCalendarFeedLabelResolverIgnoresEmptyCustomLabels(t *testing.T) {
 
 type calendarFeedTestSubscription struct {
 	Name             string
-	Price            float64
+	Price            string
 	Currency         string
 	BillingCycle     string
 	CustomDays       int
@@ -663,7 +669,7 @@ func createCalendarFeedTestSubscription(t *testing.T, app core.App, userID strin
 	record := core.NewRecord(collection)
 	record.Set("user", userID)
 	record.Set("name", fallbackString(input.Name, "Calendar Plan"))
-	record.Set("price", input.Price)
+	record.Set("price", fallbackString(input.Price, "12"))
 	record.Set("currency", fallbackString(input.Currency, "USD"))
 	record.Set("billingCycle", fallbackString(input.BillingCycle, "monthly"))
 	record.Set("customDays", input.CustomDays)

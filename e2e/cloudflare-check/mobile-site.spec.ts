@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { expectNoHorizontalOverflow } from "../support/layout";
+import { gotoSettingsSectionAfterHydration } from "../support/settings";
 import {
   attachNetworkSummary,
   createNetworkMonitor,
@@ -77,13 +78,15 @@ test("mobile sheets, dialogs, and notification history stay usable", async ({ pa
     await subscriptionDialog.getByRole("button", { name: "取消" }).click();
     await expect(subscriptionDialog).toBeHidden();
 
-    await page.goto("/settings");
-    await expect(page.getByRole("heading", { name: "系统配置" })).toBeVisible();
+    await gotoSettingsSectionAfterHydration(page, "settings-data-config");
     await page.getByRole("button", { name: /货币管理/ }).click();
     const currencyDialog = page.getByRole("dialog", { name: "货币管理" });
     await expect(currencyDialog).toBeVisible();
     await expectNoHorizontalOverflow(page, "mobile currency manager");
-    await currencyDialog.getByRole("button", { name: /^(关闭|Close)$/ }).click();
+    await currencyDialog
+      .locator("[data-settings-manager-footer]")
+      .getByRole("button", { name: /^(关闭|Close)$/ })
+      .click();
     await expect(currencyDialog).toBeHidden();
 
     await page.getByRole("button", { name: "查看调度与历史" }).click();
@@ -102,7 +105,10 @@ test("mobile sheets, dialogs, and notification history stay usable", async ({ pa
       await expect(drawer).toBeHidden();
     }
 
-    await page.keyboard.press("Escape");
+    await historyDialog
+      .locator("[data-settings-manager-footer]")
+      .getByRole("button", { name: /^(关闭|Close)$/ })
+      .click();
     await expect(historyDialog).toBeHidden();
 
     expectNoBlockingNetworkIssues(monitor, "mobile overlays");

@@ -3,38 +3,45 @@
  *
  * 状态链路：
  *   自动初始语言 -> Lingui catalog -> document/api
- *   远端 settings.locale -> state/document/api
- *   设置页本地预览 -> 仅 state/document
- *   已保存语言 -> settings API + 显式偏好缓存
+ *   私有远端同步 -> state/document/api
+ *   设置页本地预览 -> state/document/api，不提前写首屏缓存
+ *   已保存语言 -> state/document/api + 显式偏好缓存
  *
- * 注意： 外观设置页会用 `persist=false` 做本地预览；不要把预览态提前写入远端或本地显式偏好。
+ * 注意：locale 切换必须等 catalog 加载完成后原子激活；迟到请求不能修改任何全局语言状态。
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { I18nProvider as LinguiProvider } from "@lingui/react";
-import { useQueryClient } from "@tanstack/react-query";
 import { setApiLocale } from "@/i18n/api-locale";
-import { getInitialLocale, isLocale, localizedLabel, writeExplicitLocalePreference, type Locale, type LocalizedLabels } from "@/i18n/locales";
-import { activateLinguiLocale, linguiI18n, translate, type MessageKey, type MessageParams } from "@/i18n/messages";
-import { SETTINGS_QUERY_KEY, useSettings, useUpdateSettings } from "@/hooks/use-settings";
-import { getCurrentUserId } from "@/lib/pocketbase";
+import {
+  clearAccountLocaleProjection,
+  detectBrowserLocale,
+  getInitialLocale,
+  isLocale,
+  localeForPreference,
+  localizedLabel,
+  readAccountLocaleProjection,
+  writeAccountLocaleProjection,
+  type Locale,
+  type LocalePreference,
+  type LocalizedLabels,
+} from "@/i18n/locales";
+import { getProductCurrentUserId, subscribeProductSession } from "@/services/product-session";
+import { activateLoadedLocale, linguiI18n, loadLocaleCatalog, translate, type MessageKey, type MessageParams } from "@/i18n/messages";
 import { formatCurrency as formatCurrencyValue } from "@/lib/currency";
 import { toPlainDate, type DateOnly } from "@/lib/time/date-only";
+import { reportClientError } from "@/lib/report-client-error";
 
 interface I18nContextValue {
   locale: Locale;
-  setLocale: (locale: Locale, options?: SetLocaleOptions) => void;
+  previewLocalePreference: (preference: LocalePreference) => void;
+  commitLocalePreference: (preference: LocalePreference) => void;
+  syncRemoteLocalePreference: (preference: LocalePreference) => void;
   t: (key: MessageKey, params?: MessageParams) => string;
   formatDateOnly: (date: DateOnly | string, style?: "short" | "monthDay" | "full") => string;
   formatDateTime: (date: Date | string | number, options?: Intl.DateTimeFormatOptions) => string;
   formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string;
-  formatCurrency: (amount: number, currency: string) => string;
+  formatCurrency: (amount: number | string, currency: string) => string;
   label: (labels: LocalizedLabels) => string;
-}
-
-interface SetLocaleOptions {
-  persist?: boolean;
-  markAsSaved?: boolean;
-  rememberPreference?: boolean;
 }
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -50,7 +57,9 @@ function createFallbackI18nValue(): I18nContextValue {
   const t = (key: MessageKey, params?: MessageParams) => translate(locale, key, params);
   return {
     locale,
-    setLocale: () => undefined,
+    previewLocalePreference: () => undefined,
+    commitLocalePreference: () => undefined,
+    syncRemoteLocalePreference: () => undefined,
     t,
     formatDateOnly: (date, style = "short") => {
       const value = toPlainDate(date);
@@ -74,82 +83,82 @@ function createFallbackI18nValue(): I18nContextValue {
   };
 }
 
+/** 唯一提交 Lingui catalog、React locale、document.lang 与 API locale 的客户端状态机。 */
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const queryClient = useQueryClient();
-  const [localeState, setLocaleState] = useState(() => ({ locale: getInitialLocale(), catalogVersion: 0 }));
-  const locale = localeState.locale;
+  const [initialLocale] = useState(getInitialLocale);
+  const [localeState, setLocaleState] = useState(() => ({ locale: initialLocale, catalogVersion: 0 }));
   const catalogRequestRef = useRef(0);
-  const hasLocalPreviewRef = useRef(false);
-  const { data: settings } = useSettings();
-  const { mutate: updateSettings } = useUpdateSettings();
 
   useEffect(() => {
+    applyDocumentLocale(initialLocale);
+    setApiLocale(initialLocale);
+  }, [initialLocale]);
+
+  const requestLocale = useCallback((
+    nextLocale: Locale,
+    preference: LocalePreference,
+    mode: "preview" | "commit" | "remote" | "session",
+    ownerUserId: string | null = null,
+  ) => {
+    if (!isLocale(nextLocale)) return;
+
     const requestId = catalogRequestRef.current + 1;
     catalogRequestRef.current = requestId;
-    // Lingui catalog 动态加载是切换多语言后的核心状态机：只让最后一次 locale 选择激活，避免快速切换时旧请求回写 UI。
-    void activateLinguiLocale(locale).then(() => {
-      if (catalogRequestRef.current !== requestId) return;
-      setLocaleState((current) => (
-        current.locale === locale
-          ? { ...current, catalogVersion: current.catalogVersion + 1 }
-          : current
-      ));
-    });
-  }, [locale]);
 
-  useEffect(() => {
-    // 自动探测只服务本次会话；本地显式偏好只能来自用户保存语言。
-    applyDocumentLocale(locale);
-    if (hasLocalPreviewRef.current) return;
-    setApiLocale(locale);
-  }, [locale]);
-
-  useEffect(() => {
-    // 远端设置是登录后真相来源，但不能覆盖用户正在预览的未保存语言。
-    if (!settings?.locale || settings.locale === locale) return;
-    if (hasLocalPreviewRef.current) return;
-    setLocaleState((current) => ({ locale: settings.locale, catalogVersion: current.catalogVersion }));
-  }, [locale, settings?.locale]);
-
-  const setLocale = useCallback(
-    (nextLocale: Locale, options: SetLocaleOptions = {}) => {
-      if (!isLocale(nextLocale)) return;
-      const shouldPersist = options.persist ?? true;
-      setLocaleState((current) => ({ locale: nextLocale, catalogVersion: current.catalogVersion }));
-
-      if (!shouldPersist) {
-        hasLocalPreviewRef.current = !options.markAsSaved;
-        if (options.markAsSaved) {
-          setApiLocale(nextLocale);
-          if (options.rememberPreference) writeExplicitLocalePreference(nextLocale);
-          applyDocumentLocale(nextLocale);
+    void loadLocaleCatalog(nextLocale)
+      .then((messages) => {
+        if (catalogRequestRef.current !== requestId) return;
+        if (ownerUserId && getProductCurrentUserId() !== ownerUserId) return;
+        // catalog、React context、document 与 API header 必须在同一获胜请求内提交，不能暴露半切换状态。
+        activateLoadedLocale(nextLocale, messages);
+        setLocaleState((current) => ({
+          locale: nextLocale,
+          catalogVersion: current.catalogVersion + 1,
+        }));
+        applyDocumentLocale(nextLocale);
+        setApiLocale(nextLocale);
+        if (mode === "commit" || mode === "remote") {
+          if (preference === "auto") {
+            clearAccountLocaleProjection(ownerUserId ?? undefined);
+          } else if (ownerUserId) {
+            writeAccountLocaleProjection(ownerUserId, preference);
+          }
         }
-        return;
-      }
-
-      hasLocalPreviewRef.current = false;
-      setApiLocale(nextLocale);
-      writeExplicitLocalePreference(nextLocale);
-      applyDocumentLocale(nextLocale);
-      queryClient.setQueryData(SETTINGS_QUERY_KEY, (current: unknown) => {
-        // 先更新缓存可以让 Settings 页和 Header 立即看到新语言，失败回滚交给保存流程处理。
-        if (!current || typeof current !== "object") return current;
-        return { ...current, locale: nextLocale };
+      })
+      .catch((error: unknown) => {
+        if (catalogRequestRef.current !== requestId) return;
+        reportClientError(error, { source: "i18n.load-catalog", locale: nextLocale });
       });
+  }, []);
 
-      if (getCurrentUserId()) {
-        updateSettings({ locale: nextLocale });
-      }
-    },
-    [queryClient, updateSettings],
-  );
+  const previewLocalePreference = useCallback((preference: LocalePreference) => {
+    requestLocale(localeForPreference(preference), preference, "preview");
+  }, [requestLocale]);
+
+  const commitLocalePreference = useCallback((preference: LocalePreference) => {
+    const userId = getProductCurrentUserId();
+    requestLocale(localeForPreference(preference), preference, "commit", userId);
+  }, [requestLocale]);
+
+  const syncRemoteLocalePreference = useCallback((preference: LocalePreference) => {
+    const userId = getProductCurrentUserId();
+    requestLocale(localeForPreference(preference), preference, "remote", userId);
+  }, [requestLocale]);
+
+  useEffect(() => subscribeProductSession(() => {
+    const userId = getProductCurrentUserId();
+    const projection = readAccountLocaleProjection(userId);
+    requestLocale(projection ?? detectBrowserLocale(), projection ?? "auto", "session", userId);
+  }), [requestLocale]);
 
   const value = useMemo<I18nContextValue>(() => {
     const t = (key: MessageKey, params?: MessageParams) => translate(localeState.locale, key, params);
 
     return {
       locale: localeState.locale,
-      setLocale,
+      previewLocalePreference,
+      commitLocalePreference,
+      syncRemoteLocalePreference,
       t,
       formatDateOnly: (date, style = "short") => {
         const value = toPlainDate(date);
@@ -171,7 +180,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       formatCurrency: (amount, currency) => formatCurrencyValue(amount, currency, localeState.locale),
       label: (labelSet) => localizedLabel(labelSet, localeState.locale),
     };
-  }, [localeState, setLocale]);
+  }, [commitLocalePreference, localeState, previewLocalePreference, syncRemoteLocalePreference]);
 
   return (
     <LinguiProvider i18n={linguiI18n}>
@@ -180,6 +189,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** 读取当前已提交语言；Provider 缺失时返回保守兜底，保证错误边界仍能渲染。 */
 export function useI18n() {
   const context = useContext(I18nContext);
   if (!context) {

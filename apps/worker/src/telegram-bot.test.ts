@@ -5,6 +5,7 @@ import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readSuccessData } from "./api-test-helpers";
 import { updateSettings } from "./settings";
+import { countSubscriptionStatuses } from "./subscription-derived-state";
 import {
   deleteTelegramBotCommands,
   installTelegramBotCommands,
@@ -47,7 +48,8 @@ function d1Result<T = unknown>(results: T[] = [], changes = 0): D1Result<T> {
 
 function settings(overrides: Partial<ApiAppSettings> = {}): ApiAppSettings {
   return {
-    ...createDefaultAppSettings({ locale: "zh-CN" }),
+    ...createDefaultAppSettings(),
+    localePreference: "zh-CN",
     timezone: "UTC",
     telegramBotToken: BOT_TOKEN,
     telegramChatId: CHAT_ID,
@@ -113,21 +115,18 @@ class TelegramBotTestStatement {
       const id = String(this.values[0]);
       return this.state.bindings.find((row) => row.id === id) as T | undefined ?? null;
     }
-    if (this.sql.includes("SELECT COUNT(*) AS count FROM subscriptions")) {
-      const userId = String(this.values[0]);
-      return { count: this.state.subscriptions.filter((row) => row.user_id === userId).length } as T;
-    }
     if (this.sql.includes("FROM subscription_user_stats")) {
       const userId = String(this.values[0]);
       const rows = this.state.subscriptions.filter((row) => row.user_id === userId);
-      const statusCounts = rows.reduce<Record<string, number>>((counts, row) => {
-        counts[row.status] = (counts[row.status] ?? 0) + 1;
-        return counts;
-      }, {});
+      const statusCounts = countSubscriptionStatuses(rows);
       return {
         user_id: userId,
         total_count: rows.length,
-        status_counts_json: JSON.stringify(statusCounts),
+        trial_count: statusCounts.trial,
+        active_count: statusCounts.active,
+        expired_count: statusCounts.expired,
+        paused_count: statusCounts.paused,
+        cancelled_count: statusCounts.cancelled,
         created_at: "2026-06-05T00:00:00.000Z",
         updated_at: "2026-06-05T00:00:00.000Z",
       } as T;
@@ -147,14 +146,6 @@ class TelegramBotTestStatement {
   }
 
   async all<T>(): Promise<D1Result<T>> {
-    if (this.sql.includes("FROM subscriptions") && this.sql.includes("GROUP BY status")) {
-      const userId = String(this.values[0]);
-      const counts = new Map<string, number>();
-      for (const row of this.state.subscriptions.filter((item) => item.user_id === userId)) {
-        counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
-      }
-      return d1Result(Array.from(counts, ([status, count]) => ({ status, count })) as T[]);
-    }
     if (this.sql.includes("FROM subscriptions") && this.sql.includes("next_billing_date >= ?")) {
       const userId = String(this.values[0]);
       return d1Result(this.state.subscriptions.filter((row) => row.user_id === userId) as T[]);
@@ -240,7 +231,6 @@ class TelegramBotTestStatement {
 describe("Cloudflare Telegram Bot commands", () => {
   beforeEach(() => {
     authMocks.requireAuth.mockReset().mockResolvedValue({
-      token: "session-token",
       user: { id: USER_ID },
       session: { id: "ses" },
     });
@@ -382,12 +372,15 @@ describe("Cloudflare Telegram Bot commands", () => {
 type AuthorizedRequestInit = Omit<RequestInit, "headers"> & { headers?: Record<string, string>; url?: string };
 
 function authorizedRequest(path: string, init: AuthorizedRequestInit = {}): Request {
+  const method = init.method ?? "GET";
+  const unsafe = !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
   const requestInit: RequestInit = {
-    method: init.method ?? "GET",
+    method,
     headers: {
-      authorization: "Bearer session-token",
+      cookie: "renewlet_session=session-token; renewlet_csrf=csrf-token",
       "content-type": "application/json",
       "x-renewlet-locale": "en-US",
+      ...(unsafe ? { origin: "https://renewlet.test", "x-renewlet-csrf": "csrf-token" } : {}),
       ...init.headers,
     },
   };
@@ -433,7 +426,7 @@ function subscriptionRow(overrides: Partial<SubscriptionRow> = {}): Subscription
     user_id: USER_ID,
     name: "Telegram Plan",
     logo: null,
-    price: 12,
+    price: "12",
     currency: "USD",
     billing_cycle: "monthly",
     custom_days: null,
@@ -458,6 +451,8 @@ function subscriptionRow(overrides: Partial<SubscriptionRow> = {}): Subscription
     repeat_reminder_interval: "24h",
     repeat_reminder_window: "24h",
     cost_sharing_json: "{}",
+    cost_sharing_collection_reminder_enabled: 0,
+    cost_sharing_next_collection_reminder_date: null,
     extra_json: "{}",
     created_at: "2026-06-01T00:00:00.000Z",
     updated_at: "2026-06-01T00:00:00.000Z",

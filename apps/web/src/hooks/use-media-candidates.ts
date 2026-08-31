@@ -7,6 +7,7 @@ import { mediaCandidateService } from "@/services/media-candidate-service";
 interface UseMediaCandidatesOptions {
   kind: MediaCandidateKind;
   autoQuery?: string | undefined;
+  website?: string | undefined;
   limit?: number | undefined;
   closeResetDelayMs?: number | undefined;
 }
@@ -28,14 +29,16 @@ export interface UseMediaCandidatesResult {
 }
 
 function emptyCandidateGroup(): MediaCandidateGroup {
-  return { best: null, builtIn: [], favicon: [] };
+  return { best: null, builtIn: [], appStore: [], favicon: [] };
 }
 
 function filterBlocked(group: MediaCandidateGroup, blocked: ReadonlySet<string>): MediaCandidateGroup {
+  // 远端图片失败屏蔽后要同步重算 best；否则 App Store/favicons 坏图会继续被保存按钮当作首选。
   const builtIn = group.builtIn.filter((candidate) => !blocked.has(candidate.url));
+  const appStore = group.appStore.filter((candidate) => !blocked.has(candidate.url));
   const favicon = group.favicon.filter((candidate) => !blocked.has(candidate.url));
-  const best = builtIn[0] ?? favicon[0] ?? null;
-  return { best, builtIn, favicon };
+  const best = builtIn[0] ?? appStore[0] ?? favicon[0] ?? null;
+  return { best, builtIn, appStore, favicon };
 }
 
 /**
@@ -45,7 +48,7 @@ function filterBlocked(group: MediaCandidateGroup, blocked: ReadonlySet<string>)
  * 把过期候选写回当前弹层。
  */
 export function useMediaCandidates(options: UseMediaCandidatesOptions): UseMediaCandidatesResult {
-  const { kind, autoQuery, limit = 32, closeResetDelayMs = 0 } = options;
+  const { kind, autoQuery, website, limit = 32, closeResetDelayMs = 0 } = options;
   const [open, setOpen] = useState(false);
   const [query, setQueryState] = useState("");
   const [isSearching, setIsSearching] = useState(false);
@@ -119,7 +122,7 @@ export function useMediaCandidates(options: UseMediaCandidatesOptions): UseMedia
         const response = await mediaCandidateService.resolve({
           kind,
           mode: "search",
-          items: [{ id: "search", name: q }],
+          items: [{ id: "search", name: q, ...(website?.trim() ? { website: website.trim() } : {}) }],
           limit,
         }, controller.signal);
         if (controller.signal.aborted) return;
@@ -140,7 +143,7 @@ export function useMediaCandidates(options: UseMediaCandidatesOptions): UseMedia
         }
       }
     })();
-  }, [kind, limit, resetVisibleSearchState]);
+  }, [kind, limit, resetVisibleSearchState, website]);
 
   useEffect(() => {
     if (!open) return;

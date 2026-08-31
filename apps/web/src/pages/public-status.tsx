@@ -7,13 +7,14 @@ import {
   CreditCard,
   Eye,
   EyeOff,
+  Gauge,
   Monitor,
   Moon,
   Sun,
   TrendingUp,
   type LucideIcon,
 } from "lucide-react";
-import { useParams } from "react-router-dom";
+import { useParams } from "react-router";
 import { SubscriptionLogo } from "@/components/subscription-logo";
 import { SubscriptionStatusBadge } from "@/components/subscription-status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +31,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { TruncatedTooltipText } from "@/components/ui/truncated-tooltip-text";
 import { ApiError } from "@/lib/api-client";
 import { colorWithAlpha } from "@/lib/color";
+import { formatCompactCurrencyAmount } from "@/lib/currency";
 import { useTheme } from "@/lib/theme-provider";
 import { daysBetweenDateOnly, todayDateOnlyInTimeZone } from "@/lib/time/date-only";
 import { usePublicStatus } from "@/hooks/use-public-status-page";
@@ -37,21 +39,37 @@ import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import { useI18n } from "@/i18n/I18nProvider";
 import { localizedLabel, type Locale } from "@/i18n/locales";
 import { translate, type MessageKey } from "@/i18n/messages";
-import { customCycleUnitLabelKey, toMonthlyAmount } from "@/lib/subscription-billing";
+import {
+  customCycleUnitLabelKey,
+  toDailyAmountFromMonthly,
+  toMonthlyAmount,
+} from "@/lib/subscription-billing";
 import type { PublicStatusResponse } from "@/lib/api/schemas/public-status";
 import { CYCLE_LABELS } from "@/types/subscription";
 import type { ThemeMode } from "@/types/theme";
+import { moneyToNumber } from "@renewlet/shared/money";
+import { requireCustomBillingCycle } from "@renewlet/shared/subscription-renewal";
 
 type PublicStatusSubscription = PublicStatusResponse["subscriptions"][number];
+type PublicStatusExchangeRateBasis = NonNullable<PublicStatusResponse["page"]["exchangeRateBasis"]>;
+type PublicStatusCurrencyConverter = (amount: number | string, fromCurrency: string, toCurrency: string) => number;
 
-const PUBLIC_STATUS_THEME_OPTIONS: Array<{
+interface PublicStatusThemeOption {
   value: ThemeMode;
   labelKey: MessageKey;
   Icon: LucideIcon;
-}> = [
+}
+
+const SYSTEM_PUBLIC_STATUS_THEME_OPTION: PublicStatusThemeOption = {
+  value: "system",
+  labelKey: "theme.system",
+  Icon: Monitor,
+};
+
+const PUBLIC_STATUS_THEME_OPTIONS: PublicStatusThemeOption[] = [
   { value: "light", labelKey: "theme.light", Icon: Sun },
   { value: "dark", labelKey: "theme.dark", Icon: Moon },
-  { value: "system", labelKey: "theme.system", Icon: Monitor },
+  SYSTEM_PUBLIC_STATUS_THEME_OPTION,
 ];
 
 function useNoIndexMeta() {
@@ -99,12 +117,12 @@ function PublicStatusLoading() {
           <Skeleton className="h-8 w-36" />
           <Skeleton className="mt-2 h-4 w-64 max-w-full" />
         </div>
-        <div className="grid gap-5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr))]">
+        <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))]">
           {Array.from({ length: 4 }, (_, index) => (
             <Skeleton key={index} className="h-32 rounded-xl" />
           ))}
         </div>
-        <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr))]">
+        <div className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))]">
           {Array.from({ length: 6 }, (_, index) => (
             <Skeleton key={index} className="h-44 rounded-xl" />
           ))}
@@ -118,7 +136,7 @@ function PublicStatusThemeMenu() {
   const { theme, setTheme } = useTheme();
   const { t } = useI18n();
   const currentOption = PUBLIC_STATUS_THEME_OPTIONS.find((option) => option.value === theme)
-    ?? PUBLIC_STATUS_THEME_OPTIONS[1]!;
+    ?? SYSTEM_PUBLIC_STATUS_THEME_OPTION;
   const CurrentIcon = currentOption.Icon;
 
   const handleThemeChange = (value: string) => {
@@ -207,7 +225,7 @@ function publicStatusStats(data: PublicStatusResponse) {
 
 function publicStatusMonthlyTotal(
   data: PublicStatusResponse,
-  convert: (amount: number, from: string, to: string) => number,
+  convert: (amount: number | string, from: string, to: string) => number,
 ) {
   const targetCurrency = data.page.currency;
   if (!data.page.showPrices || !targetCurrency) return 0;
@@ -233,6 +251,17 @@ function publicStatusMonthlyTotal(
   }, 0);
 }
 
+function publicStatusConverterFromBasis(basis: PublicStatusExchangeRateBasis | undefined) {
+  if (!basis || basis.status !== "locked") return null;
+  return (amount: number | string, fromCurrency: string, toCurrency: string): number => {
+    const numericAmount = moneyToNumber(amount);
+    if (fromCurrency === toCurrency) return numericAmount;
+    const fromRate = basis.rates[fromCurrency] || 1;
+    const toRate = basis.rates[toCurrency] || 1;
+    return (numericAmount / fromRate) * toRate;
+  };
+}
+
 function PublicStatusSummary({ data }: { data: PublicStatusResponse }) {
   if (data.page.showPrices && data.page.currency) {
     return <PublicStatusMoneySummary data={data} />;
@@ -242,20 +271,76 @@ function PublicStatusSummary({ data }: { data: PublicStatusResponse }) {
 
 function PublicStatusMoneySummary({ data }: { data: PublicStatusResponse }) {
   const { t, formatCurrency, formatNumber } = useI18n();
+  const lockedConvert = publicStatusConverterFromBasis(data.page.exchangeRateBasis);
+  if (lockedConvert) {
+    // 匿名公开页拿到 locked basis 时不能再挂实时汇率 hook；否则快照口径仍会触发浏览器直连外部 provider。
+    return (
+      <PublicStatusMoneyCards
+        data={data}
+        convert={lockedConvert}
+        moneySubtitle={t("publicStatus.moneySubtitleLocked", { month: data.page.exchangeRateBasis?.month ?? "" })}
+        formatCurrency={formatCurrency}
+        formatNumber={formatNumber}
+      />
+    );
+  }
+
+  return <PublicStatusLiveMoneySummary data={data} />;
+}
+
+function PublicStatusLiveMoneySummary({ data }: { data: PublicStatusResponse }) {
+  const { t, formatCurrency, formatNumber } = useI18n();
   const { convert, loading: ratesLoading } = useExchangeRates();
-  const stats = publicStatusStats(data);
-  const monthlyTotal = publicStatusMonthlyTotal(data, convert);
-  const currency = data.page.currency!;
+  const currency = data.page.currency;
+  if (!currency) return null;
   const moneySubtitle = ratesLoading
     ? t("publicStatus.ratesLoading")
-    : t("publicStatus.moneySubtitle", { currency });
+    : data.page.exchangeRateBasis?.status === "live"
+      ? t("publicStatus.moneySubtitleLive", { currency })
+      : t("publicStatus.moneySubtitle", { currency });
 
   return (
-    <div className="grid gap-5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr))]">
+    <PublicStatusMoneyCards
+      data={data}
+      convert={convert}
+      moneySubtitle={moneySubtitle}
+      formatCurrency={formatCurrency}
+      formatNumber={formatNumber}
+    />
+  );
+}
+
+function PublicStatusMoneyCards({
+  data,
+  convert,
+  moneySubtitle,
+  formatCurrency,
+  formatNumber,
+}: {
+  data: PublicStatusResponse;
+  convert: PublicStatusCurrencyConverter;
+  moneySubtitle: string;
+  formatCurrency: ReturnType<typeof useI18n>["formatCurrency"];
+  formatNumber: ReturnType<typeof useI18n>["formatNumber"];
+}) {
+  const stats = publicStatusStats(data);
+  const monthlyTotal = publicStatusMonthlyTotal(data, convert);
+  const currency = data.page.currency;
+  const { t, locale } = useI18n();
+  if (!currency) return null;
+  // 公开汇总日均必须复用已按 locked/live 口径算出的月均，不能再次换汇形成第二套匿名页金额结果。
+  const dailyTotal = toDailyAmountFromMonthly(monthlyTotal);
+  const monthlySubtitle = t("publicStatus.monthlyTotalSubtitle", {
+    amount: formatCompactCurrencyAmount(dailyTotal, currency, locale),
+    basis: moneySubtitle,
+  });
+
+  return (
+    <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))]">
       <StatCard
         title={t("publicStatus.monthlyTotal")}
         value={formatCurrency(monthlyTotal, currency)}
-        subtitle={moneySubtitle}
+        subtitle={monthlySubtitle}
         icon={<CreditCard className="h-6 w-6" />}
         variant="primary"
         className="animate-fade-in"
@@ -291,11 +376,10 @@ function PublicStatusCountSummary({ data }: { data: PublicStatusResponse }) {
   const stats = publicStatusStats(data);
 
   return (
-    <div className="grid gap-5 [grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr))]">
+    <div className="grid gap-5 grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))]">
       <StatCard
         title={t("publicStatus.visibleCount")}
         value={formatNumber(stats.visible)}
-        subtitle={t("publicStatus.visibleSubtitle")}
         icon={<Eye className="h-6 w-6" />}
         variant="primary"
         className="animate-fade-in"
@@ -303,7 +387,6 @@ function PublicStatusCountSummary({ data }: { data: PublicStatusResponse }) {
       <StatCard
         title={t("publicStatus.activeCount")}
         value={formatNumber(stats.active)}
-        subtitle={t("publicStatus.activeSubtitle")}
         icon={<Activity className="h-6 w-6" />}
         className="animate-fade-in [animation-delay:100ms]"
       />
@@ -329,16 +412,34 @@ function PublicStatusCountSummary({ data }: { data: PublicStatusResponse }) {
 function publicBillingCycleLabel(subscription: PublicStatusSubscription, locale: Locale) {
   if (!subscription.billingCycle) return null;
   if (subscription.billingCycle !== "custom") return localizedLabel(CYCLE_LABELS[subscription.billingCycle], locale);
-  const count = subscription.customDays ?? 1;
-  const unit = subscription.customCycleUnit ?? "day";
-  const unitLabel = translate(locale, customCycleUnitLabelKey(unit));
-  return translate(locale, "subscription.customCycleLabel", { count, unit: unitLabel });
+  const custom = requireCustomBillingCycle(subscription.customDays, subscription.customCycleUnit);
+  const unitLabel = translate(locale, customCycleUnitLabelKey(custom.unit));
+  return translate(locale, "subscription.customCycleLabel", { count: custom.count, unit: unitLabel });
+}
+
+function publicSubscriptionDailyAmount(subscription: PublicStatusSubscription) {
+  // 单条日均只能从 showPrices 后的公开价格投影派生；字段缺失时不得补默认值或读取私有 Subscription。
+  if (subscription.price === undefined || !subscription.currency || !subscription.billingCycle) return null;
+  // 买断和零价周期订阅的月均都可能为零，必须按服务期字段区分，不能用金额正负决定是否展示。
+  if (subscription.billingCycle === "one-time" && !subscription.oneTimeTermCount) return null;
+  const monthlyAmount = toMonthlyAmount(
+    subscription.price,
+    subscription.billingCycle,
+    subscription.customDays,
+    subscription.customCycleUnit,
+    subscription.oneTimeTermCount,
+    subscription.oneTimeTermUnit,
+  );
+  return Number.isFinite(monthlyAmount)
+    ? toDailyAmountFromMonthly(monthlyAmount)
+    : null;
 }
 
 function PublicSubscriptionCard({ subscription }: { subscription: PublicStatusSubscription }) {
   const { t, locale, formatCurrency, formatDateOnly, formatDateTime } = useI18n();
   const categoryColor = subscription.category.color ?? "hsl(var(--primary))";
   const billingCycleLabel = publicBillingCycleLabel(subscription, locale);
+  const dailyAmount = publicSubscriptionDailyAmount(subscription);
   const categoryStyle = {
     backgroundColor: colorWithAlpha(categoryColor, 0.1) ?? undefined,
     borderColor: colorWithAlpha(categoryColor, 0.2) ?? undefined,
@@ -392,6 +493,16 @@ function PublicSubscriptionCard({ subscription }: { subscription: PublicStatusSu
           </div>
 
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            {dailyAmount !== null && subscription.currency ? (
+              <div className="flex items-center gap-1.5 tabular-nums text-muted-foreground">
+                <Gauge className="h-3.5 w-3.5" />
+                <span className="text-xs">
+                  {t("publicStatus.subscriptionDailyAverage", {
+                    amount: formatCompactCurrencyAmount(dailyAmount, subscription.currency, locale),
+                  })}
+                </span>
+              </div>
+            ) : null}
             {subscription.startDate ? (
               <div className="flex items-center gap-1.5 text-muted-foreground">
                 <Clock3 className="h-3.5 w-3.5" />
@@ -449,10 +560,9 @@ export default function PublicStatusPage() {
               <EyeOff className="h-8 w-8 text-muted-foreground" />
             </div>
             <h2 className="mb-2 text-lg font-medium text-foreground">{t("publicStatus.emptyTitle")}</h2>
-            <p className="text-sm text-muted-foreground">{t("publicStatus.emptyDescription")}</p>
           </div>
         ) : (
-          <section className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr))]" aria-label={t("publicStatus.listLabel")}>
+          <section className="grid gap-4 grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))]" aria-label={t("publicStatus.listLabel")}>
             {data.subscriptions.map((subscription, index) => (
               <div
                 key={`${subscription.name}-${subscription.startDate ?? "unknown"}-${subscription.nextBillingDate}-${index}`}

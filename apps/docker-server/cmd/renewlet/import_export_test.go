@@ -97,8 +97,8 @@ func TestImportApplyReplacesCurrentUserRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].GetFloat("price") != 99 {
-		t.Fatalf("expected one replaced record with price 99, got rows=%d price=%v", len(rows), rows[0].GetFloat("price"))
+	if len(rows) != 1 || rows[0].GetString("price") != "99" {
+		t.Fatalf("expected one replaced record with price 99, got rows=%d price=%q", len(rows), rows[0].GetString("price"))
 	}
 }
 
@@ -158,8 +158,8 @@ func TestImportApplyMatchesRenewletSourceIdToCurrentRecordId(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].Id != existing.Id || rows[0].GetFloat("price") != 88 {
-		t.Fatalf("expected existing record replaced by id, got rows=%d id=%q price=%v", len(rows), rows[0].Id, rows[0].GetFloat("price"))
+	if len(rows) != 1 || rows[0].Id != existing.Id || rows[0].GetString("price") != "88" {
+		t.Fatalf("expected existing record replaced by id, got rows=%d id=%q price=%q", len(rows), rows[0].Id, rows[0].GetString("price"))
 	}
 }
 
@@ -238,7 +238,7 @@ func TestImportApplyDefaultsMissingAutoRenewToManualButPreservesExplicitTrue(t *
 	}
 	foundExplicitAuto := false
 	for _, row := range rows {
-		if row.GetFloat("price") == 13 {
+		if row.GetString("price") == "13" {
 			foundExplicitAuto = row.GetBool("autoRenew")
 		}
 	}
@@ -415,8 +415,39 @@ func TestImportApplyRejectsMoreThanTwoHundredSubscriptions(t *testing.T) {
 	}
 
 	res := serveTestRequest(t, app, http.MethodPost, "/api/app/import/apply", importRequestBodyWithGeneratedSourceIds("skip", "wallos", prices...), token)
-	if res.Code != http.StatusBadRequest {
+	if res.Code != http.StatusRequestEntityTooLarge || !strings.Contains(res.Body.String(), `"code":"IMPORT_TOO_LARGE"`) {
 		t.Fatalf("expected apply over limit to fail, got %d: %s", res.Code, res.Body.String())
+	}
+}
+
+func TestImportPreviewRejectsMoreThanOneThousandSubscriptions(t *testing.T) {
+	app := newSchemaTestApp(t)
+	if err := ensureSchema(app); err != nil {
+		t.Fatal(err)
+	}
+	_, token := createRouteTestUser(t, app, "preview-limit")
+	prices := make([]int, maxImportPreviewSubscriptions+1)
+	for index := range prices {
+		prices[index] = index + 1
+	}
+
+	res := serveTestRequest(t, app, http.MethodPost, "/api/app/import/preview", importRequestBodyWithGeneratedSourceIds("skip", "wallos", prices...), token)
+	if res.Code != http.StatusRequestEntityTooLarge || !strings.Contains(res.Body.String(), `"code":"IMPORT_TOO_LARGE"`) {
+		t.Fatalf("expected preview over limit to return IMPORT_TOO_LARGE, got %d: %s", res.Code, res.Body.String())
+	}
+}
+
+func TestImportPreviewRejectsBodyOverEightMiB(t *testing.T) {
+	app := newSchemaTestApp(t)
+	if err := ensureSchema(app); err != nil {
+		t.Fatal(err)
+	}
+	_, token := createRouteTestUser(t, app, "preview-body-limit")
+	body := `{"payload":"` + strings.Repeat("x", int(maxImportJSONBodyBytes)) + `"}`
+
+	res := serveTestRequest(t, app, http.MethodPost, "/api/app/import/preview", body, token)
+	if res.Code != http.StatusRequestEntityTooLarge || !strings.Contains(res.Body.String(), `"code":"IMPORT_TOO_LARGE"`) {
+		t.Fatalf("expected oversized preview body to return IMPORT_TOO_LARGE, got %d: %s", res.Code, res.Body.String())
 	}
 }
 
@@ -456,10 +487,6 @@ func importRequestBodyWithSource(conflictMode string, source string, sourceID st
 
 func importRequestBodyWithSkipIndexes(conflictMode string, skipIndexes []int, prices ...int) string {
 	return importRequestBodyWithOptions(conflictMode, "wallos", "1:42", "high", skipIndexes, prices...)
-}
-
-func importRequestBodyWithBillingCycle(conflictMode string, billingCycle string, customDays *int, autoCalculate bool, prices ...int) string {
-	return importRequestBodyWithBillingCycleUnit(conflictMode, billingCycle, customDays, nil, autoCalculate, prices...)
 }
 
 func importRequestBodyWithBillingCycleUnit(conflictMode string, billingCycle string, customDays *int, customCycleUnit *string, autoCalculate bool, prices ...int) string {
@@ -561,7 +588,7 @@ func importSubscriptionBody(source string, sourceID string, confidence string, p
 	return map[string]interface{}{
 		"name":                         "GitHub",
 		"logo":                         nil,
-		"price":                        price,
+		"price":                        fmt.Sprintf("%d", price),
 		"currency":                     "USD",
 		"billingCycle":                 "monthly",
 		"customDays":                   nil,

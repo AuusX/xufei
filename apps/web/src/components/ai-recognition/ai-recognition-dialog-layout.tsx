@@ -37,7 +37,6 @@ export function AIRecognitionFooterActions({
   hasDraftBlockingIssues,
   preview,
   applying,
-  hasBlockingImportWarnings,
   mobile = false,
   onBackToDraft,
   onRecognize,
@@ -56,7 +55,6 @@ export function AIRecognitionFooterActions({
   hasDraftBlockingIssues: boolean;
   preview: ImportPreviewResponse | null;
   applying: boolean;
-  hasBlockingImportWarnings: boolean;
   mobile?: boolean;
   onBackToDraft: () => void;
   onRecognize: () => void;
@@ -124,12 +122,12 @@ export function AIRecognitionFooterActions({
           >
             {t("aiRecognition.backToDraft")}
           </Button>
-          {/* 导入层的 error/warning 是最后一道业务门，不能因为 AI 已生成草稿就绕过 preview 结果。 */}
+          {/* 草稿问题已在 preflight 消化；进入标准预览后只由当前 payload 的 error 决定能否写入。 */}
           <Button
             type="button"
             className={primaryButtonClassName}
             onClick={onApply}
-            disabled={preview.summary.errors > 0 || hasBlockingImportWarnings || applying}
+            disabled={preview.summary.errors > 0 || applying}
           >
             {applying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
             {t("aiRecognition.confirmImport")}
@@ -321,7 +319,7 @@ function CompactSummaryLine({ label, value }: { label: string; value: string }) 
   return (
     <div className="flex min-w-0 max-w-full items-center gap-1.5">
       <dt className="shrink-0 text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 max-w-[9rem] truncate font-medium text-foreground" title={value}>{value}</dd>
+      <dd className="min-w-0 max-w-36 truncate font-medium text-foreground" title={value}>{value}</dd>
     </div>
   );
 }

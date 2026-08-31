@@ -17,6 +17,12 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
+const routeTestProductSessionPrefix = "product-session:"
+
+func routeTestProductSessionAuth(token string, csrfToken string) string {
+	return routeTestProductSessionPrefix + token + ":" + csrfToken
+}
+
 func servePocketBaseTestRequest(t *testing.T, app core.App, method string, target string, body string, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	router, err := apis.NewRouter(app)
@@ -57,12 +63,10 @@ func serveTestRequestWithHeaders(t *testing.T, app core.App, method string, targ
 
 	req := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	req.Header.Set("content-type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", token)
-	}
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
+	applyRouteTestAuth(req, token)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
@@ -100,9 +104,7 @@ func serveMultipartTestRequest(t *testing.T, app core.App, target string, token 
 
 	req := httptest.NewRequest(http.MethodPost, target, &body)
 	req.Header.Set("content-type", writer.FormDataContentType())
-	if token != "" {
-		req.Header.Set("Authorization", token)
-	}
+	applyRouteTestAuth(req, token)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
@@ -114,11 +116,11 @@ func createRouteTestUser(t *testing.T, app core.App, role string) (*core.Record,
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, _, err := createAppSession(app, user.Id)
+	token, csrfToken, _, err := createAppSession(app, user.Id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return user, "Bearer " + token
+	return user, routeTestProductSessionAuth(token, csrfToken)
 }
 
 func createRouteTestUserWithPocketBaseToken(t *testing.T, app core.App, role string) (*core.Record, string) {
@@ -144,7 +146,7 @@ func createRouteTestSubscription(t *testing.T, app core.App, userID string, over
 	record.Load(map[string]interface{}{
 		"user":                         userID,
 		"name":                         "Route Subscription",
-		"price":                        12,
+		"price":                        "12",
 		"currency":                     "USD",
 		"billingCycle":                 "monthly",
 		"category":                     "productivity",
@@ -171,6 +173,37 @@ func createRouteTestSubscription(t *testing.T, app core.App, userID string, over
 	return record
 }
 
+func applyRouteTestAuth(req *http.Request, token string) {
+	if token == "" {
+		if strings.HasPrefix(req.URL.Path, "/api/app/") && isUnsafeHTTPMethod(req.Method) {
+			applyRouteTestSameOrigin(req)
+		}
+		return
+	}
+	if strings.HasPrefix(token, routeTestProductSessionPrefix) {
+		parts := strings.SplitN(strings.TrimPrefix(token, routeTestProductSessionPrefix), ":", 2)
+		req.AddCookie(&http.Cookie{Name: appSessionCookieName, Value: parts[0]})
+		if len(parts) == 2 {
+			req.AddCookie(&http.Cookie{Name: appCSRFCookieName, Value: parts[1]})
+			if isUnsafeHTTPMethod(req.Method) {
+				req.Header.Set(appCSRFHeaderName, parts[1])
+			}
+		}
+		if strings.HasPrefix(req.URL.Path, "/api/app/") && isUnsafeHTTPMethod(req.Method) {
+			applyRouteTestSameOrigin(req)
+		}
+		return
+	}
+	req.Header.Set("Authorization", token)
+}
+
+func applyRouteTestSameOrigin(req *http.Request) {
+	// 测试请求要模拟浏览器最终到达服务端后的 Origin；先应用 X-Forwarded-Proto，再生成同源头。
+	if origin := requestOrigin(req); origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+}
+
 func createRouteTestSuperuser(t *testing.T, app core.App, email string, password string) *core.Record {
 	t.Helper()
 	superusers, err := app.FindCollectionByNameOrId(core.CollectionNameSuperusers)
@@ -184,87 +217,6 @@ func createRouteTestSuperuser(t *testing.T, app core.App, email string, password
 		t.Fatal(err)
 	}
 	return superuser
-}
-
-func TestSubscriptionRenewRouteAdvancesManualSubscription(t *testing.T) {
-	app := newSchemaTestApp(t)
-	if err := ensureSchema(app); err != nil {
-		t.Fatal(err)
-	}
-	registerRecordHooks(app)
-	user, token := createRouteTestUser(t, app, "renew")
-	record := createRouteTestSubscription(t, app, user.Id, map[string]interface{}{
-		"name":            "Manual Renew",
-		"status":          "expired",
-		"nextBillingDate": "2026-01-01",
-		"autoRenew":       false,
-	})
-
-	res := serveTestRequest(t, app, http.MethodPost, "/api/app/subscriptions/"+record.Id+"/renew", "", token)
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected renew 200, got %d: %s", res.Code, res.Body.String())
-	}
-	body := decodeAPISuccessDataForTest[map[string]map[string]interface{}](t, res.Body.Bytes())
-	subscription := body["subscription"]
-	if subscription["status"] != "active" {
-		t.Fatalf("expected expired manual subscription to become active, got %#v", subscription["status"])
-	}
-	if subscription["nextBillingDate"] == "2026-01-01" {
-		t.Fatalf("expected nextBillingDate to advance, got %#v", subscription)
-	}
-	if subscription["autoRenew"] != false {
-		t.Fatalf("expected manual renewal to keep autoRenew=false, got %#v", subscription["autoRenew"])
-	}
-	if _, ok := subscription["user"]; ok {
-		t.Fatalf("renew response must not expose owner field: %#v", subscription)
-	}
-	reloaded, err := app.FindRecordById("subscriptions", record.Id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reloaded.GetString("status") != "active" || reloaded.GetString("nextBillingDate") == "2026-01-01" {
-		t.Fatalf("expected record to be renewed, status=%s next=%s", reloaded.GetString("status"), reloaded.GetString("nextBillingDate"))
-	}
-}
-
-func TestSubscriptionRenewRouteRejectsDisallowedSubscriptions(t *testing.T) {
-	app := newSchemaTestApp(t)
-	if err := ensureSchema(app); err != nil {
-		t.Fatal(err)
-	}
-	registerRecordHooks(app)
-	user, token := createRouteTestUser(t, app, "renew-reject")
-	otherUser, _ := createRouteTestUser(t, app, "renew-other")
-
-	paused := createRouteTestSubscription(t, app, user.Id, map[string]interface{}{
-		"name":      "Paused Manual",
-		"status":    "paused",
-		"autoRenew": false,
-	})
-	automatic := createRouteTestSubscription(t, app, user.Id, map[string]interface{}{
-		"name":      "Automatic",
-		"autoRenew": true,
-	})
-	oneTime := createRouteTestSubscription(t, app, user.Id, map[string]interface{}{
-		"name":         "One Time",
-		"billingCycle": "one-time",
-		"autoRenew":    false,
-	})
-	foreign := createRouteTestSubscription(t, app, otherUser.Id, map[string]interface{}{
-		"name":      "Foreign",
-		"autoRenew": false,
-	})
-
-	for _, record := range []*core.Record{paused, automatic, oneTime} {
-		res := serveTestRequest(t, app, http.MethodPost, "/api/app/subscriptions/"+record.Id+"/renew", `{}`, token)
-		if res.Code != http.StatusBadRequest {
-			t.Fatalf("expected disallowed subscription %s to return 400, got %d: %s", record.GetString("name"), res.Code, res.Body.String())
-		}
-	}
-	foreignRes := serveTestRequest(t, app, http.MethodPost, "/api/app/subscriptions/"+foreign.Id+"/renew", `{}`, token)
-	if foreignRes.Code != http.StatusNotFound {
-		t.Fatalf("expected foreign subscription to return 404, got %d: %s", foreignRes.Code, foreignRes.Body.String())
-	}
 }
 
 func TestPocketBaseInstallerIsDisabled(t *testing.T) {
@@ -352,7 +304,7 @@ func TestSetupRouteHonorsSetupEnabledAndCreatedStatus(t *testing.T) {
 	}
 }
 
-func TestSetupRouteCreatesInitialSettingsFromRequestLocale(t *testing.T) {
+func TestSetupRouteCreatesAutoSettingsRegardlessOfRequestLocale(t *testing.T) {
 	app := newSchemaTestApp(t)
 	if err := ensureSchema(app); err != nil {
 		t.Fatal(err)
@@ -368,8 +320,8 @@ func TestSetupRouteCreatesInitialSettingsFromRequestLocale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected setup admin user: %v", err)
 	}
-	if got := settingsRecordLocale(t, app, admin.Id); got != string(localeZhCN) {
-		t.Fatalf("expected setup settings locale zh-CN, got %q", got)
+	if got := settingsRecordLocalePreference(t, app, admin.Id); got != string(autoLocalePreference) {
+		t.Fatalf("expected setup settings locale preference auto, got %q", got)
 	}
 }
 
@@ -516,7 +468,7 @@ func TestSubscriptionsCollectionCreateAcceptsPrivateAssetLogoPath(t *testing.T) 
 			"user":%q,
 			"name":"test",
 			"logo":%q,
-			"price":0,
+			"price":"0",
 			"currency":"CNY",
 			"billingCycle":"monthly",
 			"customDays":null,
@@ -561,7 +513,7 @@ func TestSubscriptionsCollectionCreateValidatesLogoURLContract(t *testing.T) {
 			"user":%q,
 			"name":"logo-url-test",
 			"logo":%q,
-			"price":0,
+			"price":"0",
 			"currency":"CNY",
 			"billingCycle":"monthly",
 			"customDays":null,

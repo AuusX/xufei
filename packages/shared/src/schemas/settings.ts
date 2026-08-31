@@ -6,9 +6,14 @@ import {
   type BuiltInIconSourceSettingsPatch,
 } from "../built-in-icons";
 import {
+  APP_STORE_STOREFRONTS,
+  normalizeAppStoreStorefronts,
+  type OnlineIconSourceSettings,
+  type OnlineIconSourceSettingsPatch,
+} from "../online-icon-sources";
+import {
   NOTIFICATION_CHANNELS,
   MAX_REMINDER_DAYS,
-  SUPPORTED_LOCALES,
   THEME_MODES,
   THEME_VARIANTS,
   isValidLocalTime,
@@ -16,9 +21,12 @@ import {
   normalizeExchangeRateProvider,
   type LocalTime,
 } from "../runtime";
-import { aiRecognitionSettingsSchema } from "./ai-recognition";
+import { LOCALE_PREFERENCES } from "../i18n-config";
+import { aiRecognitionPublicSettingsSchema, aiRecognitionSettingsSchema } from "./ai-recognition";
 import { apiSuccessResponseSchema } from "./api";
 import { exchangeRateProviderSchema } from "./exchange-rates";
+import { moneyStringSchema } from "../money";
+import { secretMutationSchema, type SecretMutation } from "./secrets";
 
 const hhmmSchema = z.string().refine(isValidLocalTime, "时间格式必须为 HH:mm").transform((value) => value as LocalTime);
 
@@ -44,6 +52,10 @@ export const publicStatusCurrencySchema = z.union([
   z.literal("inherit"),
   z.string().trim().regex(/^[A-Z]{3}$/),
 ]);
+export const subscriptionPriceReferenceCurrencySchema = z.union([
+  z.literal("default"),
+  z.string().trim().regex(/^[A-Z]{3}$/),
+]);
 // Telegram 菜单命令描述不支持富文本；这个枚举只控制 sendMessage 正文，默认值在 shared defaults 固定为 plain。
 export const telegramMessageFormatSchema = z.enum(["plain", "html"]);
 export const dingtalkMessageTypeSchema = z.enum(["markdown", "text"]);
@@ -60,6 +72,17 @@ const builtInIconSourceSettingSchema = z.object({
 }).strict();
 // PATCH 允许局部更新 provider 开关，但最终 settings 必须仍至少保留一个可用来源。
 const builtInIconSourceSettingPatchSchema = builtInIconSourceSettingSchema.partial().strict();
+// storefronts 不是关闭语义；关闭 App Store 来源只能写 enabled=false，空数组必须在写入边界失败。
+const appStoreStorefrontsSchema = z.array(z.enum(APP_STORE_STOREFRONTS))
+  .min(1)
+  .max(APP_STORE_STOREFRONTS.length)
+  .refine((value) => new Set(value).size === value.length, "App Store 地区不能重复")
+  .transform((value) => normalizeAppStoreStorefronts(value));
+const onlineIconSourceSettingSchema = z.object({
+  enabled: z.boolean(),
+  storefronts: appStoreStorefrontsSchema,
+}).strict();
+const onlineIconSourceSettingPatchSchema = onlineIconSourceSettingSchema.partial().strict();
 
 export const builtInIconProviderSchema = z.enum(BUILT_IN_ICON_PROVIDERS);
 
@@ -72,6 +95,10 @@ export const builtInIconSourcesSchema = z.object({
   "至少启用一个内置图标来源",
 );
 
+export const onlineIconSourcesSchema = z.object({
+  appStore: onlineIconSourceSettingSchema,
+}).strict();
+
 const appSettingsShape = {
   adminUsername: z.string().trim().min(1).max(80),
   themeMode: z.enum(THEME_MODES),
@@ -81,13 +108,17 @@ const appSettingsShape = {
     s: z.number().min(0).max(100),
     l: z.number().min(0).max(100),
   }),
-  locale: z.enum(SUPPORTED_LOCALES),
+  localePreference: z.enum(LOCALE_PREFERENCES),
   showExpired: z.boolean(),
   defaultCurrency: z.string().trim().regex(/^[A-Z]{3}$/),
   publicStatusCurrency: publicStatusCurrencySchema,
+  // 单订阅参考价由 enabled 控制展示；currency 只保存跟随统计货币或 ISO 代码，是否支持/启用由前端选项和汇率 helper 再收敛。
+  subscriptionPriceReferenceEnabled: z.boolean(),
+  subscriptionPriceReferenceCurrency: subscriptionPriceReferenceCurrencySchema,
   exchangeRateProvider: z.preprocess(normalizeExchangeRateProvider, exchangeRateProviderSchema),
   builtInIconSources: builtInIconSourcesSchema,
-  monthlyBudget: z.number().finite().nonnegative().max(1_000_000_000),
+  onlineIconSources: onlineIconSourcesSchema,
+  monthlyBudget: moneyStringSchema,
   timezone: timezoneSchema,
   notificationTimeLocal: hhmmSchema,
   notificationReminderDays: globalReminderDaysSchema,
@@ -143,6 +174,11 @@ const builtInIconSourcesPatchSchema = z.object({
   dashboardIcons: builtInIconSourceSettingPatchSchema,
 }).partial().strict();
 export type ApiBuiltInIconSourceSettingsPatch = BuiltInIconSourceSettingsPatch;
+const onlineIconSourcesPatchSchema = z.object({
+  appStore: onlineIconSourceSettingPatchSchema,
+}).partial().strict();
+export type ApiOnlineIconSourceSettings = OnlineIconSourceSettings;
+export type ApiOnlineIconSourceSettingsPatch = OnlineIconSourceSettingsPatch;
 
 /**
  * 设置读取响应的完整形状。
@@ -152,19 +188,184 @@ export type ApiBuiltInIconSourceSettingsPatch = BuiltInIconSourceSettingsPatch;
  */
 export const appSettingsSchema = z.object(appSettingsShape).strict();
 
+export const SETTINGS_SECRET_KEYS = [
+  "telegramBotToken",
+  "notifyxApiKey",
+  "webhookUrl",
+  "webhookHeaders",
+  "dingtalkWebhookUrl",
+  "dingtalkSecret",
+  "wechatWebhookUrl",
+  "smtpPassword",
+  "barkDeviceKey",
+  "serverchanSendKey",
+  "discordWebhookUrl",
+  "pushplusToken",
+  "aiRecognition.apiKey",
+] as const;
+export const settingsSecretKeySchema = z.enum(SETTINGS_SECRET_KEYS);
+export type SettingsSecretKey = z.infer<typeof settingsSecretKeySchema>;
+
+const topLevelSecretOmissions = {
+  telegramBotToken: true,
+  notifyxApiKey: true,
+  webhookUrl: true,
+  webhookHeaders: true,
+  dingtalkWebhookUrl: true,
+  dingtalkSecret: true,
+  wechatWebhookUrl: true,
+  smtpPassword: true,
+  barkDeviceKey: true,
+  serverchanSendKey: true,
+  discordWebhookUrl: true,
+  pushplusToken: true,
+} as const;
+
+export const publicAppSettingsSchema = appSettingsSchema
+  .omit(topLevelSecretOmissions)
+  .extend({ aiRecognition: aiRecognitionPublicSettingsSchema })
+  .strict();
+export type PublicAppSettings = z.infer<typeof publicAppSettingsSchema>;
+
+const secretUpdatesShape = {
+  telegramBotToken: secretMutationSchema.optional(),
+  notifyxApiKey: secretMutationSchema.optional(),
+  webhookUrl: secretMutationSchema.optional(),
+  webhookHeaders: secretMutationSchema.optional(),
+  dingtalkWebhookUrl: secretMutationSchema.optional(),
+  dingtalkSecret: secretMutationSchema.optional(),
+  wechatWebhookUrl: secretMutationSchema.optional(),
+  smtpPassword: secretMutationSchema.optional(),
+  barkDeviceKey: secretMutationSchema.optional(),
+  serverchanSendKey: secretMutationSchema.optional(),
+  discordWebhookUrl: secretMutationSchema.optional(),
+  pushplusToken: secretMutationSchema.optional(),
+  "aiRecognition.apiKey": secretMutationSchema.optional(),
+};
+export const settingsSecretUpdatesSchema = z.object(secretUpdatesShape).partial().strict();
+export type SettingsSecretUpdates = z.infer<typeof settingsSecretUpdatesSchema>;
+export const settingsSecretStatusSchema = z.record(
+  settingsSecretKeySchema,
+  z.object({ configured: z.boolean() }).strict(),
+);
+export type SettingsSecretStatus = z.infer<typeof settingsSecretStatusSchema>;
+
 export const settingsPayloadSchema = z.object({
-  settings: appSettingsSchema,
+  settings: publicAppSettingsSchema,
+  secretStatus: settingsSecretStatusSchema,
 }).strict();
 export const settingsResponseSchema = apiSuccessResponseSchema(settingsPayloadSchema);
 
 /**
  * 设置 PATCH 请求允许局部字段，但不允许未知字段。
  *
- * builtInIconSources 额外允许按 provider 局部更新，最终完整设置仍由 appSettingsSchema 兜底。
+ * builtInIconSources/onlineIconSources 额外允许按来源局部更新，最终完整设置仍由 appSettingsSchema 兜底。
  */
-export const settingsUpdateBodySchema = z.object({
-  ...appSettingsShape,
+const publicSettingsUpdateSchema = z.object({
+  ...publicAppSettingsSchema.shape,
   builtInIconSources: builtInIconSourcesPatchSchema,
+  onlineIconSources: onlineIconSourcesPatchSchema,
 }).partial().strict();
+export const settingsUpdateBodySchema = publicSettingsUpdateSchema.extend({
+  secretUpdates: settingsSecretUpdatesSchema.optional(),
+}).strict();
+
+// 历史 settings 与备份允许缺少新字段；嵌套来源也必须按 patch 解析，随后由统一 normalizer 补齐默认值。
+export const persistedSettingsBackupSchema = appSettingsSchema.partial().extend({
+  builtInIconSources: builtInIconSourcesPatchSchema.optional(),
+  onlineIconSources: onlineIconSourcesPatchSchema.optional(),
+}).strict();
+export type PersistedSettingsBackup = z.infer<typeof persistedSettingsBackupSchema>;
+
+// 排他迁移后的数据库记录必须携带语言偏好；外部备份使用独立版本契约，其他新字段仍可由默认值补齐。
+export const persistedAppSettingsSchema = persistedSettingsBackupSchema.required({
+  localePreference: true,
+});
+
+export function toPublicAppSettings(settings: ApiAppSettings): PublicAppSettings {
+  const {
+    telegramBotToken: _telegramBotToken,
+    notifyxApiKey: _notifyxApiKey,
+    webhookUrl: _webhookUrl,
+    webhookHeaders: _webhookHeaders,
+    dingtalkWebhookUrl: _dingtalkWebhookUrl,
+    dingtalkSecret: _dingtalkSecret,
+    wechatWebhookUrl: _wechatWebhookUrl,
+    smtpPassword: _smtpPassword,
+    barkDeviceKey: _barkDeviceKey,
+    serverchanSendKey: _serverchanSendKey,
+    discordWebhookUrl: _discordWebhookUrl,
+    pushplusToken: _pushplusToken,
+    aiRecognition,
+    ...publicSettings
+  } = settings;
+  const { apiKey: _apiKey, ...publicAIRecognition } = aiRecognition;
+  return publicAppSettingsSchema.parse({ ...publicSettings, aiRecognition: publicAIRecognition });
+}
+
+/**
+ * 将脱敏后的公共设置还原为浏览器可编辑模型；write-only 字段只能为空，configured 状态由独立契约表达。
+ */
+export function toEditableAppSettings(settings: PublicAppSettings): ApiAppSettings {
+  return appSettingsSchema.parse({
+    ...settings,
+    telegramBotToken: "",
+    notifyxApiKey: "",
+    webhookUrl: "",
+    webhookHeaders: "",
+    dingtalkWebhookUrl: "",
+    dingtalkSecret: "",
+    wechatWebhookUrl: "",
+    smtpPassword: "",
+    barkDeviceKey: "",
+    serverchanSendKey: "",
+    discordWebhookUrl: "",
+    pushplusToken: "",
+    aiRecognition: { ...settings.aiRecognition, apiKey: "" },
+  });
+}
+
+export function appSettingsSecretStatus(settings: ApiAppSettings): SettingsSecretStatus {
+  return settingsSecretStatusSchema.parse({
+    telegramBotToken: { configured: settings.telegramBotToken.trim().length > 0 },
+    notifyxApiKey: { configured: settings.notifyxApiKey.trim().length > 0 },
+    webhookUrl: { configured: settings.webhookUrl.trim().length > 0 },
+    webhookHeaders: { configured: settings.webhookHeaders.trim().length > 0 },
+    dingtalkWebhookUrl: { configured: settings.dingtalkWebhookUrl.trim().length > 0 },
+    dingtalkSecret: { configured: settings.dingtalkSecret.trim().length > 0 },
+    wechatWebhookUrl: { configured: settings.wechatWebhookUrl.trim().length > 0 },
+    smtpPassword: { configured: settings.smtpPassword.trim().length > 0 },
+    barkDeviceKey: { configured: settings.barkDeviceKey.trim().length > 0 },
+    serverchanSendKey: { configured: settings.serverchanSendKey.trim().length > 0 },
+    discordWebhookUrl: { configured: settings.discordWebhookUrl.trim().length > 0 },
+    pushplusToken: { configured: settings.pushplusToken.trim().length > 0 },
+    "aiRecognition.apiKey": { configured: settings.aiRecognition.apiKey.trim().length > 0 },
+  });
+}
+
+export function applySettingsSecretUpdates(settings: ApiAppSettings, updates: SettingsSecretUpdates = {}): ApiAppSettings {
+  const next: ApiAppSettings = { ...settings, aiRecognition: { ...settings.aiRecognition } };
+  const valueFor = (key: SettingsSecretKey, current: string): string => {
+    const mutation: SecretMutation | undefined = updates[key];
+    if (!mutation || mutation.action === "keep") return current;
+    return mutation.action === "clear" ? "" : mutation.value;
+  };
+  next.telegramBotToken = valueFor("telegramBotToken", next.telegramBotToken);
+  next.notifyxApiKey = valueFor("notifyxApiKey", next.notifyxApiKey);
+  next.webhookUrl = valueFor("webhookUrl", next.webhookUrl);
+  next.webhookHeaders = valueFor("webhookHeaders", next.webhookHeaders);
+  next.dingtalkWebhookUrl = valueFor("dingtalkWebhookUrl", next.dingtalkWebhookUrl);
+  next.dingtalkSecret = valueFor("dingtalkSecret", next.dingtalkSecret);
+  next.wechatWebhookUrl = valueFor("wechatWebhookUrl", next.wechatWebhookUrl);
+  next.smtpPassword = valueFor("smtpPassword", next.smtpPassword);
+  next.barkDeviceKey = valueFor("barkDeviceKey", next.barkDeviceKey);
+  next.serverchanSendKey = valueFor("serverchanSendKey", next.serverchanSendKey);
+  next.discordWebhookUrl = valueFor("discordWebhookUrl", next.discordWebhookUrl);
+  next.pushplusToken = valueFor("pushplusToken", next.pushplusToken);
+  next.aiRecognition.apiKey = valueFor("aiRecognition.apiKey", next.aiRecognition.apiKey);
+  return appSettingsSchema.parse(next);
+}
+
 export type ApiAppSettings = z.infer<typeof appSettingsSchema>;
+export type SettingsUpdateBody = z.infer<typeof settingsUpdateBodySchema>;
 export type SettingsResponse = z.infer<typeof settingsPayloadSchema>;

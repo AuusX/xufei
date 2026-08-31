@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Brain, Sparkles, TestTube2 } from "lucide-react";
 import { AIErrorDetailsDialog } from "@/components/ai-recognition/ai-error-details-dialog";
 import { Button } from "@/components/ui/button";
+import { FormField, FormFieldRow } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "@/components/ui/sonner";
 import { useI18n } from "@/i18n/I18nProvider";
 import { createAIErrorDetails, type AIErrorDetails } from "@/lib/ai-error-details";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,7 @@ import { getAIRecognitionSettingsBlocker } from "@/modules/ai-recognition/domain
 import { aiRecognitionService } from "@/services/ai-recognition-service";
 import { AIModelCombobox, AIModelModeSwitch } from "./ai-model-combobox";
 import { LoadingButtonContent } from "./settings-shared-controls";
+import type { SecretMutation } from "@renewlet/shared/schemas/secrets";
 import { getSettingsSectionClassName } from "./settings-layout";
 
 const AI_PROVIDER_TYPES = ["openai", "anthropic", "gemini", "openai-compatible"] as const satisfies readonly AiRecognitionProviderType[];
@@ -51,10 +53,10 @@ const EMPTY_MODEL_LIST_STATE: AIModelListState = {
   truncated: false,
 };
 
-function canListAIModels(settings: AiRecognitionSettings): boolean {
+function canListAIModels(settings: AiRecognitionSettings, apiKeyConfigured: boolean): boolean {
   const endpoint = resolveAIProviderEndpoint(settings);
   if (endpoint.baseUrlRequired && !settings.baseUrl.trim()) return false;
-  if (endpoint.apiKeyRequired && !settings.apiKey.trim()) return false;
+  if (endpoint.apiKeyRequired && !settings.apiKey.trim() && !apiKeyConfigured) return false;
   return true;
 }
 
@@ -64,6 +66,8 @@ interface AIRecognitionSettingsSectionProps {
   settings: AiRecognitionSettings;
   onChange: (settings: AiRecognitionSettings) => void;
   disabled?: boolean;
+  apiKeyConfigured?: boolean;
+  onClearApiKey?: () => void;
 }
 
 export function AIRecognitionSettingsSection({
@@ -72,9 +76,10 @@ export function AIRecognitionSettingsSection({
   settings,
   onChange,
   disabled = false,
+  apiKeyConfigured = false,
+  onClearApiKey = () => undefined,
 }: AIRecognitionSettingsSectionProps) {
   const { t } = useI18n();
-  const { toast } = useToast();
   const [testing, setTesting] = useState(false);
   const [modelListState, setModelListState] = useState<AIModelListState>(EMPTY_MODEL_LIST_STATE);
   const [aiErrorDetails, setAIErrorDetails] = useState<AIErrorDetails | null>(null);
@@ -103,7 +108,10 @@ export function AIRecognitionSettingsSection({
   const selectedThinkingId = canonicalSettings.defaultThinkingControl
     ? thinkingOptionId(canonicalSettings.defaultThinkingControl)
     : MODEL_DEFAULT_THINKING_ID;
-  const testBlocker = getAIRecognitionSettingsBlocker(canonicalSettings);
+  const testBlocker = getAIRecognitionSettingsBlocker(canonicalSettings, apiKeyConfigured);
+  const apiKeyMutation = (): SecretMutation => canonicalSettings.apiKey.trim()
+    ? { action: "set", value: canonicalSettings.apiKey.trim() }
+    : { action: "keep" };
 
   useEffect(() => {
     // 模型列表来自第三方 provider，必须随凭证/地址变化失效；旧请求返回较慢时也不能覆盖新配置。
@@ -145,7 +153,7 @@ export function AIRecognitionSettingsSection({
       setModelListState({ ...EMPTY_MODEL_LIST_STATE, status: "error", error: t("aiRecognition.baseUrlRequired") });
       return;
     }
-    if (endpoint.apiKeyRequired && !apiKey) {
+    if (endpoint.apiKeyRequired && !apiKey && !apiKeyConfigured) {
       setModelListState({ ...EMPTY_MODEL_LIST_STATE, status: "error", error: t("aiRecognition.apiKeyRequired") });
       return;
     }
@@ -157,7 +165,7 @@ export function AIRecognitionSettingsSection({
       const response = await aiRecognitionService.listModels({
         providerType: canonicalSettings.providerType,
         baseUrl,
-        apiKey,
+        apiKey: apiKeyMutation(),
       });
       if (modelListRequestRef.current !== requestId) return;
       setModelListState({
@@ -184,7 +192,7 @@ export function AIRecognitionSettingsSection({
     update({ modelInputMode });
     if (
       modelInputMode === "select"
-      && canListAIModels(canonicalSettings)
+      && canListAIModels(canonicalSettings, apiKeyConfigured)
       && modelListState.status !== "loading"
       && (modelListState.status === "idle" || modelListState.status === "error" || modelListState.models.length === 0)
     ) {
@@ -195,21 +203,14 @@ export function AIRecognitionSettingsSection({
   const handleTestConnection = async () => {
     if (disabled) return;
     if (testBlocker) {
-      toast({
-        title: t("aiRecognition.testBlockedTitle"),
-        description: t(testBlocker),
-        variant: "destructive",
-      });
+      toast.error(t("aiRecognition.testBlockedTitle"), { description: t(testBlocker) });
       return;
     }
     setTesting(true);
     try {
-      await aiRecognitionService.testConnection(canonicalSettings);
+      await aiRecognitionService.testConnection(canonicalSettings, apiKeyMutation());
       setAIErrorDetails(null);
-      toast({
-        title: t("aiRecognition.testSucceeded"),
-        description: t("aiRecognition.testSucceededDescription"),
-      });
+      toast.success(t("aiRecognition.testSucceeded"));
     } catch (error) {
       const details = createAIErrorDetails(error, t("aiRecognition.testFailedDescription"));
       setAIErrorDetails(details);
@@ -260,14 +261,15 @@ export function AIRecognitionSettingsSection({
       ) : null}
 
       <div className="grid gap-5">
-        <div className="grid items-start gap-5 md:grid-cols-2 md:gap-x-5 md:gap-y-2" data-testid="ai-provider-model-grid">
-          <div className="grid gap-2 md:contents" data-testid="ai-provider-type-field">
-            <div className="flex min-h-7 items-end md:order-1" data-testid="ai-provider-label-row">
-              <Label htmlFor="ai-provider-type">{t("aiRecognition.providerType")}</Label>
-            </div>
-            <div className="self-start md:order-3" data-testid="ai-provider-control-row">
+        <FormFieldRow
+          alignAt="md"
+          rowClassName="md:grid-cols-2 md:gap-x-5"
+          data-testid="ai-provider-model-grid"
+        >
+          <FormField id="ai-provider-type" label={t("aiRecognition.providerType")}>
+            {({ id: fieldId }) => (
               <Select value={canonicalSettings.providerType} disabled={disabled} onValueChange={(value) => handleProviderTypeChange(value as AiRecognitionProviderType)}>
-                <SelectTrigger id="ai-provider-type" className="border-border bg-secondary">
+                <SelectTrigger id={fieldId} className="border-border bg-secondary">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -276,21 +278,25 @@ export function AIRecognitionSettingsSection({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-          </div>
+            )}
+          </FormField>
 
-          <div className="grid gap-2 md:contents" data-testid="ai-model-field">
-            <div className="flex min-h-7 min-w-0 flex-wrap items-end justify-between gap-x-3 gap-y-1 md:order-2" data-testid="ai-model-label-row">
-              <Label htmlFor="ai-model">{t("aiRecognition.model")}</Label>
-              <AIModelModeSwitch
-                mode={canonicalSettings.modelInputMode}
-                disabled={disabled}
-                onModeChange={handleModelInputModeChange}
-              />
-            </div>
-            <div className="self-start md:order-4" data-testid="ai-model-control-row">
+          <FormField
+            id="ai-model"
+            labelSlot={(
+              <div className="flex min-h-7 min-w-0 flex-wrap items-end justify-between gap-x-3 gap-y-1" data-testid="ai-model-label-row">
+                <Label htmlFor="ai-model">{t("aiRecognition.model")}</Label>
+                <AIModelModeSwitch
+                  mode={canonicalSettings.modelInputMode}
+                  disabled={disabled}
+                  onModeChange={handleModelInputModeChange}
+                />
+              </div>
+            )}
+          >
+            {({ id: fieldId }) => (
               <AIModelCombobox
-                id="ai-model"
+                id={fieldId}
                 value={canonicalSettings.model}
                 onValueChange={(model) => update({ model })}
                 mode={canonicalSettings.modelInputMode}
@@ -298,45 +304,64 @@ export function AIRecognitionSettingsSection({
                 status={modelListState.status}
                 error={modelListState.error}
                 truncated={modelListState.truncated}
-                canAutoRefreshModels={canListAIModels(canonicalSettings)}
+                canAutoRefreshModels={canListAIModels(canonicalSettings, apiKeyConfigured)}
                 onRequestModels={() => void handleRefreshModels()}
                 disabled={disabled}
                 placeholder={t("aiRecognition.modelPlaceholder")}
               />
-            </div>
-          </div>
-        </div>
+            )}
+          </FormField>
+        </FormFieldRow>
 
-        <div className="grid gap-5 md:grid-cols-2">
-          <div className="grid gap-2">
-            <Label htmlFor="ai-base-url">{t("aiRecognition.baseUrl")}</Label>
-            <Input
-              id="ai-base-url"
-              value={canonicalSettings.baseUrl}
-              disabled={disabled}
-              onChange={(event) => update({ baseUrl: event.target.value })}
-              placeholder={endpoint.baseUrlRequired ? "https://api.example.com/v1" : t("aiRecognition.baseUrlPlaceholder")}
-              className="border-border bg-secondary"
-              inputMode="url"
-            />
-            <p className="text-xs text-muted-foreground">{t("aiRecognition.baseUrlHelp")}</p>
-          </div>
+        <FormFieldRow alignAt="md" rowClassName="md:grid-cols-2 md:gap-x-5">
+          <FormField
+            id="ai-base-url"
+            label={t("aiRecognition.baseUrl")}
+            description={t("aiRecognition.baseUrlHelp")}
+          >
+            {({ id: fieldId, describedBy }) => (
+              <Input
+                id={fieldId}
+                value={canonicalSettings.baseUrl}
+                disabled={disabled}
+                onChange={(event) => update({ baseUrl: event.target.value })}
+                placeholder={endpoint.baseUrlRequired ? "https://api.example.com/v1" : t("aiRecognition.baseUrlPlaceholder")}
+                className="border-border bg-secondary"
+                inputMode="url"
+                aria-describedby={describedBy}
+              />
+            )}
+          </FormField>
 
-          <div className="grid gap-2">
-            <Label htmlFor="ai-api-key">{t("aiRecognition.apiKey")}</Label>
-            <Input
-              id="ai-api-key"
-              type="password"
-              autoComplete="off"
-              value={canonicalSettings.apiKey}
-              disabled={disabled}
-              onChange={(event) => update({ apiKey: event.target.value })}
-              placeholder={endpoint.apiKeyRequired ? "sk-..." : t("aiRecognition.apiKeyOptionalPlaceholder")}
-              className="border-border bg-secondary"
-            />
-            <p className="text-xs text-muted-foreground">{t("aiRecognition.apiKeyHelp")}</p>
-          </div>
-        </div>
+          <FormField
+            id="ai-api-key"
+            labelSlot={(
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="ai-api-key">{t("aiRecognition.apiKey")}</Label>
+                {apiKeyConfigured ? (
+                  <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={onClearApiKey}>
+                    {t("settings.turnstileClearSecret")}
+                  </Button>
+                ) : null}
+              </div>
+            )}
+            description={t("aiRecognition.apiKeyHelp")}
+          >
+            {({ id: fieldId, describedBy }) => (
+              <Input
+                id={fieldId}
+                type="password"
+                autoComplete="off"
+                value={canonicalSettings.apiKey}
+                disabled={disabled}
+                onChange={(event) => update({ apiKey: event.target.value })}
+                placeholder={apiKeyConfigured ? t("settings.turnstileSecretConfiguredPlaceholder") : endpoint.apiKeyRequired ? "sk-..." : t("aiRecognition.apiKeyOptionalPlaceholder")}
+                className="border-border bg-secondary"
+                aria-describedby={describedBy}
+              />
+            )}
+          </FormField>
+        </FormFieldRow>
       </div>
 
       <div className="mt-5 grid gap-2">

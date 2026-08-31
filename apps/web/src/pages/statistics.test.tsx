@@ -1,20 +1,34 @@
 // Statistics 页面测试保护统计模型到图表 UI 的装配，避免 Recharts 容器和金额口径脱节。
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DEFAULT_CUSTOM_CONFIG } from "@/types/config";
-import type { Subscription } from "@/types/subscription";
+import type { Subscription, SubscriptionCollectionItem } from "@/types/subscription";
 import { assertDateOnly } from "@/lib/time/date-only";
+import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
+import { moneyToNumber } from "@renewlet/shared/money";
 import Statistics from "./statistics";
 
-type RecurringBillingCycle = Exclude<Subscription["billingCycle"], "custom" | "one-time">;
-type SubscriptionBaseFixture = Omit<Subscription, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">;
-type SubscriptionOverrides = Partial<SubscriptionBaseFixture> & (
-  | { billingCycle?: RecurringBillingCycle; customDays?: undefined; customCycleUnit?: undefined; oneTimeTermCount?: undefined; oneTimeTermUnit?: undefined }
-  | { billingCycle: "one-time"; customDays?: undefined; customCycleUnit?: undefined; oneTimeTermCount?: number; oneTimeTermUnit?: Subscription["oneTimeTermUnit"] }
-  | { billingCycle: "custom"; customDays?: number; customCycleUnit?: Subscription["customCycleUnit"]; oneTimeTermCount?: undefined; oneTimeTermUnit?: undefined }
-);
+type SubscriptionBaseFixture = Omit<SubscriptionCollectionItem, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">;
+type SubscriptionOverrides = SubscriptionFixtureOverrides<SubscriptionCollectionItem>;
+
+interface MockSubscriptionAnalyticsResult {
+  data: SubscriptionCollectionItem[] | undefined;
+  isPending: boolean;
+  error?: unknown;
+  refetch?: () => void;
+}
+
+interface MockSubscriptionDetailResult {
+  data: Subscription | undefined;
+  error: unknown | null;
+  isPending: boolean;
+}
 
 const mocks = vi.hoisted(() => ({
   handleEditDialogOpenChange: vi.fn(),
@@ -22,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   handleAddSubscription: vi.fn(),
   handleRenewSubscription: vi.fn(),
   handleSaveSubscription: vi.fn(),
+  ratesLastUpdated: null as string | null,
   refreshRates: vi.fn(),
   rechartsBarChartProps: [] as Array<Record<string, unknown>>,
   rechartsBarProps: [] as Array<Record<string, unknown>>,
@@ -34,15 +49,22 @@ const mocks = vi.hoisted(() => ({
   rechartsTooltipProps: [] as Array<Record<string, unknown>>,
   rechartsXAxisProps: [] as Array<Record<string, unknown>>,
   rechartsYAxisProps: [] as Array<Record<string, unknown>>,
-  useCustomConfig: vi.fn(),
+  useCustomConfigState: vi.fn(),
   useSettings: vi.fn(),
   useSubscriptionCrud: vi.fn(),
-  useSubscriptions: vi.fn(),
+  useSubscriptionAnalytics: vi.fn<() => MockSubscriptionAnalyticsResult>(),
+  useSubscriptionDetail: vi.fn<(id: string | null) => MockSubscriptionDetailResult>(),
 }));
+const detailSubscriptions = new Map<string, Subscription>();
 
 vi.mock("@/components/header", () => ({
   Header: () => <header data-testid="header" />,
 }));
+
+vi.mock("@/components/statistics-charts-loader", async () => {
+  const module = await vi.importActual<typeof import("@/components/statistics-charts")>("@/components/statistics-charts");
+  return { DeferredStatisticsCharts: module.StatisticsCharts };
+});
 
 vi.mock("@/components/edit-subscription-dialog", () => ({
   EditSubscriptionDialog: () => null,
@@ -52,18 +74,20 @@ vi.mock("@/components/subscription-detail-dialog", () => ({
   SubscriptionDetailDialog: ({
     open,
     subscription,
+    priceReferenceCurrency,
     onEditSubscription,
     onRenewSubscription,
   }: {
     open: boolean;
     subscription: Subscription | null;
+    priceReferenceCurrency: string | null;
     onEditSubscription?: (subscription: Subscription) => void;
     onRenewSubscription?: (id: string) => void;
   }) => (
     <div data-testid="subscription-detail-dialog">
       {open && subscription ? (
         <>
-          <span>{subscription.name} 详情</span>
+          <span>{subscription.name} 详情 {priceReferenceCurrency ?? "off"}</span>
           <button type="button" onClick={() => onEditSubscription?.(subscription)}>
             编辑详情 {subscription.name}
           </button>
@@ -139,16 +163,18 @@ vi.mock("recharts", () => ({
 }));
 
 vi.mock("@/contexts/CustomConfigContext", () => ({
-  useCustomConfig: mocks.useCustomConfig,
+  useCustomConfigState: mocks.useCustomConfigState,
 }));
 
-vi.mock("@/hooks/use-exchange-rates", () => ({
-  useExchangeRates: () => ({
-    convert: (amount: number) => amount,
+vi.mock("@/hooks/use-report-exchange-rates", () => ({
+  useReportExchangeRates: () => ({
+    convert: (amount: number | string) => moneyToNumber(amount),
     error: null,
     getCurrencySymbol: () => "¥",
-    lastUpdated: null,
+    lastUpdated: mocks.ratesLastUpdated,
     loading: false,
+    sourceDate: "2026-08-01",
+    reportBasisStatus: { month: "2026-08", locked: true, sourceDate: "2026-08-01", capturedAt: "2026-08-06T00:00:00Z" },
     refresh: mocks.refreshRates,
   }),
 }));
@@ -158,19 +184,24 @@ vi.mock("@/hooks/use-settings", () => ({
 }));
 
 vi.mock("@/hooks/use-subscriptions", () => ({
-  useSubscriptions: mocks.useSubscriptions,
+  prefetchSubscriptionDetail: vi.fn(),
+  useSubscriptionAnalytics: mocks.useSubscriptionAnalytics,
+  useSubscriptionDetail: mocks.useSubscriptionDetail,
+  useSubscriptionFacets: () => ({
+    data: { total: 0, categoryCounts: {}, tags: [], visibleCount: 0, hiddenCount: 0 },
+  }),
 }));
 
 vi.mock("@/modules/subscriptions/application/use-subscription-crud", () => ({
   useSubscriptionCrud: mocks.useSubscriptionCrud,
 }));
 
-function subscription(overrides: SubscriptionOverrides): Subscription {
+function subscription(overrides: SubscriptionOverrides): SubscriptionCollectionItem {
   const base: SubscriptionBaseFixture = {
     id: "sub",
     name: "Service",
     logo: undefined,
-    price: 10,
+    price: "10",
     currency: "CNY",
     category: "productivity",
     status: "active",
@@ -180,57 +211,41 @@ function subscription(overrides: SubscriptionOverrides): Subscription {
     autoRenew: false,
     autoCalculateNextBillingDate: true,
     trialEndDate: undefined,
-    website: undefined,
-    notes: undefined,
-    tags: [],
     reminderDays: 3,
-    repeatReminderEnabled: false,
-    repeatReminderInterval: "1h",
-    repeatReminderWindow: "72h",
     pinned: false,
     publicHidden: false,
   };
 
-  if (overrides.billingCycle === "custom") {
-    return {
-      ...base,
-      ...overrides,
-      billingCycle: "custom",
-      customDays: overrides.customDays ?? 30,
-      customCycleUnit: overrides.customCycleUnit ?? "day",
-      oneTimeTermCount: undefined,
-      oneTimeTermUnit: undefined,
-    };
-  }
-
-  if (overrides.billingCycle === "one-time") {
-    return {
-      ...base,
-      ...overrides,
-      billingCycle: "one-time",
-      customDays: undefined,
-      customCycleUnit: undefined,
-      oneTimeTermCount: overrides.oneTimeTermCount,
-      oneTimeTermUnit: overrides.oneTimeTermUnit,
-    };
-  }
-
   return {
     ...base,
     ...overrides,
-    billingCycle: overrides.billingCycle ?? "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
-    oneTimeTermCount: undefined,
-    oneTimeTermUnit: undefined,
+    ...subscriptionCycleFixture(overrides),
+  };
+}
+
+function toSubscriptionDetail(item: SubscriptionCollectionItem): Subscription {
+  return {
+    ...item,
+    website: undefined,
+    notes: undefined,
+    tags: [],
+    repeatReminderEnabled: false,
+    repeatReminderInterval: "1h",
+    repeatReminderWindow: "72h",
+    extra: {},
   };
 }
 
 function renderStatistics() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
-    <TooltipProvider delayDuration={0}>
-      <Statistics />
-    </TooltipProvider>,
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delayDuration={0}>
+        <Statistics />
+      </TooltipProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -245,6 +260,7 @@ function getLastTrendTooltip(): HTMLElement {
 
 describe("Statistics page", () => {
   beforeEach(() => {
+    detailSubscriptions.clear();
     Element.prototype.hasPointerCapture ??= vi.fn(() => false);
     Element.prototype.setPointerCapture ??= vi.fn();
     Element.prototype.releasePointerCapture ??= vi.fn();
@@ -253,6 +269,7 @@ describe("Statistics page", () => {
     mocks.handleEditSubscription.mockReset();
     mocks.handleRenewSubscription.mockReset();
     mocks.handleSaveSubscription.mockReset();
+    mocks.ratesLastUpdated = null;
     mocks.rechartsBarChartProps.length = 0;
     mocks.rechartsBarProps.length = 0;
     mocks.rechartsCellProps.length = 0;
@@ -264,11 +281,13 @@ describe("Statistics page", () => {
     mocks.rechartsTooltipProps.length = 0;
     mocks.rechartsXAxisProps.length = 0;
     mocks.rechartsYAxisProps.length = 0;
-    mocks.useCustomConfig.mockReturnValue({ config: DEFAULT_CUSTOM_CONFIG });
+    mocks.useCustomConfigState.mockReturnValue({ config: DEFAULT_CUSTOM_CONFIG });
     mocks.useSettings.mockReturnValue({
       data: {
         defaultCurrency: "CNY",
-        monthlyBudget: 500,
+        monthlyBudget: "500",
+        subscriptionPriceReferenceEnabled: true,
+        subscriptionPriceReferenceCurrency: "USD",
         timezone: "UTC",
       },
       isPending: false,
@@ -282,18 +301,27 @@ describe("Statistics page", () => {
       handleSaveSubscription: mocks.handleSaveSubscription,
       handleEditDialogOpenChange: mocks.handleEditDialogOpenChange,
     });
-    mocks.useSubscriptions.mockReturnValue({
+    mocks.useSubscriptionAnalytics.mockReturnValue({
       data: [
-        subscription({ id: "active", status: "active", price: 20 }),
-        subscription({ id: "paused", status: "paused", price: 10 }),
-        subscription({ id: "cancelled", status: "cancelled", price: 20 }),
+        subscription({ id: "active", status: "active", price: "20" }),
+        subscription({ id: "paused", status: "paused", price: "10" }),
+        subscription({ id: "cancelled", status: "cancelled", price: "20" }),
       ],
       isPending: false,
+    });
+    mocks.useSubscriptionDetail.mockImplementation((id: string | null) => {
+      const item = id
+        ? mocks.useSubscriptionAnalytics().data?.find((subscriptionItem: SubscriptionCollectionItem) => subscriptionItem.id === id)
+        : undefined;
+      if (item && !detailSubscriptions.has(item.id)) {
+        detailSubscriptions.set(item.id, toSubscriptionDetail(item));
+      }
+      return { data: id ? detailSubscriptions.get(id) : undefined, error: null, isPending: false };
     });
   });
 
   it("renders a page-isomorphic skeleton while statistics inputs are pending", () => {
-    mocks.useSubscriptions.mockReturnValue({
+    mocks.useSubscriptionAnalytics.mockReturnValue({
       data: undefined,
       isPending: true,
     });
@@ -302,8 +330,48 @@ describe("Statistics page", () => {
 
     const skeleton = screen.getByTestId("statistics-skeleton");
     expect(skeleton).toHaveAttribute("aria-hidden", "true");
-    expect(skeleton.querySelectorAll(".rounded-xl.border.border-border.bg-card")).toHaveLength(15);
+    expect(skeleton.querySelectorAll(".rounded-xl.border.border-border.bg-card")).toHaveLength(16);
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("shows a recoverable error instead of empty analytics", async () => {
+    const user = userEvent.setup();
+    const refetch = vi.fn();
+    mocks.useSubscriptionAnalytics.mockReturnValue({
+      data: undefined,
+      isPending: false,
+      error: new Error(),
+      refetch,
+    });
+
+    renderStatistics();
+
+    expect(screen.getByRole("alert")).toHaveTextContent("操作失败，请稍后重试");
+    expect(screen.queryByText("总体统计")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps only dynamic exchange-rate context below the page title", () => {
+    mocks.ratesLastUpdated = "2026-08-20T08:00:00.000Z";
+
+    renderStatistics();
+
+    expect(screen.getByRole("heading", { name: "统计分析" })).toBeInTheDocument();
+    expect(screen.getByText(/汇率更新于/)).toBeInTheDocument();
+    expect(screen.queryByText("查看详细分析和数据洞察")).not.toBeInTheDocument();
+  });
+
+  it("uses compact placeholders for empty breakdown charts", () => {
+    mocks.useSubscriptionAnalytics.mockReturnValue({ data: [], isPending: false });
+
+    renderStatistics();
+
+    const emptyCharts = screen.getAllByText("暂无数据");
+    expect(emptyCharts).not.toHaveLength(0);
+    for (const emptyChart of emptyCharts) {
+      expect(emptyChart).toHaveStyle({ height: "128px" });
+    }
   });
 
   it("shows the inactive savings explanation on hover", async () => {
@@ -312,7 +380,7 @@ describe("Statistics page", () => {
     renderStatistics();
 
     expect(screen.getByText("停用月节省")).toBeInTheDocument();
-    expect(screen.getByText("¥30")).toBeInTheDocument();
+    expect(screen.getByText("¥30 CNY")).toBeInTheDocument();
 
     await user.hover(screen.getByRole("button", { name: "说明：停用月节省" }));
 
@@ -323,17 +391,17 @@ describe("Statistics page", () => {
 
   it("keeps the personal cost basis switch in the overview heading row", async () => {
     const user = userEvent.setup();
-    mocks.useSubscriptions.mockReturnValue({
+    mocks.useSubscriptionAnalytics.mockReturnValue({
       data: [
         subscription({
           id: "family-plan",
-          price: 100,
+          price: "100",
           status: "active",
           costSharing: {
             enabled: true,
             splitMode: "custom",
             members: [
-              { id: "member", name: "Member", currency: "CNY", customAmount: 60 },
+              { id: "member", name: "Member", currency: "CNY", customAmount: "60" },
             ],
           },
         }),
@@ -353,11 +421,14 @@ describe("Statistics page", () => {
 
     expect(overviewHeadingRow).toContainElement(personalCostBasisSwitch);
     expect(overviewHeadingRow).toHaveClass("sm:flex-row", "sm:justify-between");
-    expect(screen.getAllByText("¥100").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("¥100 CNY").length).toBeGreaterThan(0);
+    expect(screen.getByText("¥3.33")).toBeInTheDocument();
+    expect(overviewHeading.closest("section")).toHaveTextContent(/活跃订阅.*月均支出 \(CNY\).*日均支出 \(CNY\).*年化支出 \(CNY\)/);
 
     await user.click(personalCostBasisSwitch);
 
-    expect(await screen.findAllByText("¥40")).not.toHaveLength(0);
+    expect(await screen.findAllByText("¥40 CNY")).not.toHaveLength(0);
+    expect(screen.getByText("¥1.33")).toBeInTheDocument();
   });
 
   it("disables position animation for all chart tooltips", () => {
@@ -480,10 +551,10 @@ describe("Statistics page", () => {
   it("renders subscription breakdowns in the trend tooltip and screen-reader details", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    mocks.useSubscriptions.mockReturnValue({
+    mocks.useSubscriptionAnalytics.mockReturnValue({
       data: [
-        subscription({ id: "monthly", name: "Monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
-        subscription({ id: "annual", name: "Annual", price: 120, billingCycle: "annual", nextBillingDate: assertDateOnly("2026-01-20") }),
+        subscription({ id: "monthly", name: "Monthly", price: "10", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
+        subscription({ id: "annual", name: "Annual", price: "120", billingCycle: "annual", nextBillingDate: assertDateOnly("2026-01-20") }),
       ],
       isPending: false,
     });
@@ -494,7 +565,7 @@ describe("Statistics page", () => {
       const tooltip = getLastTrendTooltip();
       expect(tooltip).toHaveTextContent("2026年1月");
       expect(tooltip).toHaveTextContent("未来扣费");
-      expect(tooltip).toHaveTextContent("¥130");
+      expect(tooltip).toHaveTextContent("¥130 CNY");
       expect(tooltip).toHaveTextContent("Annual");
       expect(tooltip).toHaveTextContent("1月20日");
       expect(tooltip).toHaveTextContent("Monthly");
@@ -522,7 +593,7 @@ describe("Statistics page", () => {
       expect(tooltipDateBadge).not.toHaveClass("w-max");
       expect(tooltipDateBadge).not.toHaveClass("w-full");
       expect(screen.getByRole("list", { name: "未来 12 个月费用走势明细" })).toHaveTextContent(
-        "构成 Annual ¥120，1月20日；Monthly ¥10，1月15日",
+        "构成 Annual ¥120 CNY，1月20日；Monthly ¥10 CNY，1月15日",
       );
       expect(screen.getByRole("heading", { name: "2026年1月 明细" })).toBeInTheDocument();
       expect(screen.getByText("2 个订阅")).toBeInTheDocument();
@@ -538,10 +609,10 @@ describe("Statistics page", () => {
   it("opens the shared subscription detail dialog from a trend detail ledger row", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    mocks.useSubscriptions.mockReturnValue({
+    mocks.useSubscriptionAnalytics.mockReturnValue({
       data: [
-        subscription({ id: "monthly", name: "Monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
-        subscription({ id: "annual", name: "Annual", price: 120, billingCycle: "annual", nextBillingDate: assertDateOnly("2026-01-20") }),
+        subscription({ id: "monthly", name: "Monthly", price: "10", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
+        subscription({ id: "annual", name: "Annual", price: "120", billingCycle: "annual", nextBillingDate: assertDateOnly("2026-01-20") }),
       ],
       isPending: false,
     });
@@ -558,7 +629,7 @@ describe("Statistics page", () => {
 
       fireEvent.click(annualAction);
 
-      expect(screen.getByTestId("subscription-detail-dialog")).toHaveTextContent("Annual 详情");
+      expect(screen.getByTestId("subscription-detail-dialog")).toHaveTextContent("Annual 详情 USD");
 
       fireEvent.click(screen.getByRole("button", { name: "编辑详情 Annual" }));
       expect(mocks.handleEditSubscription).toHaveBeenCalledWith("annual");
@@ -575,11 +646,11 @@ describe("Statistics page", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
     const longName =
       "ExtremelyLongSubscriptionNameWithoutSpacesThatShouldNotPushTheAmountColumnOutOfTheDetailsPanel";
-    mocks.useSubscriptions.mockReturnValue({
+    mocks.useSubscriptionAnalytics.mockReturnValue({
       data: Array.from({ length: 7 }, (_, index) => subscription({
         id: `sub-${index}`,
         name: index === 6 ? longName : `Service ${index + 1}`,
-        price: 10 + index,
+        price: String(10 + index),
         billingCycle: "monthly",
         nextBillingDate: assertDateOnly("2026-01-10"),
       })),
@@ -603,7 +674,7 @@ describe("Statistics page", () => {
         throw new Error("Expected trend details ledger to include a compact summary header.");
       }
       expect(januaryLedgerHeader).toHaveClass("grid", "border-b", "border-border/60", "bg-secondary/15");
-      expect(within(januaryLedger).getByText("¥91")).toHaveClass("text-xl", "sm:text-2xl", "tabular-nums");
+      expect(within(januaryLedger).getByText("¥91 CNY")).toHaveClass("text-xl", "sm:text-2xl", "tabular-nums");
       expect(januaryDetails).toHaveClass("grid", "max-h-72", "min-w-0", "overflow-y-auto");
       expect(within(januaryDetails).getAllByRole("listitem")).toHaveLength(7);
       expect(januaryDetails).toHaveTextContent("Service 1");
@@ -637,7 +708,7 @@ describe("Statistics page", () => {
       expect(detailDateBadge).toHaveClass("inline-flex", "w-[6em]", "max-w-full", "h-6", "truncate", "rounded-full");
       expect(detailDateBadge).not.toHaveClass("w-max");
       expect(detailDateBadge).not.toHaveClass("w-full");
-      expect(within(longNameAction).getByText("¥16")).toHaveClass("shrink-0", "whitespace-nowrap", "tabular-nums");
+      expect(within(longNameAction).getByText("¥16 CNY")).toHaveClass("shrink-0", "whitespace-nowrap", "tabular-nums");
       expect(within(longNameAction).getByText("18%")).toHaveClass("tabular-nums");
       expect(longNameAction).toHaveTextContent("占比 18%");
 
@@ -698,7 +769,7 @@ describe("Statistics page", () => {
     renderStatistics();
 
     expect(screen.getByText("停用年节省")).toBeInTheDocument();
-    expect(screen.getByText("¥360")).toBeInTheDocument();
+    expect(screen.getByText("¥360 CNY")).toBeInTheDocument();
 
     const annualHelp = screen.getByRole("button", { name: "说明：停用年节省" });
     for (let attempt = 0; attempt < 10 && document.activeElement !== annualHelp; attempt += 1) {

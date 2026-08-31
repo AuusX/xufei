@@ -51,7 +51,26 @@
       "bucket_name": "renewlet-assets"
     }
   ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "MEDIA_ICON_INDEX_REFRESH_QUEUE",
+        "queue": "renewlet-media-icon-index-refresh"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "renewlet-media-icon-index-refresh",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "renewlet-media-icon-index-refresh-dlq",
+        "max_concurrency": 1
+      }
+    ]
+  },
   "vars": {
-    "SETUP_ENABLED": "true"
+    "SETUP_ENABLED": "true",
+    "RENEWLET_MAINTENANCE_MODE": "false"
   }
 }

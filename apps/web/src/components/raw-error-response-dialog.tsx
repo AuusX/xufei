@@ -31,6 +31,8 @@ export function RawErrorResponseDialog({
   const responseTextRef = useRef<HTMLPreElement>(null);
   const responseText = details?.responseText || details?.message || "";
   const displayText = formatRawErrorResponseText(responseText);
+  const summary = description ?? details?.message ?? t("rawErrorResponse.description");
+  const showSummary = normalizedErrorText(summary) !== normalizedErrorText(displayText);
   const copyLabel = copyState === "copied"
     ? t("rawErrorResponse.copied")
     : copyState === "failed"
@@ -66,8 +68,8 @@ export function RawErrorResponseDialog({
             </span>
             <div className="min-w-0">
               <DialogTitle className="text-base leading-6">{title ?? t("rawErrorResponse.title")}</DialogTitle>
-              <DialogDescription className="mt-1 break-words text-xs leading-5">
-                {description ?? details?.message ?? t("rawErrorResponse.description")}
+              <DialogDescription className={showSummary ? "mt-1 wrap-break-word text-xs leading-5" : "sr-only"}>
+                {showSummary ? summary : t("rawErrorResponse.description")}
               </DialogDescription>
             </div>
           </div>
@@ -78,7 +80,7 @@ export function RawErrorResponseDialog({
             ref={responseTextRef}
             tabIndex={-1}
             className={[
-              "min-h-0 flex-1 overflow-auto rounded-md border border-border bg-secondary/30 p-3 font-mono text-xs leading-5 whitespace-pre-wrap break-words",
+              "min-h-0 flex-1 overflow-auto rounded-md border border-border bg-secondary/30 p-3 font-mono text-xs leading-5 whitespace-pre-wrap wrap-break-word",
               displayText ? "text-foreground" : "text-muted-foreground",
             ].join(" ")}
           >
@@ -102,4 +104,8 @@ export function RawErrorResponseDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function normalizedErrorText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
 }

@@ -18,7 +18,7 @@ export default tseslint.config(
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
-      ecmaVersion: 2020,
+      ecmaVersion: 2022,
       globals: globals.browser,
       parserOptions: {
         project: "./tsconfig.eslint.json",
@@ -42,6 +42,30 @@ export default tseslint.config(
       "@typescript-eslint/no-unsafe-call": "error",
       "@typescript-eslint/no-unsafe-return": "error",
       "@typescript-eslint/no-unsafe-argument": "error",
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "sonner",
+              message: "请从 @/components/ui/sonner 使用全站唯一通知出口。",
+            },
+          ],
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "CallExpression[callee.object.name='toast'][callee.property.name='success'] > ObjectExpression.arguments > Property[key.name='description']",
+          message: "成功 Toast 必须是单行结果，不得使用 description。",
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/components/ui/sonner.tsx"],
+    rules: {
+      "no-restricted-imports": "off",
     },
   },
 );

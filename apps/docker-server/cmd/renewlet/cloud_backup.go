@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -162,7 +163,7 @@ func handleCloudBackupConfigUpdate(app core.App, e *core.RequestEvent) error {
 	}
 	if err := body.Validate(locale); err != nil {
 		if strings.TrimSpace(body.Provider) != cloudBackupProviderWebDAV && strings.TrimSpace(body.Provider) != cloudBackupProviderS3 {
-			return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", "provider_invalid", `Use JSON body {"provider":"webdav"} or {"provider":"s3"}.`)
+			return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", `Use JSON body {"provider":"webdav"} or {"provider":"s3"}.`)
 		}
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidPayload", err), err)
 	}
@@ -205,10 +206,10 @@ func handleCloudBackupsList(app core.App, e *core.RequestEvent) error {
 	locale := requestLocale(e.Request)
 	provider, hasProvider, err := cloudBackupProviderFromRequest(e.Request)
 	if err != nil {
-		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", "provider_invalid", "Use provider=webdav or provider=s3.")
+		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", "Use provider=webdav or provider=s3.")
 	}
 	if !hasProvider {
-		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_REQUIRED", "provider_required", "Use provider=webdav or provider=s3.")
+		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_REQUIRED", "Use provider=webdav or provider=s3.")
 	}
 	target, err := configuredCloudBackupTargetForProvider(app, e.Auth.Id, provider)
 	if err != nil {
@@ -252,7 +253,7 @@ func handleCloudBackupsDownload(app core.App, e *core.RequestEvent) error {
 	}
 	provider, hasProvider, err := cloudBackupProviderFromRequest(e.Request)
 	if err != nil {
-		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", "provider_invalid", "Use provider=webdav or provider=s3.")
+		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", "Use provider=webdav or provider=s3.")
 	}
 	ctx, cancel := context.WithTimeout(e.Request.Context(), 120*time.Second)
 	defer cancel()
@@ -294,7 +295,7 @@ func handleCloudBackupsDelete(app core.App, e *core.RequestEvent) error {
 	}
 	provider, hasProvider, err := cloudBackupProviderFromRequest(e.Request)
 	if err != nil {
-		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", "provider_invalid", "Use provider=webdav or provider=s3.")
+		return cloudBackupProviderParameterError(e, locale, "CLOUD_BACKUP_PROVIDER_INVALID", "Use provider=webdav or provider=s3.")
 	}
 	ctx, cancel := context.WithTimeout(e.Request.Context(), 60*time.Second)
 	defer cancel()
@@ -343,14 +344,6 @@ func configuredCloudBackupTargetForProvider(app core.App, userID string, provide
 	}
 	// 列表、立即备份、恢复和删除都在这里收敛到单 provider，避免另一目标的配置或上游错误串进当前请求。
 	return cloudBackupRemoteTargetForProvider(config, provider)
-}
-
-func cloudBackupRemoteClientForProvider(config cloudBackupResolvedConfig, provider string) (cloudBackupRemoteClient, error) {
-	target, ok := config.Targets[provider]
-	if !ok {
-		return nil, errors.New("CLOUD_BACKUP_TARGET_REQUIRED")
-	}
-	return cloudBackupRemoteClientForTarget(target)
 }
 
 func cloudBackupRemoteClientForTarget(target cloudBackupResolvedTarget) (cloudBackupRemoteClient, error) {
@@ -433,44 +426,71 @@ func createCloudBackupSnapshotForTargets(ctx context.Context, app core.App, user
 		return nil, err
 	}
 	snapshots := make([]cloudBackupSnapshotDTO, 0, len(targets))
-	for _, target := range targets {
-		snapshot, err := uploadCloudBackupSnapshotToTarget(ctx, app, user.Id, payload, target)
-		if err != nil {
-			return nil, err
+	err = withCloudBackupSnapshotPayload(user.Id, payload, func(payload cloudBackupSnapshotPayload) error {
+		for _, target := range targets {
+			snapshot, err := uploadCloudBackupSnapshotToTarget(ctx, app, user.Id, payload, target)
+			if err != nil {
+				return err
+			}
+			snapshots = append(snapshots, snapshot)
 		}
-		snapshots = append(snapshots, snapshot)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return snapshots, nil
 }
 
+func withCloudBackupSnapshotPayload(userID string, payload cloudBackupSnapshotPayload, use func(cloudBackupSnapshotPayload) error) error {
+	// 临时 ZIP 只在一个用户的一轮上传中存活，避免 cron 扫描多个用户时把快照累积到整轮结束。
+	defer func() {
+		if cleanupErr := payload.Source.Cleanup(); cleanupErr != nil {
+			slog.Warn("cloud backup temporary snapshot cleanup failed", "user", userID, "error", cleanupErr)
+		}
+	}()
+	return use(payload)
+}
+
 func buildCloudBackupSnapshotPayload(app core.App, user *core.Record) (cloudBackupSnapshotPayload, error) {
-	content, exportedAt, err := buildCloudBackupExportZip(app, user)
+	source, exportedAt, err := buildCloudBackupExportZip(app, user)
 	if err != nil {
 		return cloudBackupSnapshotPayload{}, err
 	}
-	if int64(len(content)) > cloudBackupSnapshotMaxBytes {
-		return cloudBackupSnapshotPayload{}, errors.New("CLOUD_BACKUP_SNAPSHOT_TOO_LARGE")
+	reader, err := source.Open()
+	if err != nil {
+		_ = source.Cleanup()
+		return cloudBackupSnapshotPayload{}, err
 	}
-	hash := sha256.Sum256(content)
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, reader)
+	closeErr := reader.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = source.Cleanup()
+		if copyErr != nil {
+			return cloudBackupSnapshotPayload{}, copyErr
+		}
+		return cloudBackupSnapshotPayload{}, closeErr
+	}
 	id := cloudBackupSnapshotID(exportedAt)
 	filename := id + ".zip"
 	manifest := cloudBackupSnapshotManifest{
 		Kind:                "renewlet-cloud-backup-snapshot",
-		SchemaVersion:       1,
+			SchemaVersion:       cloudBackupTransportSchemaVersion,
 		ID:                  id,
 		Filename:            filename,
 		CreatedAt:           exportedAt.Format(time.RFC3339Nano),
-		SizeBytes:           int64(len(content)),
-		SHA256:              hex.EncodeToString(hash[:]),
+		SizeBytes:           source.Size(),
+		SHA256:              hex.EncodeToString(hash.Sum(nil)),
 		ExportKind:          "renewlet-export",
-		ExportSchemaVersion: 1,
+			ExportSchemaVersion: renewletExportSchemaVersion,
 	}
-	return cloudBackupSnapshotPayload{Content: content, ID: id, Filename: filename, Manifest: manifest}, nil
+	return cloudBackupSnapshotPayload{Source: source, ID: id, Filename: filename, Manifest: manifest}, nil
 }
 
 func uploadCloudBackupSnapshotToTarget(ctx context.Context, app core.App, userID string, payload cloudBackupSnapshotPayload, target cloudBackupTarget) (cloudBackupSnapshotDTO, error) {
 	// 远端只信任 sidecar manifest + 本地重算 sha256；恢复下载前后都会再次校验，避免坏快照进入导入预览。
-	if err := target.Client.Upload(ctx, payload.Filename, payload.Content, payload.Manifest); err != nil {
+	if err := target.Client.Upload(ctx, payload.Filename, payload.Source, payload.Manifest); err != nil {
 		return cloudBackupSnapshotDTO{}, err
 	}
 	if err := enforceCloudBackupRetention(ctx, target.Client, target.Retention, payload.ID); err != nil {
@@ -481,7 +501,13 @@ func uploadCloudBackupSnapshotToTarget(ctx context.Context, app core.App, userID
 }
 
 func verifyCloudBackupSnapshotBytes(content []byte, manifest cloudBackupSnapshotManifest) error {
-	if manifest.Kind != "renewlet-cloud-backup-snapshot" || manifest.SchemaVersion != 1 {
+	if int64(len(content)) > cloudBackupSnapshotMaxBytes {
+		return errors.New("CLOUD_BACKUP_SNAPSHOT_TOO_LARGE")
+	}
+	if manifest.Kind != "renewlet-cloud-backup-snapshot" ||
+		manifest.SchemaVersion != cloudBackupTransportSchemaVersion ||
+		manifest.ExportKind != "renewlet-export" ||
+		manifest.ExportSchemaVersion != renewletExportSchemaVersion {
 		return errors.New("CLOUD_BACKUP_MANIFEST_INVALID")
 	}
 	if manifest.SizeBytes != int64(len(content)) {
@@ -570,7 +596,7 @@ func cloudBackupProviderFromRequest(request *http.Request) (string, bool, error)
 	return provider, true, nil
 }
 
-func cloudBackupProviderParameterError(e *core.RequestEvent, locale appLocale, code string, reason string, message string) error {
+func cloudBackupProviderParameterError(e *core.RequestEvent, locale appLocale, code string, message string) error {
 	return apiErrorJSON(e, http.StatusBadRequest, code, serverText(locale, "cloudBackup.providerInvalid"), &cloudBackupErrorDetails{
 		RawResponseText: optionalCloudBackupString(message),
 	})
@@ -589,17 +615,6 @@ func persistedCloudBackupErrorMessage(err error) string {
 		return remoteErr.code
 	}
 	return "local_sdk_error"
-}
-
-func filterNonEmpty(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func markCloudBackupSuccess(app core.App, userID string, provider string, backupAt string) {

@@ -28,7 +28,7 @@ import {
   nowIso,
   parseSubscriptionCursor,
   subscriptionCursor,
-  toApiSubscription,
+  toPublicApiSubscription,
 } from "./db";
 import { getSubscriptionStats, getSubscriptionTotal } from "./subscription-derived-state";
 import { dateOnlyInZone } from "./subscription-renewal";
@@ -39,6 +39,8 @@ import type { ApiAppSettings, ApiTokenRow, Env, SubscriptionRow } from "./types"
 const PUBLIC_API_TOKEN_PREFIX = "rlt_";
 const PUBLIC_API_TOKEN_PREFIX_LENGTH = 12;
 const PUBLIC_API_DUE_DEFAULT_DAYS = 30;
+// 与 Docker/Go 的 Public API 审计写入窗口保持一致；只降低 D1 write 放大，不改变 bearer 鉴权结果。
+const PUBLIC_API_LAST_USED_TOUCH_INTERVAL_MS = 15 * 60 * 1000;
 
 interface PublicApiAuth {
   userId: string;
@@ -128,7 +130,7 @@ export async function publicApiSubscription(request: Request, env: Env, subscrip
   const auth = await requirePublicApiRead(request, env);
   const row = await getSubscription(env, auth.userId, subscriptionId);
   if (!row) throw new HttpError(404, serverText(locale, "subscription.notFound"), "NOT_FOUND");
-  return noStoreSuccessJson(publicApiSubscriptionPayloadSchema.parse({ subscription: toApiSubscription(row) }));
+  return noStoreSuccessJson(publicApiSubscriptionPayloadSchema.parse({ subscription: toPublicApiSubscription(row) }));
 }
 
 export async function publicApiStatus(request: Request, env: Env): Promise<Response> {
@@ -156,9 +158,10 @@ export async function readPublicApiSubscriptionsForUser(
   }
   const rows = await listSubscriptionsPage(env, userId, { limit: options.limit + 1, cursor: options.cursor });
   const pageRows = rows.slice(0, options.limit);
-  const nextCursor = rows.length > options.limit ? subscriptionCursor(pageRows[pageRows.length - 1]!) : null;
+  const lastPageRow = pageRows.at(-1);
+  const nextCursor = rows.length > options.limit && lastPageRow ? subscriptionCursor(lastPageRow) : null;
   return publicApiSubscriptionsListPayloadSchema.parse({
-    subscriptions: pageRows.map(toApiSubscription),
+    subscriptions: pageRows.map(toPublicApiSubscription),
     nextCursor,
     total: await getSubscriptionTotal(env, userId),
   });
@@ -189,7 +192,7 @@ export async function readPublicApiDueForUser(env: Env, userId: string, days: nu
   `).bind(userId, today, through, today, through).all<SubscriptionRow>();
   const items = result.results
     .map((row) => toDueItem(row, today, through))
-    .filter((item): item is NonNullable<ReturnType<typeof toDueItem>> => item !== null)
+    .filter((item) => item !== null)
     .sort((left, right) => left.dueDate.localeCompare(right.dueDate) || left.subscription.name.localeCompare(right.subscription.name));
   return publicApiDuePayloadSchema.parse({
     days,
@@ -225,7 +228,7 @@ export async function readPublicApiNextDueForUser(env: Env, userId: string, opti
   `).bind(userId, today, today, today, today).all<SubscriptionRow>();
   const items = result.results
     .map((row) => toDueItem(row, today, "9999-12-31"))
-    .filter((item): item is z.infer<typeof publicApiDueItemSchema> => item !== null)
+    .filter((item) => item !== null)
     .sort((left, right) => left.dueDate.localeCompare(right.dueDate) || left.subscription.name.localeCompare(right.subscription.name));
   return items[0] ?? null;
 }
@@ -248,9 +251,17 @@ async function requirePublicApiRead(request: Request, env: Env): Promise<PublicA
   if (!row || row.banned === 1 || !apiTokenHasReadScope(row)) {
     throw new HttpError(401, serverText(locale, "auth.loginRequired"), "PUBLIC_API_UNAUTHORIZED");
   }
-  // Public API 与浏览器 session 分离；成功请求只刷新 token 使用时间，不延长或创建登录态。
-  await env.DB.prepare("UPDATE api_tokens SET last_used_at = ?, updated_at = ? WHERE id = ?").bind(nowIso(), nowIso(), row.id).run();
+  await touchApiTokenLastUsedIfStale(env, row.id, row.last_used_at);
   return { userId: row.user_id, scopes: ["read"] };
+}
+
+async function touchApiTokenLastUsedIfStale(env: Env, tokenId: string, lastUsedAt: string | null): Promise<void> {
+  const lastUsed = Date.parse(lastUsedAt ?? "");
+  const now = Date.now();
+  if (!Number.isNaN(lastUsed) && now - lastUsed < PUBLIC_API_LAST_USED_TOUCH_INTERVAL_MS) return;
+  const timestamp = new Date(now).toISOString();
+  // Public API 与浏览器 session 分离；last_used_at 只做 token 使用审计，不延长或创建登录态。
+  await env.DB.prepare("UPDATE api_tokens SET last_used_at = ?, updated_at = ? WHERE id = ?").bind(timestamp, timestamp, tokenId).run();
 }
 
 function toApiToken(row: ApiTokenRow): ApiToken {
@@ -284,7 +295,7 @@ function parseQuery<Schema extends z.ZodType>(schema: Schema, input: unknown, lo
 function toDueItem(row: SubscriptionRow, today: string, through: string) {
   const dueType = dueTypeForSubscription(row, today, through);
   if (!dueType) return null;
-  const subscription = toApiSubscription(row);
+  const subscription = toPublicApiSubscription(row);
   return {
     dueDate: dueType === "trial" ? row.trial_end_date! : row.next_billing_date,
     dueType,

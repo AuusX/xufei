@@ -6,16 +6,11 @@
  *
  * 注意： date-only、本地时间和 custom 周期是核心不变量；新增字段时要同步 Go schema/hooks 与前端 schema。
  */
-import type { CustomThemeColor, ThemeMode, ThemeVariant } from './theme';
-import type { BuiltInIconSourceSettings } from "@renewlet/shared/built-in-icons";
-import type { AiRecognitionSettings } from "@renewlet/shared/schemas/ai-recognition";
 import type { ApiAppSettings } from "@renewlet/shared/schemas/settings";
 import { labelsFromCatalog } from "@/i18n/label-messages";
-import { getInitialLocale, labels, type Locale, type LocalizedLabels } from '@/i18n/locales';
+import { labels, type LocalizedLabels } from '@/i18n/locales';
 import { SUPPORTED_EXCHANGE_RATE_CURRENCIES, getIntlCurrencyOptionLabel } from '@/lib/currency-data';
-import type { ExchangeRateProvider } from '@/lib/api/schemas/exchange-rates';
 import type { DateOnly } from '@/lib/time/date-only';
-import type { LocalTime } from '@/lib/time/local-time';
 import type { CostSharing } from '@renewlet/shared/cost-sharing';
 import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import {
@@ -36,10 +31,10 @@ import {
   type RepeatReminderWindow as SharedRepeatReminderWindow,
   type SubscriptionStatus as SharedSubscriptionStatus,
 } from "@renewlet/shared/runtime";
-import type { ApiSubscription } from "@renewlet/shared/schemas/subscriptions";
+import type { ApiSubscription, ApiSubscriptionCollectionItem } from "@renewlet/shared/schemas/subscriptions";
 
 export { DEFAULT_NOTIFICATION_REMINDER_DAYS, DISABLED_REMINDER_DAYS, INHERIT_REMINDER_DAYS, MAX_REMINDER_DAYS };
-export type { ApiSubscription };
+export type { ApiSubscription, ApiSubscriptionCollectionItem };
 
 export const SUBSCRIPTION_STATUSES = SHARED_SUBSCRIPTION_STATUSES;
 /** 订阅状态（影响展示、统计与提醒逻辑）。 */
@@ -50,7 +45,6 @@ export const BILLING_CYCLES = SHARED_BILLING_CYCLES;
 export type BillingCycle = SharedBillingCycle;
 
 export const CUSTOM_CYCLE_UNITS = SHARED_CUSTOM_CYCLE_UNITS;
-/** 自定义扣费周期单位；仅 billingCycle=custom 时有效，旧记录缺省按 day 解释。 */
 export type CustomCycleUnit = SharedCustomCycleUnit;
 
 export const CATEGORIES = [
@@ -155,89 +149,74 @@ export const MAX_SUBSCRIPTION_TAG_LENGTH = 40;
 export const WEBHOOK_HEADERS_PLACEHOLDER = '{"Authorization": "Bearer your-token", "Content-Type": "application/json"}';
 export const WEBHOOK_PAYLOAD_PLACEHOLDER = '{"title": "{title}", "content": "{content}", "timestamp": "{timestamp}"}';
 
-interface SubscriptionBase {
-  /** 订阅 ID（客户端使用字符串；数据库中为 UUID）。 */
-  id: string;
-  /** 订阅名称。 */
-  name: string;
-  /** Logo（可选）。 */
-  logo: string | undefined;
-  /** 单次扣费金额。 */
-  price: number;
-  /** 货币代码（如：CNY、USD）。 */
-  currency: string;
-  /** 分类。 */
-  category: Category;
-  /** 状态。 */
-  status: SubscriptionStatus;
-  /** 是否置顶显示；列表排序会先按置顶分组，再应用用户选择的排序条件。 */
-  pinned: boolean;
-  /** publicHidden=false 是公开展示页启用后的默认可见语义；隐藏必须由用户逐条显式选择。 */
-  publicHidden: boolean;
-  /** 支付方式（可选）。 */
-  paymentMethod: PaymentMethod | undefined;
-  /** 下次扣费日期（用于提醒与日历）。 */
-  nextBillingDate: DateOnly;
-  /** 到期后是否由后台自动推进下一期；one-time 写入层必须强制为 false。 */
-  autoRenew: boolean;
-  /** 是否自动根据开始日期和扣费周期计算下次扣费日期。 */
-  autoCalculateNextBillingDate: boolean;
-  /** 开始日期；周期订阅可为空，one-time 与自动计算仍由写入契约要求非空。 */
-  startDate: DateOnly | null;
-  /** 试用结束日期（仅试用状态可选）。 */
-  trialEndDate: DateOnly | undefined;
-  /** 官网地址（可选）。 */
-  website: string | undefined;
-  /** 备注（可选）。 */
-  notes: string | undefined;
-  /** 标签。 */
-  tags: string[];
-  /** 提前多少天提醒；-2 表示不提醒，-1 表示继承设置页的全局提醒提前时间。 */
-  reminderDays: number;
-  /** 是否为该订阅启用重复提醒。 */
-  repeatReminderEnabled: boolean;
-  /** 重复提醒间隔。 */
-  repeatReminderInterval: RepeatReminderInterval;
-  /** 重复提醒窗口。 */
-  repeatReminderWindow: RepeatReminderWindow;
-  /** 每条订阅独立的家庭共享/分摊配置。 */
-  costSharing?: CostSharing | undefined;
-  /** 非展示元数据；导入幂等键等跨运行面状态保存在这里。 */
-  extra?: Record<string, unknown> | undefined;
-}
-
 export type { CostSharing, CostSharingMember, CostSharingSplitMode } from '@renewlet/shared/cost-sharing';
 
-export interface CustomCycleSubscription extends SubscriptionBase {
-  /** 自定义周期必须携带数量和单位；统计折算和自动续费日期计算都依赖这个不变量。 */
-  billingCycle: "custom";
-  customDays: number;
-  customCycleUnit: CustomCycleUnit;
-  oneTimeTermCount?: undefined;
-  oneTimeTermUnit?: undefined;
-}
+type SubscriptionCollectionDomainFields = {
+  logo: string | undefined;
+  category: Category;
+  paymentMethod: PaymentMethod | undefined;
+  startDate: DateOnly | null;
+  nextBillingDate: DateOnly;
+  trialEndDate: DateOnly | undefined;
+};
 
-export interface RecurringCycleSubscription extends SubscriptionBase {
-  /** 固定周期不携带自定义数量/单位，避免历史 custom 脏值影响金额折算。 */
-  billingCycle: Exclude<BillingCycle, "custom" | "one-time">;
-  customDays: undefined;
-  customCycleUnit: undefined;
-  oneTimeTermCount?: undefined;
-  oneTimeTermUnit?: undefined;
-}
+type SubscriptionCollectionItemFromApi<T> =
+  T extends ApiSubscriptionCollectionItem
+    ? Omit<T, keyof SubscriptionCollectionDomainFields> & SubscriptionCollectionDomainFields
+    : never;
 
-export interface OneTimeSubscription extends SubscriptionBase {
-  /** one-time 无服务期表示买断；有服务期时按整段权益期做月均摊销和到期提醒。 */
-  billingCycle: "one-time";
-  customDays: undefined;
-  customCycleUnit: undefined;
-  oneTimeTermCount?: number | undefined;
-  oneTimeTermUnit?: CustomCycleUnit | undefined;
-}
+export type SubscriptionCollectionItem = SubscriptionCollectionItemFromApi<ApiSubscriptionCollectionItem>;
+export type RecurringCycleSubscriptionCollectionItem = Extract<
+  SubscriptionCollectionItem,
+  { billingCycle: Exclude<BillingCycle, "custom" | "one-time"> }
+>;
+export type CustomCycleSubscriptionCollectionItem = Extract<SubscriptionCollectionItem, { billingCycle: "custom" }>;
+export type OneTimeSubscriptionCollectionItem = Extract<SubscriptionCollectionItem, { billingCycle: "one-time" }>;
+export type OneTimeFixedTermSubscriptionCollectionItem = Extract<
+  OneTimeSubscriptionCollectionItem,
+  { oneTimeTermCount: number; oneTimeTermUnit: CustomCycleUnit }
+>;
+export type OneTimeBuyoutSubscriptionCollectionItem = Exclude<
+  OneTimeSubscriptionCollectionItem,
+  OneTimeFixedTermSubscriptionCollectionItem
+>;
 
+type SubscriptionDetailDomainFields = {
+  website: string | undefined;
+  notes: string | undefined;
+  tags: string[];
+  extra: Record<string, unknown>;
+};
+
+type SubscriptionFromApi<T extends ApiSubscription> = T extends ApiSubscription
+  ? Omit<
+      SubscriptionCollectionItemFromApi<T>,
+      keyof SubscriptionDetailDomainFields | "createdAt" | "updatedAt"
+    > & SubscriptionDetailDomainFields
+  : never;
+
+export type Subscription = SubscriptionFromApi<ApiSubscription>;
+export type RecurringCycleSubscription = Extract<
+  Subscription,
+  { billingCycle: Exclude<BillingCycle, "custom" | "one-time"> }
+>;
+export type CustomCycleSubscription = Extract<Subscription, { billingCycle: "custom" }>;
+export type OneTimeSubscription = Extract<Subscription, { billingCycle: "one-time" }>;
+export type OneTimeFixedTermSubscription = Extract<
+  OneTimeSubscription,
+  { oneTimeTermCount: number; oneTimeTermUnit: CustomCycleUnit }
+>;
+export type OneTimeBuyoutSubscription = Exclude<OneTimeSubscription, OneTimeFixedTermSubscription>;
 export type FixedCycleSubscription = RecurringCycleSubscription | OneTimeSubscription;
-export type Subscription = CustomCycleSubscription | RecurringCycleSubscription | OneTimeSubscription;
-export type SubscriptionDraft = Omit<CustomCycleSubscription, "id"> | Omit<RecurringCycleSubscription, "id"> | Omit<OneTimeSubscription, "id">;
+
+type SubscriptionFormSubmissionFrom<T extends Subscription> = T extends Subscription
+  ? Omit<T, "id" | "pinned" | "extra" | "trialEndDate">
+  : never;
+export type SubscriptionFormSubmission = SubscriptionFormSubmissionFrom<Subscription>;
+type SubscriptionDraftFrom<T extends SubscriptionFormSubmission> = T extends SubscriptionFormSubmission
+  ? T & { pinned: boolean; extra?: Record<string, unknown> }
+  : never;
+export type SubscriptionDraft = SubscriptionDraftFrom<SubscriptionFormSubmission>;
 
 export interface SubscriptionStats {
   /** 按月折算的总支出（基于订阅周期换算）。 */
@@ -253,126 +232,9 @@ export interface SubscriptionStats {
 }
 
 export type PublicStatusCurrency = "inherit" | (string & {});
+export type SubscriptionPriceReferenceCurrency = "default" | (string & {});
 
-export interface AppSettings {
-  // 管理员展示信息
-  /** 管理员用户名（用于界面展示/未来扩展）。 */
-  adminUsername: string;
-  
-  // 显示与本地化
-  /** 明暗模式（light/dark/system，对应本地 ThemeProvider）。 */
-  themeMode: ThemeMode;
-  /** 主题风格（emerald/ocean/...，对应 html[data-theme]）。 */
-  themeVariant: ThemeVariant;
-  /** 自定义主题色（仅 themeVariant=custom 时生效）。 */
-  themeCustomColor: CustomThemeColor;
-  /** 界面、错误和通知使用的语言。 */
-  locale: Locale;
-  /** 通知内容中是否包含已过期订阅。 */
-  showExpired: boolean;
-  /** 默认货币（用于统计/展示换算）。 */
-  defaultCurrency: string;
-  /** 公开页金额汇总货币；inherit 表示跟随 defaultCurrency。 */
-  publicStatusCurrency: PublicStatusCurrency;
-  /** 首选汇率来源；另一个远端来源仍作为兜底。 */
-  exchangeRateProvider: ExchangeRateProvider;
-  /** 内置 Logo/Icon 来源配置；影响搜索候选和导入自动匹配。 */
-  builtInIconSources: BuiltInIconSourceSettings;
-  /** AI 识别订阅导入使用的第三方模型配置。 */
-  aiRecognition: AiRecognitionSettings;
-  
-  // 预算
-  /** 月度预算（用于统计页预算占比）。 */
-  monthlyBudget: number;
-  
-  // 时区
-  /** 用户时区（用于后续定时任务/通知展示）。 */
-  timezone: string;
-  
-  // 通知总开关
-  /** 每天发送通知的本地墙上时间（格式 HH:mm，需结合 timezone 解释）。 */
-  notificationTimeLocal: LocalTime;
-  /** 订阅选择“继承全局”时使用的提前提醒天数。 */
-  notificationReminderDays: number;
-  /** 启用的通知渠道（可多选）。 */
-  enabledChannels: NotificationChannel[];
-  /** 第三方 API 测试号码（部分渠道测试用）。 */
-  testPhone: string;
-  
-  // 以下渠道配置会被原样提交到后端/Worker 做真实发送；前端只负责表单形态，不在本地校验 token 可用性。
-  /** Telegram Bot Token。 */
-  telegramBotToken: string;
-  /** Telegram Chat ID。 */
-  telegramChatId: string;
-  /** Telegram 消息正文样式。 */
-  telegramMessageFormat: ApiAppSettings["telegramMessageFormat"];
-  /** Notifyx API Key。 */
-  notifyxApiKey: string;
-  /** Webhook URL。 */
-  webhookUrl: string;
-  /** Webhook 请求方法。 */
-  webhookMethod: 'GET' | 'POST';
-  /** Webhook Headers（JSON 字符串）。 */
-  webhookHeaders: string;
-  /** Webhook Payload（模板字符串/JSON 字符串）。 */
-  webhookPayload: string;
-  /** 钉钉机器人 Webhook URL。 */
-  dingtalkWebhookUrl: string;
-  /** 钉钉机器人加签密钥。 */
-  dingtalkSecret: string;
-  /** 钉钉机器人自定义关键词。 */
-  dingtalkKeyword: string;
-  /** 钉钉消息类型。 */
-  dingtalkMessageType: ApiAppSettings["dingtalkMessageType"];
-  /** 钉钉消息标题模板。 */
-  dingtalkTitleTemplate: string;
-  /** 钉钉消息正文模板。 */
-  dingtalkContentTemplate: string;
-  /** 企业微信机器人 Webhook URL。 */
-  wechatWebhookUrl: string;
-  /** 企业微信消息类型。 */
-  wechatMessageType: 'text' | 'markdown';
-  /** 企业微信消息是否追加模式标签。 */
-  wechatAddModeTag: boolean;
-  /** 企业微信 @ 手机号（逗号分隔）。 */
-  wechatAtPhones: string;
-  /** 企业微信是否 @ 全体。 */
-  wechatAtAll: boolean;
-  /** SMTP 服务器地址。 */
-  smtpHost: string;
-  /** SMTP 端口。 */
-  smtpPort: string;
-  /** SMTP 是否使用 TLS 直连。 */
-  smtpSecure: boolean;
-  /** SMTP 用户名。 */
-  smtpUser: string;
-  /** SMTP 密码。 */
-  smtpPassword: string;
-  /** SMTP 发件人。 */
-  smtpFrom: string;
-  /** SMTP 回复地址。 */
-  smtpReplyTo: string;
-  /** 是否支持多收件人。 */
-  notifyMultipleAddresses: boolean;
-  /** 收件人邮箱。 */
-  recipientEmail: string;
-  /** Bark 服务器地址。 */
-  barkServerUrl: string;
-  /** Bark 设备 Key。 */
-  barkDeviceKey: string;
-  /** Bark 是否静音推送。 */
-  barkSilentPush: boolean;
-  /** Server酱 SendKey。 */
-  serverchanSendKey: string;
-  /** Discord Webhook URL。 */
-  discordWebhookUrl: string;
-  /** Discord Webhook 覆盖用户名。 */
-  discordBotUsername: string;
-  /** Discord Webhook 覆盖头像 URL。 */
-  discordBotAvatarUrl: string;
-  /** PushPlus token。 */
-  pushplusToken: string;
-}
+export type AppSettings = ApiAppSettings;
 
 export const CATEGORY_LABELS: Record<BuiltInCategory, LocalizedLabels> = {
   productivity: labelsFromCatalog("category.productivity"),
@@ -565,4 +427,4 @@ export const REPEAT_REMINDER_WINDOW_OPTIONS = [
   { value: 'full', labels: labelsFromCatalog("repeat.windowFull") },
 ] as const satisfies readonly RepeatReminderWindowOption[];
 
-export const DEFAULT_SETTINGS: AppSettings = createDefaultAppSettings({ locale: getInitialLocale() });
+export const DEFAULT_SETTINGS: AppSettings = createDefaultAppSettings();

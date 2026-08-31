@@ -3,6 +3,11 @@ import { describe, expect, it } from "vitest";
 import { buildSubscriptionsCsv, escapeCsvCell } from "./subscription-export";
 import type { Subscription } from "@/types/subscription";
 import { assertDateOnly } from "@/lib/time/date-only";
+import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
+import { moneyToNumber } from "@renewlet/shared/money";
 
 describe("subscription-export", () => {
   it("escapes quotes and spreadsheet formula prefixes", () => {
@@ -72,14 +77,14 @@ describe("subscription-export", () => {
 
   it("exports cost sharing amounts converted to each subscription currency", () => {
     const csv = buildSubscriptionsCsv([makeSubscription({
-      price: 50,
+      price: "50",
       currency: "CNY",
       costSharing: {
         enabled: true,
         splitMode: "custom",
         members: [
-          { id: "eur", name: "EUR member", currency: "EUR", customAmount: 10 },
-          { id: "usd", name: "USD member", currency: "USD", customAmount: 10 },
+          { id: "eur", name: "EUR member", currency: "EUR", customAmount: "10" },
+          { id: "usd", name: "USD member", currency: "USD", customAmount: "10" },
         ],
       },
     })], {
@@ -89,10 +94,11 @@ describe("subscription-export", () => {
       today: assertDateOnly("2026-01-01"),
       costSharingCalculation: {
         convert: (amount, from, to) => {
-          if (to !== "CNY") return amount;
-          if (from === "EUR") return amount * 8;
-          if (from === "USD") return amount * 7;
-          return amount;
+          const value = moneyToNumber(amount);
+          if (to !== "CNY") return value;
+          if (from === "EUR") return value * 8;
+          if (from === "USD") return value * 7;
+          return value;
         },
       },
     });
@@ -101,16 +107,13 @@ describe("subscription-export", () => {
   });
 });
 
-function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
+function makeSubscription(overrides: SubscriptionFixtureOverrides<Subscription> = {}): Subscription {
   return {
     id: "sub-1",
     name: "=Formula",
     logo: undefined,
-    price: 10,
+    price: "10",
     currency: "USD",
-    billingCycle: "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
     category: "productivity",
     status: "active",
     pinned: false,
@@ -118,6 +121,7 @@ function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
     paymentMethod: undefined,
     startDate: assertDateOnly("2026-01-01"),
     nextBillingDate: assertDateOnly("2026-02-01"),
+    autoRenew: false,
     autoCalculateNextBillingDate: true,
     trialEndDate: undefined,
     website: undefined,
@@ -126,7 +130,9 @@ function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
     repeatReminderEnabled: false,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
+    extra: {},
     tags: ["SaaS", "Work"],
     ...overrides,
-  } as Subscription;
+    ...subscriptionCycleFixture(overrides),
+  };
 }

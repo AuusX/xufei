@@ -7,16 +7,23 @@
  * 注意： 新增公开页面时必须同步 `public-routes.ts`，否则刷新后会被客户端守卫带回登录页。
  */
 import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router";
 import { AppScrollRestoration } from "@/components/app-scroll-restoration";
 import { ProtectedRoute } from "@/components/protected-route";
-import { lazyRouteLoader, routeFallbackForPathname } from "@/lib/route-resources";
+import {
+  lazyPrivateAppShellLoader,
+  lazyRouteLoader,
+  routeFallbackForPathname,
+} from "@/lib/route-resources";
 
+const PrivateAppShell = lazy(lazyPrivateAppShellLoader);
 const Dashboard = lazy(lazyRouteLoader("dashboard"));
 const Subscriptions = lazy(lazyRouteLoader("subscriptions"));
 const Calendar = lazy(lazyRouteLoader("calendar"));
 const Statistics = lazy(lazyRouteLoader("statistics"));
 const Settings = lazy(lazyRouteLoader("settings"));
+// 二次开发栏目：拼车（直接懒加载 custom 目录，不进上游 route-resources 注册表）。
+const Carpool = lazy(() => import("@/custom/carpool/carpool-page"));
 const Setup = lazy(lazyRouteLoader("setup"));
 const Login = lazy(lazyRouteLoader("login"));
 const Privacy = lazy(lazyRouteLoader("privacy"));
@@ -26,8 +33,6 @@ const AdminUsers = lazy(lazyRouteLoader("adminUsers"));
 const ForgotPassword = lazy(lazyRouteLoader("forgotPassword"));
 const ResetPassword = lazy(lazyRouteLoader("resetPassword"));
 const NotFound = lazy(lazyRouteLoader("notFound"));
-// 二次开发栏目：拼车（直接懒加载 custom 目录，不进上游 route-resources 注册表）。
-const Carpool = lazy(() => import("@/custom/carpool/carpool-page"));
 
 function RouteFallback() {
   const { pathname } = useLocation();
@@ -42,13 +47,15 @@ export default function App() {
       <AppScrollRestoration />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
-          <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-          <Route path="/subscriptions" element={<ProtectedRoute><Subscriptions /></ProtectedRoute>} />
-          <Route path="/calendar" element={<ProtectedRoute><Calendar /></ProtectedRoute>} />
-          <Route path="/statistics" element={<ProtectedRoute><Statistics /></ProtectedRoute>} />
-          <Route path="/carpool" element={<ProtectedRoute><Carpool /></ProtectedRoute>} />
-          <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-          <Route path="/admin/users" element={<ProtectedRoute adminOnly><AdminUsers /></ProtectedRoute>} />
+          <Route element={<ProtectedRoute><PrivateAppShell /></ProtectedRoute>}>
+            <Route index element={<Dashboard />} />
+            <Route path="subscriptions" element={<Subscriptions />} />
+            <Route path="calendar" element={<Calendar />} />
+            <Route path="statistics" element={<Statistics />} />
+            <Route path="settings" element={<Settings />} />
+            <Route path="carpool" element={<Carpool />} />
+            <Route path="admin/users" element={<ProtectedRoute adminOnly><AdminUsers /></ProtectedRoute>} />
+          </Route>
           <Route path="/setup" element={<Setup />} />
           <Route path="/login" element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />

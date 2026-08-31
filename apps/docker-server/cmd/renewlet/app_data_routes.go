@@ -22,17 +22,12 @@ import (
 )
 
 type settingsResponse struct {
-	Settings appSettings `json:"settings"`
+	Settings     publicAppSettings                         `json:"settings"`
+	SecretStatus map[string]settingsSecretConfiguredStatus `json:"secretStatus"`
 }
 
 type customConfigResponse struct {
 	Config customConfigPayload `json:"config"`
-}
-
-type subscriptionsListResponse struct {
-	Subscriptions []map[string]interface{} `json:"subscriptions"`
-	NextCursor    *string                  `json:"nextCursor"`
-	Total         int64                    `json:"total,omitempty"`
 }
 
 type subscriptionCursorPayload struct {
@@ -61,6 +56,9 @@ type uploadAssetResponse struct {
 	URL string `json:"url"`
 }
 
+// 与 Cloudflare Worker 的上传 envelope 口径一致：multipart 头部最多放宽 64KiB，不能把 2MiB 文件限额变成大 body 入口。
+const maxAssetUploadBodyBytes = maxImageBytes + 64*1024
+
 type assetInUseDetails struct {
 	UsageCount             int64 `json:"usageCount"`
 	SubscriptionLogoCount  int64 `json:"subscriptionLogoCount"`
@@ -70,7 +68,7 @@ type assetInUseDetails struct {
 type subscriptionWriteRequest struct {
 	Name                         optionalJSONField[string]                 `json:"name"`
 	Logo                         optionalJSONField[string]                 `json:"logo"`
-	Price                        optionalJSONField[float64]                `json:"price"`
+	Price                        optionalJSONField[string]                 `json:"price"`
 	Currency                     optionalJSONField[string]                 `json:"currency"`
 	BillingCycle                 optionalJSONField[string]                 `json:"billingCycle"`
 	CustomDays                   optionalJSONField[int]                    `json:"customDays"`
@@ -118,11 +116,11 @@ func (f *optionalJSONField[T]) UnmarshalJSON(data []byte) error {
 
 func handleSettingsRead(app core.App, e *core.RequestEvent) error {
 	locale := requestLocale(e.Request)
-	_, settings, err := ensureSettingsRecord(app, e.Auth.Id, locale)
+	_, settings, err := ensureSettingsRecord(app, e.Auth.Id)
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "common.internalError"), err)
 	}
-	return apiSuccessJSON(e, http.StatusOK, settingsResponse{Settings: settings})
+	return apiSuccessJSON(e, http.StatusOK, newSettingsResponse(settings))
 }
 
 func handleSettingsUpdate(app core.App, e *core.RequestEvent) error {
@@ -133,12 +131,12 @@ func handleSettingsUpdate(app core.App, e *core.RequestEvent) error {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
 
-	record, current, err := settingsRecordOrDefault(app, e.Auth.Id, locale)
+	record, current, err := settingsRecordOrDefault(app, e.Auth.Id)
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "common.internalError"), err)
 	}
 
-	next, err := mergeSettingsForWrite(current, raw)
+	next, err := mergeSettingsRequest(current, raw, locale)
 	if err != nil {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
@@ -151,18 +149,50 @@ func handleSettingsUpdate(app core.App, e *core.RequestEvent) error {
 		}
 		return e.BadRequestError(serverText(locale, "common.invalidRequestParameters"), err)
 	}
-	if record == nil {
-		record, err = createSettingsRecord(app, e.Auth.Id, next)
-		if err != nil {
-			return e.InternalServerError(serverText(locale, "common.internalError"), err)
+	var saved appSettings
+	var validationErr error
+	err = app.RunInTransaction(func(txApp core.App) error {
+		if record == nil {
+			record, err = createSettingsRecord(txApp, e.Auth.Id, next)
+			if err != nil {
+				return err
+			}
+		} else {
+			record.Set("settings", next)
+			if err := txApp.Save(record); err != nil {
+				validationErr = err
+				return err
+			}
 		}
-		return apiSuccessJSON(e, http.StatusOK, settingsResponse{Settings: settingsFromRecord(record)})
+		if costSharingScheduleSettingsChanged(current, next) {
+			if err := refreshCostSharingCollectionReminderMirrorsForUser(txApp, e.Auth.Id, next, costSharingCollectionReminderReferenceDate(next, time.Now().UTC())); err != nil {
+				return err
+			}
+		}
+		if subscriptionScheduleSettingsChanged(current, next) {
+			if _, err := refreshSubscriptionSchedulerState(txApp, e.Auth.Id, false); err != nil {
+				return err
+			}
+		}
+		saved, err = settingsFromRecord(record)
+		return err
+	})
+	if err != nil {
+		if validationErr != nil {
+			return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", validationErr), validationErr)
+		}
+		return e.InternalServerError(serverText(locale, "common.internalError"), err)
 	}
-	record.Set("settings", next)
-	if err := app.Save(record); err != nil {
-		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
-	}
-	return apiSuccessJSON(e, http.StatusOK, settingsResponse{Settings: settingsFromRecord(record)})
+	return apiSuccessJSON(e, http.StatusOK, newSettingsResponse(saved))
+}
+
+func subscriptionScheduleSettingsChanged(before appSettings, after appSettings) bool {
+	return before.NotificationTimeLocal != after.NotificationTimeLocal || costSharingScheduleSettingsChanged(before, after)
+}
+
+func costSharingScheduleSettingsChanged(before appSettings, after appSettings) bool {
+	return before.Timezone != after.Timezone ||
+		before.NotificationReminderDays != after.NotificationReminderDays
 }
 
 func handleCustomConfigRead(app core.App, e *core.RequestEvent) error {
@@ -215,27 +245,6 @@ func handleCustomConfigUpdate(app core.App, e *core.RequestEvent) error {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
 	return apiSuccessJSON(e, http.StatusOK, customConfigResponse{Config: body.Config})
-}
-
-func handleSubscriptionsList(app core.App, e *core.RequestEvent) error {
-	locale := requestLocale(e.Request)
-	query, err := parseSubscriptionListQuery(e.Request.URL.Query())
-	if err != nil {
-		return e.BadRequestError(serverText(locale, "common.invalidRequestParameters"), err)
-	}
-	page, err := listSubscriptionRecordsForQuery(app, e.Auth.Id, query, todayDateOnly(time.Now(), currentUserSettingsTimezone(app, e.Auth)))
-	if err != nil {
-		return e.InternalServerError(serverText(locale, "common.internalError"), err)
-	}
-	subscriptions := make([]map[string]interface{}, 0, len(page.Rows))
-	for _, record := range page.Rows {
-		subscriptions = append(subscriptions, subscriptionAPIFromRecord(record))
-	}
-	return apiSuccessJSON(e, http.StatusOK, subscriptionsListResponse{
-		Subscriptions: subscriptions,
-		NextCursor:    page.NextCursor,
-		Total:         page.Total,
-	})
 }
 
 func handleSubscriptionCreate(app core.App, e *core.RequestEvent) error {
@@ -294,6 +303,8 @@ func handleSubscriptionDelete(app core.App, e *core.RequestEvent) error {
 
 func handleAssetUpload(app core.App, e *core.RequestEvent) error {
 	locale := requestLocale(e.Request)
+	// multipart envelope 只放宽表单头部开销；真实文件大小仍由 maxImageBytes 和持久层 MIME 白名单兜底。
+	e.Request.Body = http.MaxBytesReader(e.Response, e.Request.Body, maxAssetUploadBodyBytes)
 	if err := e.Request.ParseMultipartForm(maxImageBytes + 1024); err != nil {
 		return e.BadRequestError(serverText(locale, "asset.uploadChooseImage"), err)
 	}
@@ -468,7 +479,7 @@ func applySubscriptionWriteRequest(record *core.Record, body subscriptionWriteRe
 	if err := setStringRecordField(record, "logo", body.Logo, false, true, true); err != nil {
 		return err
 	}
-	if err := setFloatRecordField(record, "price", body.Price, create); err != nil {
+	if err := setMoneyRecordField(record, "price", body.Price, create); err != nil {
 		return err
 	}
 	if err := setStringRecordField(record, "currency", body.Currency, create, false, true); err != nil {
@@ -582,7 +593,7 @@ func setStringRecordField(record *core.Record, name string, field optionalJSONFi
 	return nil
 }
 
-func setFloatRecordField(record *core.Record, name string, field optionalJSONField[float64], required bool) error {
+func setMoneyRecordField(record *core.Record, name string, field optionalJSONField[string], required bool) error {
 	if !field.Set {
 		if required {
 			return fmt.Errorf("%s_REQUIRED", strings.ToUpper(name))
@@ -592,7 +603,11 @@ func setFloatRecordField(record *core.Record, name string, field optionalJSONFie
 	if field.Null {
 		return fmt.Errorf("%s_REQUIRED", strings.ToUpper(name))
 	}
-	record.Set(name, field.Value)
+	value, err := canonicalMoneyString(field.Value)
+	if err != nil {
+		return fmt.Errorf("%s_INVALID", strings.ToUpper(name))
+	}
+	record.Set(name, value)
 	return nil
 }
 

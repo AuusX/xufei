@@ -28,6 +28,7 @@ import {
   session,
   setupStatus,
 } from "./auth";
+import { readAuthSecurity, testAuthSecurityTurnstile, updateAuthSecurity } from "./auth-security";
 import { deleteAsset, listUploadedAssets, readAsset, uploadAsset } from "./assets";
 import {
   calendarFeedIcs,
@@ -36,11 +37,23 @@ import {
   deleteCalendarFeed,
   deleteSubscriptionCalendarFeed,
   downloadSubscriptionCalendarIcs,
+  listSubscriptionCalendarFeeds,
   readCalendarFeed,
   readSubscriptionCalendarFeed,
+  rotateCalendarFeed,
+  rotateSubscriptionCalendarFeed,
 } from "./calendar-feed";
 import { readCustomConfig, readSettings, updateCustomConfig, updateSettings } from "./settings";
+import { putExchangeRateSnapshot, readExchangeRateSnapshots } from "./exchange-rate-snapshots";
 import { createSubscription, deleteSubscription, readSubscriptions, renewSubscription, updateSubscription } from "./subscriptions";
+import {
+  readSubscriptionAnalytics,
+  readSubscriptionCalendar,
+  readSubscriptionDetail,
+  readSubscriptionExport,
+  readSubscriptionFacets,
+  readSubscriptionIndex,
+} from "./subscription-collections";
 import { applyImport, previewImport } from "./import-export";
 import {
   createCloudBackup,
@@ -54,9 +67,14 @@ import {
 } from "./cloud-backup";
 import { recognizeSubscriptions, recognizeSubscriptionsStream, testAIRecognitionConnection } from "./ai-recognition";
 import { listAIModels } from "./ai-models";
-import { builtInIconIndexStatus, checkBuiltInIconIndexProvider, refreshBuiltInIconIndexProvider } from "./media-icon-index";
+import {
+  builtInIconIndexStatus,
+  checkBuiltInIconIndexProvider,
+  refreshBuiltInIconIndexProvider,
+} from "./media-icon-index";
+import { consumeBuiltInIconIndexRefreshQueue } from "./media-icon-index-refresh-queue";
 import { mediaCandidates } from "./search";
-import { notificationHistory, notificationRun, notificationTest, runScheduledNotifications } from "./notifications";
+import { notificationHistory, notificationOverview, notificationRun, notificationTest, runScheduledNotifications } from "./notifications";
 import { renewAutoSubscriptionsForAllUsers } from "./subscription-renewal";
 import {
   createPublicStatusPage,
@@ -82,8 +100,8 @@ import {
   readTelegramBotCommands,
   telegramWebhook,
 } from "./telegram-bot";
-import { systemRestart, systemUpdate, systemVersion } from "./system";
-import { errorResponse, methodNotAllowed, requestLocale, successJson, toResponse, type AppLocale } from "./http";
+import { systemRestart, systemUpdate, systemUpdateStatus, systemVersion } from "./system";
+import { errorResponse, methodNotAllowed, requestLocale, requireSameOriginUnsafe, successJson, toResponse, type AppLocale } from "./http";
 import { serverText } from "./server-i18n";
 import type { Env } from "./types";
 import { registerCarpoolRoutes } from "./custom/carpool/routes";
@@ -101,6 +119,11 @@ type AppRouter = Hono<AppBindings>;
 type RouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 type RouteHandler = (context: AppContext) => Response | Promise<Response>;
 
+export interface RuntimeRouteManifestEntry {
+  path: string;
+  methods: RouteMethod[];
+}
+
 /**
  * Cloudflare Worker 入口。
  *
@@ -112,6 +135,10 @@ const app = newAppRouter();
 app.use("*", async (context, next) => {
   // locale 必须在全局 middleware 设置，404/405/onError 这类未进入业务 handler 的响应也依赖它。
   context.set("locale", requestLocale(context.req.raw));
+  // CSRF 的同源检查只约束浏览器产品 API；Public API、Telegram、ICS 和 Cron 都有自己的 bearer/secret 边界。
+  if (context.req.path.startsWith("/api/app/")) {
+    requireSameOriginUnsafe(context.req.raw, context.get("locale"));
+  }
   await next();
 });
 
@@ -177,7 +204,14 @@ defineRoute(adminRoutes, "/users/:id", {
   DELETE: (context) => adminDeleteUser(context.req.raw, context.env, routeParam(context, "id")),
 });
 defineRoute(adminRoutes, "/system/update", { POST: (context) => systemUpdate(context.req.raw, context.env) });
+defineRoute(adminRoutes, "/system/update/status", { GET: (context) => systemUpdateStatus(context.req.raw, context.env) });
 defineRoute(adminRoutes, "/system/restart", { POST: (context) => systemRestart(context.req.raw, context.env) });
+// 访问安全是站点级管理员策略；这里必须和用户 settings 路由分开，避免 secret 进入账号草稿/导出链路。
+defineRoute(adminRoutes, "/auth-security", {
+  GET: (context) => readAuthSecurity(context.req.raw, context.env),
+  PUT: (context) => updateAuthSecurity(context.req.raw, context.env),
+});
+defineRoute(adminRoutes, "/auth-security/turnstile/test", { POST: (context) => testAuthSecurityTurnstile(context.req.raw, context.env) });
 defineRoute(adminRoutes, "/media/icon-index", { GET: (context) => builtInIconIndexStatus(context.req.raw, context.env) });
 defineRoute(adminRoutes, "/media/icon-index/providers/:provider/check", {
   POST: (context) => checkBuiltInIconIndexProvider(context.req.raw, context.env, routeParam(context, "provider")),
@@ -204,6 +238,13 @@ defineRoute(app, "/api/app/custom-config", {
   PUT: (context) => updateCustomConfig(context.req.raw, context.env),
 });
 
+defineRoute(app, "/api/app/exchange-rate-snapshots", {
+  GET: (context) => readExchangeRateSnapshots(context.req.raw, context.env),
+});
+defineRoute(app, "/api/app/exchange-rate-snapshots/:month", {
+  PUT: (context) => putExchangeRateSnapshot(context.req.raw, context.env, routeParam(context, "month")),
+});
+
 const apiTokenRoutes = newAppRouter();
 defineRoute(apiTokenRoutes, "/", {
   GET: (context) => listApiTokens(context.req.raw, context.env),
@@ -225,10 +266,20 @@ defineRoute(subscriptionRoutes, "/", {
   GET: (context) => readSubscriptions(context.req.raw, context.env),
   POST: (context) => createSubscription(context.req.raw, context.env),
 });
+// 集合静态路由先于 /:id 注册，避免 Hono 把 index/analytics/calendar-feeds/facets/export 当作订阅 ID。
+defineRoute(subscriptionRoutes, "/index", { GET: (context) => readSubscriptionIndex(context.req.raw, context.env) });
+defineRoute(subscriptionRoutes, "/analytics", { GET: (context) => readSubscriptionAnalytics(context.req.raw, context.env) });
+defineRoute(subscriptionRoutes, "/calendar", { GET: (context) => readSubscriptionCalendar(context.req.raw, context.env) });
+defineRoute(subscriptionRoutes, "/calendar-feeds", { GET: (context) => listSubscriptionCalendarFeeds(context.req.raw, context.env) });
+defineRoute(subscriptionRoutes, "/facets", { GET: (context) => readSubscriptionFacets(context.req.raw, context.env) });
+defineRoute(subscriptionRoutes, "/export", { GET: (context) => readSubscriptionExport(context.req.raw, context.env) });
 defineRoute(subscriptionRoutes, "/:id/calendar-feed", {
   GET: (context) => readSubscriptionCalendarFeed(context.req.raw, context.env, routeParam(context, "id")),
   POST: (context) => createSubscriptionCalendarFeed(context.req.raw, context.env, routeParam(context, "id")),
   DELETE: (context) => deleteSubscriptionCalendarFeed(context.req.raw, context.env, routeParam(context, "id")),
+});
+defineRoute(subscriptionRoutes, "/:id/calendar-feed/rotate", {
+  POST: (context) => rotateSubscriptionCalendarFeed(context.req.raw, context.env, routeParam(context, "id")),
 });
 defineRoute(subscriptionRoutes, "/:id/calendar.ics", {
   GET: (context) => downloadSubscriptionCalendarIcs(context.req.raw, context.env, routeParam(context, "id")),
@@ -237,6 +288,7 @@ defineRoute(subscriptionRoutes, "/:id/renew", {
   POST: (context) => renewSubscription(context.req.raw, context.env, routeParam(context, "id")),
 });
 defineRoute(subscriptionRoutes, "/:id", {
+  GET: (context) => readSubscriptionDetail(context.req.raw, context.env, routeParam(context, "id")),
   PATCH: (context) => updateSubscription(context.req.raw, context.env, routeParam(context, "id")),
   DELETE: (context) => deleteSubscription(context.req.raw, context.env, routeParam(context, "id")),
 });
@@ -282,7 +334,9 @@ defineRoute(app, "/api/app/calendar-feed", {
   POST: (context) => createCalendarFeed(context.req.raw, context.env),
   DELETE: (context) => deleteCalendarFeed(context.req.raw, context.env),
 });
-
+defineRoute(app, "/api/app/calendar-feed/rotate", {
+  POST: (context) => rotateCalendarFeed(context.req.raw, context.env),
+});
 defineRoute(app, "/api/app/public-status-page", {
   GET: (context) => readPublicStatusPage(context.req.raw, context.env),
   POST: (context) => createPublicStatusPage(context.req.raw, context.env),
@@ -291,6 +345,7 @@ defineRoute(app, "/api/app/public-status-page", {
 });
 
 defineRoute(app, "/api/app/notifications/history", { GET: (context) => notificationHistory(context.req.raw, context.env) });
+defineRoute(app, "/api/app/notifications/overview", { GET: (context) => notificationOverview(context.req.raw, context.env) });
 defineRoute(app, "/api/app/notifications/test", { POST: (context) => notificationTest(context.req.raw, context.env) });
 defineRoute(app, "/api/app/notifications/run", { POST: (context) => notificationRun(context.req.raw, context.env) });
 defineRoute(app, "/api/app/media/candidates", { POST: (context) => mediaCandidates(context.req.raw, context.env) });
@@ -323,7 +378,7 @@ function routeParam(context: AppContext, name: string): string {
 }
 
 /**
- * defineRoute 保留旧 routeMethods 的同路径 405 语义；Hono 负责匹配，业务 handler 仍只拿原始 Request/Env。
+ * defineRoute 集中维护同路径 405 语义；Hono 负责匹配，业务 handler 仍只拿原始 Request/Env。
  */
 function defineRoute(router: AppRouter, path: string, handlers: Partial<Record<RouteMethod, RouteHandler>>): void {
   if (handlers.GET) router.get(path, handlers.GET);
@@ -332,6 +387,34 @@ function defineRoute(router: AppRouter, path: string, handlers: Partial<Record<R
   if (handlers.PATCH) router.patch(path, handlers.PATCH);
   if (handlers.DELETE) router.delete(path, handlers.DELETE);
   router.all(path, (context) => methodNotAllowed(context.get("locale") ?? requestLocale(context.req.raw)));
+}
+
+/** 从 Hono 已注册 routes 导出产品契约；ALL fallback、scheduled 和 queue 不属于 HTTP route manifest。 */
+export function workerProductRouteManifest(): RuntimeRouteManifestEntry[] {
+  const methodsByPath = new Map<string, Set<RouteMethod>>();
+  for (const route of app.routes) {
+    const method = route.method.toUpperCase();
+    if (!isRouteMethod(method)) continue;
+    const path = normalizeRuntimeRoutePath(route.path);
+    // 二次开发路由（/api/custom/*）不进产品路由对等清单：该清单用于 Worker 与 Go 两套产品运行时对账，
+    // 自定义功能只存在于 Worker 侧，收进来会被 check:route-parity 判成「Go 端缺失」。
+    if (path.startsWith("/api/custom/")) continue;
+    const methods = methodsByPath.get(path) ?? new Set<RouteMethod>();
+    methods.add(method);
+    methodsByPath.set(path, methods);
+  }
+  return [...methodsByPath.entries()]
+    .map(([path, methods]) => ({ path, methods: [...methods].sort() }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function isRouteMethod(method: string): method is RouteMethod {
+  return method === "GET" || method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
+}
+
+function normalizeRuntimeRoutePath(path: string): string {
+  const normalized = `/${path.trim().replace(/^\/+|\/+$/g, "")}`.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
+  return normalized === "/" ? normalized : normalized.replace(/\/$/, "");
 }
 
 async function runScheduledTasks(env: Env): Promise<void> {
@@ -377,6 +460,23 @@ function health(): Response {
   return successJson(healthPayloadSchema.parse({ time: new Date().toISOString() }));
 }
 
+function maintenanceResponse(): Response {
+  return Response.json(
+    { error: { code: "MAINTENANCE_MODE", message: "Renewlet is temporarily unavailable during a database upgrade." } },
+    {
+      status: 503,
+      headers: {
+        "cache-control": "no-store",
+        "retry-after": "900",
+      },
+    },
+  );
+}
+
+function maintenanceModeEnabled(env: Env): boolean {
+  return env.RENEWLET_MAINTENANCE_MODE === "true";
+}
+
 async function ready(env: Env): Promise<Response> {
   // ready 只验证 D1 binding 可用；R2/第三方 provider 不应拖慢平台健康检查。
   await env.DB.prepare("SELECT 1").first();
@@ -385,12 +485,26 @@ async function ready(env: Env): Promise<Response> {
 
 const worker: ExportedHandler<Env> = {
   fetch(request, env, context) {
+    // 维护响应必须在 Hono、认证和 D1 之前短路；Static Assets 未命中 run_worker_first，仍可继续托管 SPA。
+    if (maintenanceModeEnabled(env)) return maintenanceResponse();
     // 保留原始 ExecutionContext 传给 Hono；后续 middleware/handler 需要平台 waitUntil 时只能从这里继承。
     return app.fetch(request, env, context);
   },
 
   async scheduled(_controller, env) {
+    // 排他迁移期间不再启动后台写入，部署编排器会等待旧 invocation 的 15 分钟平台上限后才写 D1。
+    if (maintenanceModeEnabled(env)) return;
     await runScheduledTasks(env);
+  },
+
+  async queue(batch, env) {
+    if (maintenanceModeEnabled(env)) {
+      // consumer 解绑存在传播竞态；已送达 maintenance version 的 batch 延迟重试，不能确认或进入 DLQ。
+      batch.retryAll({ delaySeconds: 900 });
+      return;
+    }
+    // Queue consumer 只处理后台图标索引切换；HTTP refresh 已在 D1 job 中暴露 queued/running/failed 状态。
+    await consumeBuiltInIconIndexRefreshQueue(batch, env);
   },
 };
 

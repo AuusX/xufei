@@ -1,8 +1,7 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { THEME_MODE_OVERRIDE_STORAGE_KEY } from "@/lib/theme-provider";
-import { AppearanceSync } from "./appearance-sync";
+import PrivateAppearanceSync from "./private-appearance-sync";
 
 const mocks = vi.hoisted(() => ({
   settings: {
@@ -10,19 +9,12 @@ const mocks = vi.hoisted(() => ({
     themeVariant: "emerald",
     themeCustomColor: { h: 160, s: 84, l: 39 },
   },
-  sessionData: { session: { id: "session-1" } },
   setTheme: vi.fn(),
   applyThemeVariant: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-settings", () => ({
   useSettings: () => ({ data: mocks.settings }),
-}));
-
-vi.mock("@/lib/auth-client", () => ({
-  authClient: {
-    useSession: () => ({ data: mocks.sessionData }),
-  },
 }));
 
 vi.mock("@/lib/theme-provider", async (importOriginal) => {
@@ -38,21 +30,10 @@ vi.mock("@/lib/theme-variant", () => ({
 }));
 
 function renderAppearanceSync() {
-  const client = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  });
-
-  render(
-    <QueryClientProvider client={client}>
-      <AppearanceSync />
-    </QueryClientProvider>,
-  );
+  render(<PrivateAppearanceSync />);
 }
 
-describe("AppearanceSync theme mode precedence", () => {
+describe("PrivateAppearanceSync theme mode precedence", () => {
   beforeEach(() => {
     mocks.setTheme.mockReset();
     mocks.applyThemeVariant.mockReset();

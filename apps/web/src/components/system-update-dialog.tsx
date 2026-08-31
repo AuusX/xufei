@@ -3,17 +3,18 @@ import { useCallback, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RawErrorResponseDialog } from "@/components/raw-error-response-dialog";
-import { useSystemRestart, useSystemUpdate, useSystemVersion } from "@/hooks/use-system-version";
+import { useSystemRestart, useSystemUpdate, useSystemUpdateStatus, useSystemVersion } from "@/hooks/use-system-version";
 import { useI18n } from "@/i18n/I18nProvider";
 import { ApiError } from "@/lib/api-client";
 import { clientBuildVersion } from "@/lib/client-build-info";
-import { createRawErrorResponseDetails, type RawErrorResponseDetails } from "@/lib/raw-error-response";
+import { createRawErrorResponseDetails, createRawErrorResponseDetailsFromText, type RawErrorResponseDetails } from "@/lib/raw-error-response";
 import { cn } from "@/lib/utils";
 import type { SystemDeployment, SystemVersionResponse } from "@/lib/api/schemas/app";
 import type { MessageKey } from "@/i18n/messages";
 
 interface SystemUpdateDialogProps {
   badgeClassName?: string | undefined;
+  canManageUpdates: boolean;
   contentAlign?: "center" | "end" | "start";
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -48,6 +49,7 @@ export const systemRestartBrowser = {
  */
 export function SystemUpdateDialog({
   badgeClassName,
+  canManageUpdates,
   contentAlign = "end",
   open,
   onOpenChange,
@@ -58,20 +60,45 @@ export function SystemUpdateDialog({
   const updateMutation = useSystemUpdate();
   const restartMutation = useSystemRestart();
   const version = versionQuery.data;
+  const statusQuery = useSystemUpdateStatus(
+    open && canManageUpdates && version?.deployment === "docker",
+    updateMutation.isPending,
+  );
+  // 服务端 operation 是业务状态唯一事实源；mutation.data 只桥接 POST 到首次 status 响应之间的瞬时空档，
+  // 本地 state 仅承载 POST 失败详情、用户主动打开的详情弹层与倒计时。
+  const operation = statusQuery.data?.operation ?? updateMutation.data?.operation ?? null;
   const [updateError, setUpdateError] = useState("");
-  const [errorDetails, setErrorDetails] = useState<RawErrorResponseDetails | null>(null);
+  const [requestErrorDetails, setRequestErrorDetails] = useState<RawErrorResponseDetails | null>(null);
   const [errorDetailsOpen, setErrorDetailsOpen] = useState(false);
   const [restartCountdown, setRestartCountdown] = useState(0);
 
-  const canUpdate = Boolean(version?.hasUpdate && version.updateSupported && !updateMutation.isPending && !updateMutation.isSuccess);
+  const isUpdating = updateMutation.isPending || operation?.status === "running";
   const isRestarting = restartMutation.isPending || restartCountdown > 0;
-  const showCompletedRestart = updateMutation.isSuccess && updateMutation.data?.needsRestart;
+  const showCompletedRestart = operation?.status === "succeeded" && operation.stage === "restart-pending" && operation.needsRestart;
+  const operationError = operation?.status === "failed" ? operation.error : null;
+  const operationRawResponseText = operationError?.details?.rawResponseText?.trim();
+  const operationErrorDetails = operationError && operationRawResponseText
+    ? createRawErrorResponseDetailsFromText({
+        code: operationError.code,
+        message: operationError.message,
+        responseText: operationRawResponseText,
+      })
+    : null;
+  const canRetryOperation = Boolean(operationError && operationError.code !== "SYSTEM_UPDATE_NO_UPDATE");
+  const canUpdate = Boolean(version?.updateSupported && (version.hasUpdate || canRetryOperation) && !isUpdating && !showCompletedRestart);
+  // 重试 POST 失败时 status cache 可能仍是旧 operation；消息和详情必须按来源成对选择，不能拼成一次不存在的失败。
+  const errorsHidden = isUpdating || operation?.status === "succeeded";
+  const visibleRequestError = errorsHidden ? "" : updateError;
+  const visibleOperationError = errorsHidden ? "" : operationError?.message ?? "";
+  const visibleUpdateError = visibleRequestError || visibleOperationError;
+  const selectedErrorDetails = visibleRequestError ? requestErrorDetails : operationErrorDetails;
+  const availableErrorDetails = visibleUpdateError ? selectedErrorDetails : null;
   const commitLink = version ? commitUrl(version.build.commit) : null;
   const isDeployOnlyUpdate = version?.hasUpdate && version.updateMode === "cloudflare-deploy";
 
   const resetUpdateState = useCallback(() => {
     setUpdateError("");
-    setErrorDetails(null);
+    setRequestErrorDetails(null);
     setErrorDetailsOpen(false);
     setRestartCountdown(0);
     updateMutation.reset();
@@ -84,6 +111,7 @@ export function SystemUpdateDialog({
       return;
     }
     if (!showCompletedRestart && !isRestarting) {
+      // 关闭只清本次请求和弹层状态，不删除 status query；重新打开仍应以内联方式恢复服务端任务终态。
       resetUpdateState();
     }
     onOpenChange(false);
@@ -97,12 +125,12 @@ export function SystemUpdateDialog({
   const handleUpdate = useCallback(async () => {
     if (!canUpdate) return;
     setUpdateError("");
+    setRequestErrorDetails(null);
+    setErrorDetailsOpen(false);
     try {
       await updateMutation.mutateAsync();
     } catch (error) {
-      const details = createRawErrorResponseDetails(error);
-      setErrorDetails(details);
-      setErrorDetailsOpen(true);
+      setRequestErrorDetails(rawSystemUpdateRequestDetails(error));
       setUpdateError(error instanceof ApiError ? error.message : t("system.updateFailedDescription"));
     }
   }, [canUpdate, t, updateMutation]);
@@ -170,7 +198,7 @@ export function SystemUpdateDialog({
             type="button"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
             onClick={handleRefresh}
-            disabled={versionQuery.isFetching || updateMutation.isPending || isRestarting}
+            disabled={versionQuery.isFetching || isUpdating || isRestarting}
             aria-label={t("system.recheck")}
             title={t("system.recheck")}
           >
@@ -194,12 +222,17 @@ export function SystemUpdateDialog({
                 checkSucceeded={version.checkSucceeded}
               />
 
-              {updateError ? (
+              {visibleUpdateError ? (
                 <div className="space-y-3">
-                  <StatePanel icon={<X className="h-4 w-4" />} tone="danger" title={t("system.updateFailedTitle")} description={updateError} />
-                  <Button className="w-full" variant="destructive" onClick={handleUpdate} disabled={updateMutation.isPending}>
+                  <StatePanel icon={<X className="h-4 w-4" />} tone="danger" title={t("system.updateFailedTitle")} description={visibleUpdateError} />
+                  <Button className="w-full" variant="destructive" onClick={handleUpdate} disabled={!canUpdate}>
                     {t("system.retry")}
                   </Button>
+                  {availableErrorDetails ? (
+                    <Button className="w-full" variant="outline" onClick={() => setErrorDetailsOpen(true)}>
+                      {t("rawErrorResponse.open")}
+                    </Button>
+                  ) : null}
                 </div>
               ) : showCompletedRestart ? (
                 <div className="space-y-3">
@@ -221,12 +254,12 @@ export function SystemUpdateDialog({
                   <StatePanel icon={<AlertCircle className="h-4 w-4" />} tone="warning" title={t("system.checkDeferredTitle")} description={version.warning ?? t("system.checkDeferredDescription")} />
                   {version.deployment === "cloudflare" ? <SystemLinks version={version} commitLink={commitLink} /> : null}
                 </div>
-              ) : version.hasUpdate && version.updateSupported ? (
+              ) : (version.hasUpdate || isUpdating) && version.updateSupported ? (
                 <div className="space-y-3">
                   <StatePanel icon={<Download className="h-4 w-4" />} tone="warning" title={t("system.updateAvailableTitle")} description={t("system.updateAvailableDescription", { version: version.latestVersion })} />
                   <Button className="w-full" onClick={handleUpdate} disabled={!canUpdate}>
-                    {updateMutation.isPending ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    {updateMutation.isPending ? t("system.updating") : t("system.updateNow")}
+                    {isUpdating ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {isUpdating ? t("system.updating") : t("system.updateNow")}
                   </Button>
                   {version.releaseInfo?.htmlUrl ? <ReleaseLink href={version.releaseInfo.htmlUrl} label={t("system.viewChangelog")} /> : null}
                 </div>
@@ -237,7 +270,7 @@ export function SystemUpdateDialog({
                 </div>
               ) : version.deployment === "cloudflare" ? (
                 <div className="space-y-3">
-                  <StatePanel icon={<Check className="h-4 w-4" />} tone="success" title={t("system.noUpdateTitle")} description={t("system.noUpdateDescription")} />
+                  <StatePanel icon={<Check className="h-4 w-4" />} tone="success" title={t("system.noUpdateTitle")} />
                   <SystemLinks version={version} commitLink={commitLink} />
                 </div>
               ) : !version.updateSupported ? (
@@ -252,7 +285,7 @@ export function SystemUpdateDialog({
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <StatePanel icon={<Check className="h-4 w-4" />} tone="success" title={t("system.noUpdateTitle")} description={t("system.noUpdateDescription")} />
+                  <StatePanel icon={<Check className="h-4 w-4" />} tone="success" title={t("system.noUpdateTitle")} />
                   <SystemLinks version={version} commitLink={commitLink} />
                 </div>
               )}
@@ -268,13 +301,32 @@ export function SystemUpdateDialog({
         </div>
         <RawErrorResponseDialog
           open={errorDetailsOpen}
-          details={errorDetails}
+          details={availableErrorDetails}
           onOpenChange={setErrorDetailsOpen}
           testId="system-raw-error-response-dialog"
         />
       </PopoverContent>
     </Popover>
   );
+}
+
+function rawSystemUpdateRequestDetails(error: unknown): RawErrorResponseDetails | null {
+  // 没有上游正文的普通业务错误只保留内联文案；只有真实上游正文或浏览器网络/超时信息才提供详情入口。
+  if (!(error instanceof ApiError)) return null;
+  const apiDetails = error.details;
+  const upstreamText = apiDetails && typeof apiDetails === "object" && !Array.isArray(apiDetails)
+    ? (apiDetails as Record<string, unknown>)["rawResponseText"]
+    : null;
+  if (typeof upstreamText === "string" && upstreamText.trim()) {
+    return createRawErrorResponseDetails(error);
+  }
+  if (error.code === "network" || error.code === "timeout") {
+    const responseText = error.rawResponseText.trim() || error.message.trim();
+    return responseText
+      ? createRawErrorResponseDetailsFromText({ code: error.code, message: error.message, responseText })
+      : null;
+  }
+  return null;
 }
 
 export function SystemVersionBadge({ className }: { className?: string | undefined } = {}) {
@@ -372,7 +424,7 @@ function commitUrl(commit: string): string | null {
   return `${GITHUB_COMMIT_URL_PREFIX}${trimmed}`;
 }
 
-function StatePanel({ icon, tone, title, description }: { icon: ReactNode; tone: "danger" | "info" | "neutral" | "success" | "warning"; title: string; description: string }) {
+function StatePanel({ icon, tone, title, description }: { icon: ReactNode; tone: "danger" | "info" | "neutral" | "success" | "warning"; title: string; description?: string }) {
   const toneClassName = {
     danger: "border-destructive/30 bg-destructive/10 text-destructive",
     info: "border-sky-300/40 bg-sky-500/10 text-sky-700 dark:text-sky-300",
@@ -387,7 +439,7 @@ function StatePanel({ icon, tone, title, description }: { icon: ReactNode; tone:
       <div className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-background/60">{icon}</div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-semibold">{title}</div>
-        <div className="mt-0.5 text-xs opacity-90">{description}</div>
+        {description ? <div className="mt-0.5 text-xs opacity-90">{description}</div> : null}
       </div>
     </div>
   );

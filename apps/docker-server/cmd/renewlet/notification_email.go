@@ -8,7 +8,6 @@ package main
 // 注意： NotifyMultipleAddresses 只影响收件人截断，不应改变配置校验；否则会让测试发送和定时发送表现不一致。
 import (
 	"errors"
-	"fmt"
 	"net/mail"
 	"os"
 	"strconv"
@@ -18,9 +17,8 @@ import (
 )
 
 // sendEmail 发送 SMTP 邮件通知。
-func sendEmail(settings appSettings, message notificationMessage) error {
-	locale := normalizeAppLocale(settings.Locale)
-	config, err := smtpConfigFromSettings(settings)
+func sendEmail(settings appSettings, message notificationMessage, locale appLocale) error {
+	config, err := smtpConfigFromSettings(settings, locale)
 	if err != nil {
 		return err
 	}
@@ -62,7 +60,7 @@ func sendEmail(settings appSettings, message notificationMessage) error {
 	if authMethod := strings.TrimSpace(os.Getenv("SMTP_AUTH_METHOD")); authMethod != "" && !hasSettingsSmtpConfig(settings) {
 		client.AuthMethod = authMethod
 	}
-	htmlBody, err := buildEmailHTMLMessage(settings, message)
+	htmlBody, err := buildEmailHTMLMessage(settings, message, locale)
 	if err != nil {
 		return err
 	}
@@ -90,8 +88,7 @@ type smtpConfig struct {
 	ReplyTo  string
 }
 
-func smtpConfigFromSettings(settings appSettings) (smtpConfig, error) {
-	locale := normalizeAppLocale(settings.Locale)
+func smtpConfigFromSettings(settings appSettings, locale appLocale) (smtpConfig, error) {
 	if hasSettingsSmtpConfig(settings) {
 		return buildSMTPConfigForLocale(
 			strings.TrimSpace(settings.SMTPHost),
@@ -128,10 +125,6 @@ func hasSettingsSmtpConfig(settings appSettings) bool {
 		strings.TrimSpace(settings.SMTPReplyTo) != ""
 }
 
-func buildSMTPConfig(host, portRaw string, secure bool, username, password, from, replyTo string) (smtpConfig, error) {
-	return buildSMTPConfigForLocale(host, portRaw, secure, username, password, from, replyTo, defaultAppLocale)
-}
-
 func buildSMTPConfigForLocale(host, portRaw string, secure bool, username, password, from, replyTo string, locale appLocale) (smtpConfig, error) {
 	if host == "" || portRaw == "" || from == "" {
 		return smtpConfig{}, errors.New(serverText(locale, "smtp.incomplete"))
@@ -160,14 +153,6 @@ func buildTextMessage(message notificationMessage) string {
 
 func buildEmailTextBody(message notificationMessage) string {
 	return message.Content + "\n\n" + message.Timestamp
-}
-
-func requireNonEmpty(label string, value string) (string, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", fmt.Errorf("%s cannot be empty", label)
-	}
-	return trimmed, nil
 }
 
 func localizedFieldLabel(locale appLocale, key string) string {

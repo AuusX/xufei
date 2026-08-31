@@ -12,7 +12,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -202,6 +201,8 @@ func enableTOTP(app core.App, user *core.Record, setupID string, code string) (m
 			Session:       session.Session,
 			User:          session.User,
 			RecoveryCodes: recoveryCodes,
+			token:         session.token,
+			csrfToken:     session.csrfToken,
 		}
 		return nil
 	})
@@ -211,7 +212,7 @@ func enableTOTP(app core.App, user *core.Record, setupID string, code string) (m
 	return response, nil
 }
 
-func verifyLoginMFA(app core.App, httpRequest *http.Request, request mfaVerifyRequest) (sessionResponse, error) {
+func verifyLoginMFA(app core.App, request mfaVerifyRequest) (sessionResponse, error) {
 	ticket, err := mfaTicketByToken(app, request.TicketID)
 	if err != nil {
 		return sessionResponse{}, err
@@ -362,7 +363,7 @@ func replaceRecoveryCodes(app core.App, userID string) ([]string, error) {
 func regenerateRecoveryCodesForCurrentUser(app core.App, userID string) (mfaRecoveryCodesResponse, error) {
 	var response mfaRecoveryCodesResponse
 	err := app.RunInTransaction(func(txApp core.App) error {
-		// 恢复码明文只在本次响应出现；续签 session 让旧 bearer 与旧恢复码在同一状态切换中失效。
+		// 恢复码明文只在本次响应出现；续签 cookie session 让旧 session 与旧恢复码在同一状态切换中失效。
 		recoveryCodes, err := replaceRecoveryCodes(txApp, userID)
 		if err != nil {
 			return err
@@ -376,6 +377,8 @@ func regenerateRecoveryCodesForCurrentUser(app core.App, userID string) (mfaReco
 			Session:       session.Session,
 			User:          session.User,
 			RecoveryCodes: recoveryCodes,
+			token:         session.token,
+			csrfToken:     session.csrfToken,
 		}
 		return nil
 	})

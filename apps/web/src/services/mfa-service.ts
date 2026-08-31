@@ -20,8 +20,8 @@ function writeRenewedSession(data: SessionResponse) {
 
 /** 身份验证器只覆盖 TOTP/恢复码；通行密钥走独立 Passkey service，避免二者在前端边界混用。 */
 export const mfaService = {
-  async status(): Promise<MfaStatusResponse> {
-    return await apiFetch("/api/app/auth/mfa/status", mfaStatusResponseSchema);
+  async status(signal?: AbortSignal): Promise<MfaStatusResponse> {
+    return await apiFetch("/api/app/auth/mfa/status", mfaStatusResponseSchema, signal ? { signal } : undefined);
   },
 
   async startTotpSetup(): Promise<MfaTotpSetupResponse> {
@@ -37,7 +37,7 @@ export const mfaService = {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    // 后端会在账号安全状态切换后废弃旧 bearer；必须先写入续签 session，再让设置页刷新状态查询。
+    // 后端会在账号安全状态切换后废弃旧 cookie session；必须先写入续签后的非密 session 视图，再让设置页刷新状态查询。
     writeRenewedSession(data);
     return data.recoveryCodes;
   },

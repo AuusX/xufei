@@ -82,7 +82,7 @@ type aiRecognizeResponse struct {
 
 type aiRecognizedSubscriptionDraft struct {
 	Name                         string                `json:"name"`
-	Price                        *float64              `json:"price"`
+	Price                        *string               `json:"price"`
 	Currency                     *string               `json:"currency"`
 	BillingCycle                 *string               `json:"billingCycle"`
 	CustomDays                   *int                  `json:"customDays"`
@@ -112,8 +112,18 @@ type aiSuggestedTextField struct {
 	Source string `json:"source"`
 }
 
+type aiRecognitionPublicSettings struct {
+	ProviderType           string             `json:"providerType"`
+	TransportProtocol      string             `json:"transportProtocol"`
+	Model                  string             `json:"model"`
+	ModelInputMode         string             `json:"modelInputMode"`
+	BaseURL                string             `json:"baseUrl"`
+	DefaultThinkingControl *aiThinkingControl `json:"defaultThinkingControl"`
+}
+
 type aiRecognitionTestRequest struct {
-	Settings aiRecognitionSettings `json:"settings"`
+	Settings aiRecognitionPublicSettings `json:"settings"`
+	APIKey   settingsSecretMutation      `json:"apiKey"`
 }
 
 func (r *aiRecognitionTestRequest) Validate(locale appLocale) error {
@@ -121,7 +131,6 @@ func (r *aiRecognitionTestRequest) Validate(locale appLocale) error {
 	if !isValidAIRecognitionProviderType(r.Settings.ProviderType) {
 		return errors.New(serverText(locale, "common.invalidRequestParameters"))
 	}
-	r.Settings = sanitizeAIRecognitionSettings(r.Settings)
 	if r.Settings.BaseURL != "" && sanitizeAIRecognitionBaseURL(r.Settings.BaseURL) == "" {
 		return errors.New(serverText(locale, "common.invalidRequestParameters"))
 	}
@@ -130,7 +139,7 @@ func (r *aiRecognitionTestRequest) Validate(locale appLocale) error {
 			return err
 		}
 	}
-	return nil
+	return r.APIKey.Validate(locale)
 }
 
 type aiRecognitionTestResponse struct {
@@ -168,7 +177,7 @@ func prepareAIRecognitionRunContext(app core.App, e *core.RequestEvent) (aiRecog
 	if err := demoModePolicy.RejectExternalSideEffect(e); err != nil {
 		return aiRecognitionRunContext{}, err
 	}
-	settings, err := currentUserSettings(app, e.Auth, nil)
+	settings, err := currentUserSettings(app, e.Auth)
 	if err != nil {
 		return aiRecognitionRunContext{}, e.BadRequestError(validationErrorMessage(locale, "notification.settingsInvalid", err), err)
 	}
@@ -252,7 +261,26 @@ func handleAIRecognitionTestConnection(app core.App, e *core.RequestEvent) error
 	if err != nil {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
-	settings := sanitizeAIRecognitionSettings(body.Settings)
+	if err := body.Validate(locale); err != nil {
+		return e.BadRequestError(validationErrorMessage(locale, "common.invalidPayload", err), err)
+	}
+	current, err := currentUserSettings(app, e.Auth)
+	if err != nil {
+		return e.InternalServerError(serverText(locale, "common.internalError"), err)
+	}
+	apiKey, err := resolveSettingsSecretMutation(body.APIKey, current.AIRecognition.APIKey, locale)
+	if err != nil {
+		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
+	}
+	settings := sanitizeAIRecognitionSettings(aiRecognitionSettings{
+		ProviderType:           body.Settings.ProviderType,
+		TransportProtocol:      body.Settings.TransportProtocol,
+		Model:                  body.Settings.Model,
+		ModelInputMode:         body.Settings.ModelInputMode,
+		BaseURL:                body.Settings.BaseURL,
+		APIKey:                 apiKey,
+		DefaultThinkingControl: body.Settings.DefaultThinkingControl,
+	})
 	if err := validateAIRecognitionSettings(settings, locale); err != nil {
 		return e.BadRequestError(err.Error(), err)
 	}

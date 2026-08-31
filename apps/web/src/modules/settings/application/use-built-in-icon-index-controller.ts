@@ -1,16 +1,16 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useBuiltInIconIndexStatus, useCheckBuiltInIconIndexProvider, useRefreshBuiltInIconIndexProvider } from "@/hooks/use-built-in-icon-index";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "@/components/ui/sonner";
 import { getDisplayErrorMessage } from "@/lib/display-error";
 import { createRawErrorResponseDetails, type RawErrorResponseDetails } from "@/lib/raw-error-response";
-import type { BuiltInIconIndexStatus } from "@/lib/api/schemas/media";
+import type { BuiltInIconIndexStatus, BuiltInIconRefreshJob } from "@/lib/api/schemas/media";
 import { useI18n } from "@/i18n/I18nProvider";
 import { BUILT_IN_ICON_PROVIDERS, type BuiltInIconProvider } from "@renewlet/shared/built-in-icons";
+import { toSettingsReadState, type SettingsReadState } from "./settings-read-state";
 
 export interface SettingsBuiltInIconIndexController {
   canManage: boolean;
-  status: BuiltInIconIndexStatus | undefined;
-  isLoading: boolean;
+  status: SettingsReadState<BuiltInIconIndexStatus>;
   checkingProviders: BuiltInIconProvider[];
   refreshingProvider: BuiltInIconProvider | null;
   errorDetails: RawErrorResponseDetails | null;
@@ -24,7 +24,6 @@ export interface SettingsBuiltInIconIndexController {
 // 内置图标索引是管理员级全局状态，不能和 settings 表单草稿混在一起，否则会制造未保存提示和普通用户可见状态。
 export function useSettingsBuiltInIconIndexController(canManage: boolean): SettingsBuiltInIconIndexController {
   const { t } = useI18n();
-  const { toast } = useToast();
   const status = useBuiltInIconIndexStatus(canManage);
   const checkProvider = useCheckBuiltInIconIndexProvider();
   const refreshProvider = useRefreshBuiltInIconIndexProvider();
@@ -33,7 +32,32 @@ export function useSettingsBuiltInIconIndexController(canManage: boolean): Setti
   const [errorDetails, setErrorDetails] = useState<RawErrorResponseDetails | null>(null);
   const [errorDetailsOpen, setErrorDetailsOpen] = useState(false);
   const batchCheckInFlightRef = useRef(false);
+  const trackedRefreshJobsRef = useRef(new Map<string, BuiltInIconProvider>());
   const providerStatuses = status.data?.providers;
+
+  useEffect(() => {
+    if (!canManage || !status.data || trackedRefreshJobsRef.current.size === 0) return;
+    for (const providerStatus of status.data.providers) {
+      const job = providerStatus.job;
+      if (!job || isRefreshJobActive(job)) continue;
+      const provider = trackedRefreshJobsRef.current.get(job.id);
+      if (provider !== providerStatus.provider) continue;
+      // 只接管当前标签页主动触发的后台任务；历史终态 job 仍留在弹层详情里，不能打开页面就乱弹 toast。
+      // 先删除再 toast，防止 React StrictMode 或查询缓存重复通知把同一个 job 提示两次。
+      trackedRefreshJobsRef.current.delete(job.id);
+      const source = t(`settings.builtInIconSourceShort.${provider}`);
+      if (job.status === "succeeded") {
+        toast.success(t("settings.builtInIconIndexUpdated", {
+            source,
+            count: providerStatus.iconCount,
+          }));
+      } else if (job.status === "failed") {
+        toast.error(t("settings.builtInIconIndexRefreshFailed"), {
+          description: job.error ?? t("settings.builtInIconIndexRefreshFailedDescription", { source }),
+        });
+      }
+    }
+  }, [canManage, status.data, t]);
 
   const runProviderCheck = useCallback(async (provider: BuiltInIconProvider) => {
     setCheckingProviders((current) => current.includes(provider) ? current : [...current, provider]);
@@ -78,35 +102,36 @@ export function useSettingsBuiltInIconIndexController(canManage: boolean): Setti
     setRefreshingProvider(provider);
     try {
       const response = await refreshProvider.mutateAsync(provider);
-      // 刷新成功只替换对应 provider 的聚合索引，用户已保存的 Logo URL 不会被批量改写。
-      toast({
-        title: t("settings.builtInIconIndexRefreshSuccess"),
-        description: t("settings.builtInIconIndexRefreshSuccessDescription", {
-          source: t(`settings.builtInIconSourceShort.${provider}`),
-          count: response.provider.iconCount,
-        }),
-      });
+      if (response.job.status === "succeeded") {
+        toast.success(t("settings.builtInIconIndexUpdated", {
+            source: t(`settings.builtInIconSourceShort.${provider}`),
+            count: response.provider.iconCount,
+          }));
+      } else if (isRefreshJobActive(response.job)) {
+        // Cloudflare 返回 queued/running 时只说明已入队；真正成功/失败要等轮询看到同一个 job.id 的终态。
+        trackedRefreshJobsRef.current.set(response.job.id, provider);
+        toast.success(t("settings.builtInIconIndexUpdateQueued", {
+            source: t(`settings.builtInIconSourceShort.${provider}`),
+          }));
+      }
     } catch (error) {
       const details = createRawErrorResponseDetails(error);
       setErrorDetails(details);
       setErrorDetailsOpen(true);
       await status.refetch();
-      toast({
-        title: t("settings.builtInIconIndexRefreshFailed"),
+      toast.error(t("settings.builtInIconIndexRefreshFailed"), {
         description: getDisplayErrorMessage(error, t("settings.builtInIconIndexRefreshFailedDescription", {
           source: t(`settings.builtInIconSourceShort.${provider}`),
         })),
-        variant: "destructive",
       });
     } finally {
       setRefreshingProvider((current) => current === provider ? null : current);
     }
-  }, [canManage, refreshProvider, status, t, toast]);
+  }, [canManage, refreshProvider, status, t]);
 
   return {
     canManage,
-    status: status.data,
-    isLoading: status.isLoading,
+    status: toSettingsReadState(status),
     checkingProviders,
     refreshingProvider,
     errorDetails,
@@ -116,4 +141,8 @@ export function useSettingsBuiltInIconIndexController(canManage: boolean): Setti
     checkProvider: handleCheckProvider,
     refreshProvider: handleRefreshProvider,
   };
+}
+
+function isRefreshJobActive(job: BuiltInIconRefreshJob): boolean {
+  return job.status === "queued" || job.status === "running";
 }

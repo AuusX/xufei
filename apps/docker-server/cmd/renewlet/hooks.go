@@ -13,11 +13,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -44,37 +41,16 @@ var (
 	telegramSecretHashRe   = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 )
 
-type customConfigLabels struct {
-	ZhCN string `json:"zh-CN"`
-	EnUS string `json:"en-US"`
-}
-
-type customConfigItem struct {
-	ID      string             `json:"id"`
-	Value   string             `json:"value"`
-	Labels  customConfigLabels `json:"labels"`
-	Color   string             `json:"color,omitempty"`
-	Icon    string             `json:"icon,omitempty"`
-	Enabled *bool              `json:"enabled,omitempty"`
-}
-
-type customConfigPayload struct {
-	Categories     []customConfigItem `json:"categories"`
-	Statuses       []customConfigItem `json:"statuses"`
-	PaymentMethods []customConfigItem `json:"paymentMethods"`
-	Currencies     []customConfigItem `json:"currencies"`
-}
-
 // registerRecordHooks 注册所有 collection 的写入前规范化逻辑。
 // 为什么放在 RecordValidate：同一规则可以覆盖自定义 API、PocketBase SDK 和管理后台写入。
 func registerRecordHooks(app core.App) {
 	app.OnRecordValidate().BindFunc(func(e *core.RecordEvent) error {
-		if err := demoModePolicy.EnforceRecordValidation(app, e.Record); err != nil {
+		if err := demoModePolicy.EnforceRecordValidation(e.App, e.Record); err != nil {
 			return err
 		}
 		switch e.Record.Collection().Name {
 		case "subscriptions":
-			if err := normalizeSubscriptionRecord(e.Record); err != nil {
+			if err := normalizeSubscriptionRecordWithApp(e.App, e.Record); err != nil {
 				return err
 			}
 		case "settings":
@@ -83,6 +59,10 @@ func registerRecordHooks(app core.App) {
 			}
 		case "custom_configs":
 			if err := normalizeCustomConfigRecord(e.Record); err != nil {
+				return err
+			}
+		case "exchange_rate_snapshots":
+			if err := normalizeExchangeRateSnapshotRecord(e.Record); err != nil {
 				return err
 			}
 		case "assets":
@@ -94,7 +74,7 @@ func registerRecordHooks(app core.App) {
 				return err
 			}
 		case "calendar_feeds":
-			if err := normalizeCalendarFeedRecord(app, e.Record); err != nil {
+			if err := normalizeCalendarFeedRecord(e.App, e.Record); err != nil {
 				return err
 			}
 		case "public_status_pages":
@@ -113,6 +93,10 @@ func registerRecordHooks(app core.App) {
 			if err := normalizeCloudBackupTargetRecord(e.Record); err != nil {
 				return err
 			}
+		case authSecurityCollectionName:
+			if err := normalizeAuthSecuritySettingsRecord(e.Record); err != nil {
+				return err
+			}
 		}
 		return e.Next()
 	})
@@ -122,29 +106,54 @@ func registerRecordHooks(app core.App) {
 		}
 		return e.Next()
 	})
-	app.OnRecordAfterCreateSuccess("subscriptions").BindFunc(func(e *core.RecordEvent) error {
-		if err := e.Next(); err != nil {
-			return err
-		}
-		return refreshSubscriptionSchedulerStateAfterWrite(app, e.Record)
+	app.OnRecordCreateExecute("subscriptions").BindFunc(func(e *core.RecordEvent) error {
+		return executeSubscriptionDerivedMutation(e, subscriptionDerivedCreate)
 	})
-	app.OnRecordAfterUpdateSuccess("subscriptions").BindFunc(func(e *core.RecordEvent) error {
-		if err := e.Next(); err != nil {
-			return err
-		}
-		return refreshSubscriptionSchedulerStateAfterWrite(app, e.Record)
+	app.OnRecordUpdateExecute("subscriptions").BindFunc(func(e *core.RecordEvent) error {
+		return executeSubscriptionDerivedMutation(e, subscriptionDerivedUpdate)
 	})
-	app.OnRecordAfterDeleteSuccess("subscriptions").BindFunc(func(e *core.RecordEvent) error {
-		if err := e.Next(); err != nil {
-			return err
-		}
-		return refreshSubscriptionSchedulerStateAfterWrite(app, e.Record)
+	app.OnRecordDeleteExecute("subscriptions").BindFunc(func(e *core.RecordEvent) error {
+		return executeSubscriptionDerivedMutation(e, subscriptionDerivedDelete)
 	})
 }
 
-func refreshSubscriptionSchedulerStateAfterWrite(app core.App, record *core.Record) error {
-	_, err := refreshSubscriptionSchedulerState(app, record.GetString("user"), true)
-	return err
+func executeSubscriptionDerivedMutation(e *core.RecordEvent, kind subscriptionDerivedMutationKind) error {
+	var before *core.Record
+	if kind != subscriptionDerivedCreate {
+		if original := e.Record.Original(); original != nil {
+			before = original.Clone()
+		}
+	}
+	run := func(txApp core.App) error {
+		if kind != subscriptionDerivedCreate && (before == nil || before.Id == "" || subscriptionRecordOwner(before) == "") {
+			// PocketBase 新建后复用同一 Record 时不会刷新 Original；仅该生命周期缺口需要在事实写前从当前事务回读。
+			lastSavedID, ok := e.Record.LastSavedPK().(string)
+			if !ok || lastSavedID == "" {
+				return errors.New("SUBSCRIPTION_DERIVED_IDENTITY_REQUIRED")
+			}
+			persisted, err := txApp.FindRecordById("subscriptions", lastSavedID)
+			if err != nil {
+				return err
+			}
+			before = persisted.Clone()
+		}
+		originalApp := e.App
+		e.App = txApp
+		defer func() { e.App = originalApp }()
+		if err := e.Next(); err != nil {
+			return err
+		}
+		var after *core.Record
+		if kind != subscriptionDerivedDelete {
+			after = e.Record.Clone()
+		}
+		// PocketBase execute hook 位于事实写 SQL 外层；派生 mutation 必须复用同一个 txApp 才能让任一失败回滚整次保存。
+		return applySubscriptionDerivedMutation(txApp, subscriptionDerivedMutation{Before: before, After: after, Kind: kind})
+	}
+	if e.App.IsTransactional() {
+		return run(e.App)
+	}
+	return e.App.RunInTransaction(run)
 }
 
 func normalizeCloudBackupTargetRecord(record *core.Record) error {
@@ -241,6 +250,14 @@ func normalizeCloudBackupTargetRecord(record *core.Record) error {
 // normalizeSubscriptionRecord 校验并规范化订阅记录。
 // 注意： billingCycle/customDays/customCycleUnit 的关系必须与前端 discriminated union 保持一致。
 func normalizeSubscriptionRecord(record *core.Record) error {
+	return normalizeSubscriptionRecordWithSettings(record, defaultAppSettings())
+}
+
+func normalizeSubscriptionRecordWithApp(app core.App, record *core.Record) error {
+	return normalizeSubscriptionRecordWithSettings(record, settingsForSubscriptionMirror(app, record.GetString("user")))
+}
+
+func normalizeSubscriptionRecordWithSettings(record *core.Record, mirrorSettings appSettings) error {
 	name := strings.TrimSpace(record.GetString("name"))
 	if name == "" {
 		return errors.New("SUBSCRIPTION_NAME_REQUIRED")
@@ -256,13 +273,16 @@ func normalizeSubscriptionRecord(record *core.Record) error {
 	}
 	record.Set("currency", currency)
 
-	price := record.GetFloat("price")
-	if price < 0 {
-		return errors.New("SUBSCRIPTION_PRICE_NEGATIVE")
+	rawPrice, ok := record.Get("price").(string)
+	if !ok {
+		return errors.New("SUBSCRIPTION_PRICE_INVALID")
 	}
-	if price > maxSubscriptionPrice {
-		return errors.New("SUBSCRIPTION_PRICE_TOO_HIGH")
+	// 旧 numeric 只允许 migrateMoneyStrings 处理；持久层写入边界必须保持 decimal string 单一事实源。
+	price, err := canonicalMoneyString(rawPrice)
+	if err != nil {
+		return errors.New("SUBSCRIPTION_PRICE_INVALID")
 	}
+	record.Set("price", price)
 
 	billingCycle := record.GetString("billingCycle")
 	customDays := record.GetInt("customDays")
@@ -273,10 +293,7 @@ func normalizeSubscriptionRecord(record *core.Record) error {
 		if customDays <= 0 {
 			return errors.New("CUSTOM_DAYS_REQUIRED")
 		}
-		if customCycleUnit == "" {
-			// 旧 custom 数据没有单位字段；持久层读写边界统一按 day 解释，避免历史自定义天数被误作月/年。
-			record.Set("customCycleUnit", "day")
-		} else if !isValidCustomCycleUnit(customCycleUnit) {
+		if !isValidCustomCycleUnit(customCycleUnit) {
 			return errors.New("CUSTOM_CYCLE_UNIT_INVALID")
 		}
 	} else if customDays < 0 {
@@ -358,6 +375,21 @@ func normalizeSubscriptionRecord(record *core.Record) error {
 		return err
 	}
 	record.Set("costSharing", costSharing)
+	if !costSharingCollectionAnchorsSatisfied(costSharing, startDate) {
+		return errors.New("COST_SHARING_COLLECTION_ANCHOR_REQUIRED")
+	}
+	collectionBilling := costSharingCollectionBillingFromRecord(record)
+	if !costSharingMemberJoinedDatesWithinRange(costSharing, collectionBilling) {
+		return errors.New("COST_SHARING_MEMBER_JOINED_DATE_OUT_OF_RANGE")
+	}
+	if costSharingCollectionOneTimeBuyout(collectionBilling) && costSharingCollectionReminderEnabled(costSharing) {
+		return errors.New("COST_SHARING_COLLECTION_REMINDER_ONE_TIME_BUYOUT_INVALID")
+	}
+	referenceDate := todayDateOnly(time.Now().UTC(), mirrorSettings.Timezone)
+	// costSharing JSON 是公共事实源；镜像字段只同步给 PocketBase 索引候选，不能被 API 当配置返回。
+	collectionReminderEnabled, collectionReminderDate := costSharingCollectionReminderMirror(costSharing, collectionBilling, mirrorSettings, referenceDate)
+	record.Set("costSharingCollectionReminderEnabled", collectionReminderEnabled)
+	record.Set("costSharingNextCollectionReminderDate", collectionReminderDate)
 
 	if record.Get("extra") == nil || strings.TrimSpace(record.GetString("extra")) == "" {
 		// 统一空 JSON 为 `{}`，避免前端 schema 在 null/空字符串之间做额外兼容。
@@ -418,37 +450,6 @@ func normalizeCustomConfigRecord(record *core.Record) error {
 	return nil
 }
 
-// normalizeAssetRecord 校验上传资产记录。
-// 为什么读取 MIME：文件扩展名和 Content-Type 都可伪造，必须按文件头重新判断。
-func normalizeAssetRecord(record *core.Record) error {
-	kind := record.GetString("kind")
-	if kind != "logo" && kind != "icon" {
-		return errors.New("ASSET_KIND_INVALID")
-	}
-	files := record.GetUnsavedFiles("file")
-	if len(files) == 0 {
-		return nil
-	}
-	if len(files) > 1 {
-		return errors.New("ASSET_FILE_TOO_MANY")
-	}
-	file := files[0]
-	if file.Size <= 0 || file.Size > maxImageBytes {
-		return errors.New("ASSET_FILE_SIZE_INVALID")
-	}
-	mimeType, err := detectUploadMimeType(file.Reader)
-	if err != nil {
-		return err
-	}
-	if !isAllowedImageMime(mimeType) {
-		return errors.New("ASSET_FILE_TYPE_INVALID")
-	}
-	record.Set("mimeType", mimeType)
-	record.Set("sizeBytes", file.Size)
-	record.Set("originalName", strings.TrimSpace(file.OriginalName))
-	return nil
-}
-
 // normalizeNotificationJobRecord 校验通知任务记录和 result payload。
 // 注意： notification history 前端直接解析 result union；这里不能允许任意 JSON 混入。
 func normalizeNotificationJobRecord(record *core.Record) error {
@@ -476,7 +477,7 @@ func normalizeNotificationJobRecord(record *core.Record) error {
 		record.Set("result", emptyJSONPayload{})
 	} else {
 		var result notificationJobResult
-		if err := decodeStrictJSONBytesInto(resultData, &result, localeZhCN, false); err != nil {
+		if err := decodeStrictJSONBytesInto(resultData, &result, defaultAppLocale, false); err != nil {
 			return fmt.Errorf("NOTIFICATION_RESULT_INVALID: %w", err)
 		}
 		if result.Source != "cron" {
@@ -681,7 +682,7 @@ func customConfigFromValue(value interface{}) (customConfigPayload, error) {
 	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
 		return config, err
 	}
-	if err := decodeStrictJSONBytesInto(data, &config, localeZhCN, false); err != nil {
+	if err := decodeStrictJSONBytesInto(data, &config, defaultAppLocale, false); err != nil {
 		return config, err
 	}
 	return config, nil
@@ -730,69 +731,4 @@ func normalizeCustomConfigItem(item *customConfigItem) error {
 		return errors.New("CONFIG_ITEM_FIELDS_TOO_LONG")
 	}
 	return nil
-}
-
-// detectUploadMimeType 读取文件头判断真实 MIME。
-// 注意： 调用方传入的是 PocketBase 文件 reader，需要在这里打开并关闭，避免泄漏文件句柄。
-func detectUploadMimeType(reader interface {
-	Open() (io.ReadSeekCloser, error)
-}) (string, error) {
-	f, err := reader.Open()
-	if err != nil {
-		return "", errors.New("ASSET_FILE_READ_FAILED")
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(io.LimitReader(f, maxImageBytes+1))
-	if err != nil {
-		return "", errors.New("ASSET_FILE_READ_FAILED")
-	}
-	if isSVGDocument(data) {
-		return "image/svg+xml", nil
-	}
-	if isICODocument(data) {
-		return "image/x-icon", nil
-	}
-	if len(data) > 512 {
-		data = data[:512]
-	}
-	return http.DetectContentType(data), nil
-}
-
-func isSVGDocument(data []byte) bool {
-	decoder := xml.NewDecoder(bytes.NewReader(bytes.TrimSpace(data)))
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			return false
-		}
-		if start, ok := token.(xml.StartElement); ok {
-			// 只看第一个 XML start element，允许 XML 声明/注释，同时拒绝伪装成 SVG 的其他 XML。
-			return strings.EqualFold(start.Name.Local, "svg") &&
-				(start.Name.Space == "" || start.Name.Space == "http://www.w3.org/2000/svg")
-		}
-	}
-}
-
-func isICODocument(data []byte) bool {
-	if len(data) < 6 {
-		return false
-	}
-	// ICO 头：reserved=0、type=1、imageCount>0；比扩展名可靠，且无需解析完整图片目录。
-	return data[0] == 0x00 &&
-		data[1] == 0x00 &&
-		data[2] == 0x01 &&
-		data[3] == 0x00 &&
-		(data[4] != 0x00 || data[5] != 0x00)
-}
-
-// isAllowedImageMime 限制可上传图片格式。
-func isAllowedImageMime(mimeType string) bool {
-	normalizedMimeType := strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
-	switch normalizedMimeType {
-	case "image/png", "image/jpeg", "image/webp", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon":
-		return true
-	default:
-		return false
-	}
 }

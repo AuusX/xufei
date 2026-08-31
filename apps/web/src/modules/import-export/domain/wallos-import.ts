@@ -1,5 +1,5 @@
 import { importPayloadSchema, renewletExportV1Schema, type ImportPayload, type ImportPreviewItem } from "@renewlet/shared/schemas/import-export";
-import type JSZip from "jszip";
+import { runWorkerJob } from "@/lib/workers/run-worker-job";
 import type { ImportBuildBaseContext } from "./wallos-import-mapping";
 import {
   buildFromRenewletExport,
@@ -14,25 +14,22 @@ import {
 } from "./wallos-import-mapping";
 import {
   IMPORT_MESSAGE_CODES,
+  MAX_IMPORT_FILE_BYTES,
+  MAX_IMPORT_PREVIEW_SUBSCRIPTIONS,
   type ImportAssetRef,
   type ImportLogoAutoMatch,
   type PreparedImport,
 } from "./import-export-model";
 import { assetService } from "@/services/asset-service";
+import type { WallosImportWorkerPayload, WallosImportWorkerResult } from "./wallos-import-worker-contract";
 
 type ImportSubscription = ImportPayload["subscriptions"][number];
 
 export interface ResolvedImportAssets {
   payload: ImportPayload;
   uploadedLogoCount: number;
+  uploadedIconCount: number;
 }
-
-type WorkerResponse =
-  | { id: number; ok: true; prepared: PreparedImport }
-  | { id: number; ok: false; error: string };
-
-const ZIP_CACHE = new WeakMap<File, Promise<JSZip>>();
-let workerRequestId = 0;
 
 /**
  * parseImportFile 将用户选择的 Renewlet/Wallos 文件转换为待预览导入模型。
@@ -47,12 +44,15 @@ export async function parseImportFile(
   file: File,
   context: ImportBuildBaseContext,
   wallosUserId?: string,
+  maxFileBytes = MAX_IMPORT_FILE_BYTES,
+  signal?: AbortSignal,
 ): Promise<PreparedImport> {
+  if (file.size > maxFileBytes) throw new Error(IMPORT_MESSAGE_CODES.fileTooLarge);
   const buffer = await file.arrayBuffer();
+  if (signal?.aborted) throw new DOMException("Import parsing cancelled", "AbortError");
   const bytes = new Uint8Array(buffer);
   if (isZipBytes(bytes) || isSqliteBytes(bytes)) {
-    const prepared = await parseHeavyFileInWorker(buffer, context, wallosUserId);
-    return attachSourceFile(prepared, file);
+    return await parseHeavyFileInWorker(buffer, context, wallosUserId, maxFileBytes, signal);
   }
   return parseJsonText(new TextDecoder().decode(bytes), context);
 }
@@ -67,12 +67,17 @@ export async function parseJsonText(
   context: ImportBuildBaseContext,
   wallosUserId?: string,
 ): Promise<PreparedImport> {
+  if (text.length > MAX_IMPORT_FILE_BYTES || new TextEncoder().encode(text).byteLength > MAX_IMPORT_FILE_BYTES) {
+    throw new Error(IMPORT_MESSAGE_CODES.fileTooLarge);
+  }
   const parsed = JSON.parse(text) as unknown;
   const renewletExport = renewletExportV1Schema.safeParse(parsed);
   if (renewletExport.success) {
+    assertPreviewSubscriptionCount(renewletExport.data.data.subscriptions.length);
     return buildFromRenewletExport(renewletExport.data, context);
   }
   if (isWallosApiPayload(parsed)) {
+    assertPreviewSubscriptionCount(parsed.subscriptions.length);
     const users = wallosUsersFromApiPayload(parsed);
     const selectedUserId = wallosUserId ?? users[0]?.id;
     const rows = selectedUserId
@@ -89,12 +94,20 @@ export async function parseJsonText(
     });
   }
   if (isWallosDisplayRows(parsed)) {
+    assertPreviewSubscriptionCount(parsed.length);
     return buildFromWallosDisplayRows(parsed, context);
   }
   if (isWallosDisplayPayload(parsed)) {
+    assertPreviewSubscriptionCount(parsed.subscriptions.length);
     return buildFromWallosDisplayRows(parsed.subscriptions, context);
   }
   throw new Error(IMPORT_MESSAGE_CODES.unrecognizedFile);
+}
+
+function assertPreviewSubscriptionCount(count: number): void {
+  if (count > MAX_IMPORT_PREVIEW_SUBSCRIPTIONS) {
+    throw new Error(IMPORT_MESSAGE_CODES.fileTooLarge);
+  }
 }
 
 /**
@@ -106,11 +119,11 @@ export function updatePreparedSubscriptionLogo(
   prepared: PreparedImport,
   index: number,
   value: string | null,
-  asset?: Omit<ImportAssetRef, "subscriptionIndex">,
+  asset?: Omit<ImportAssetRef, "target" | "kind">,
 ): PreparedImport {
   if (!prepared.payload.subscriptions[index]) return prepared;
-  const nextAssets = prepared.assets.filter((item) => item.subscriptionIndex !== index);
-  if (asset) nextAssets.push({ ...asset, subscriptionIndex: index });
+  const nextAssets = prepared.assets.filter((item) => item.target.type !== "subscriptionLogo" || item.target.subscriptionIndex !== index);
+  if (asset) nextAssets.push({ ...asset, target: { type: "subscriptionLogo", subscriptionIndex: index }, kind: "logo" });
   const logoOverrides: ReadonlyMap<number, string | null> = new Map<number, string | null>([[index, value]]);
   const nextPrepared = updatePreparedSubscriptionLogos(prepared, logoOverrides);
   return {
@@ -152,23 +165,18 @@ export function updatePreparedSubscriptionLogos(
 }
 
 /**
- * loadImportAssetBlob 从导入文件中延迟读取待上传资产。
- *
- * ZIP 解压结果按 File 弱缓存，避免用户批量导入 Logo 时为每个订阅重复解析同一个备份包。
+ * ZIP/SQLite Worker 已在返回前提取全部被引用资产；主线程只从已转移的 buffer 构造上传 Blob。
  */
 export async function loadImportAssetBlob(asset: ImportAssetRef): Promise<Blob> {
   if (asset.blob) return asset.blob;
-  if (!asset.sourceFile || !asset.zipEntryName) throw new Error("Import asset is not available.");
-  const zip = await getZip(asset.sourceFile);
-  const entry = zip.file(asset.zipEntryName);
-  if (!entry) throw new Error("Import asset entry is missing.");
-  return await entry.async("blob");
+  if (!asset.buffer || !asset.mimeType) throw new Error("Import asset is not available.");
+  return new Blob([asset.buffer], { type: asset.mimeType });
 }
 
 /**
- * resolveImportAssets 上传预览中最终会写入的 Logo，并把 payload 改写为受控资产 URL。
+ * resolveImportAssets 上传预览中最终会写入的私有资产，并把 payload 改写为受控资产 URL。
  *
- * 服务端 apply 只接受已经解析好的 `/api/app/assets/{id}` 或外链；这里必须在提交前完成私有资产落库。
+ * 服务端 apply 只能恢复受控代理路径；ZIP 内 `assets/...` 不能裸写入订阅或自定义配置。
  */
 export async function resolveImportAssets(
   prepared: PreparedImport,
@@ -176,62 +184,52 @@ export async function resolveImportAssets(
   onProgress?: (done: number, total: number) => void,
 ): Promise<ResolvedImportAssets> {
   const writableIndexes = new Set(previewItems.filter((item) => item.action === "create" || item.action === "replace").map((item) => item.index));
-  const assets = prepared.assets.filter((asset) => writableIndexes.has(asset.subscriptionIndex));
-  if (assets.length === 0) return { payload: prepared.payload, uploadedLogoCount: 0 };
+  const assets = prepared.assets.filter((asset) => importAssetWillBeWritten(prepared, writableIndexes, asset));
+  if (assets.length === 0) return { payload: prepared.payload, uploadedLogoCount: 0, uploadedIconCount: 0 };
   const logoOverrides = new Map<number, string | null>();
+  const iconOverrides = new Map<number, string>();
   let done = 0;
   onProgress?.(done, assets.length);
-  // 上传并发限制保护 Cloudflare R2/D1 与 PocketBase collection；导入几百个 Logo 时不能无界占满浏览器连接。
+  // 上传并发限制保护 Cloudflare R2/D1 与 PocketBase collection；导入几百个私有图标时不能无界占满浏览器连接。
   await runWithConcurrency(assets, 3, async (asset) => {
-    if (!prepared.payload.subscriptions[asset.subscriptionIndex]) return;
     const blob = await loadImportAssetBlob(asset);
-    const uploaded = await assetService.create(blob, "logo", asset.filename);
-    logoOverrides.set(asset.subscriptionIndex, uploaded.url);
+    const uploaded = await assetService.create(blob, asset.kind, asset.filename);
+    if (asset.target.type === "subscriptionLogo") {
+      logoOverrides.set(asset.target.subscriptionIndex, uploaded.url);
+    } else {
+      iconOverrides.set(asset.target.paymentMethodIndex, uploaded.url);
+    }
     done += 1;
     onProgress?.(done, assets.length);
   });
   return {
-    payload: buildPayloadWithLogoOverrides(prepared.payload, logoOverrides),
+    payload: buildPayloadWithAssetOverrides(prepared.payload, logoOverrides, iconOverrides),
     uploadedLogoCount: logoOverrides.size,
+    uploadedIconCount: iconOverrides.size,
   };
+}
+
+function importAssetWillBeWritten(prepared: PreparedImport, writableIndexes: ReadonlySet<number>, asset: ImportAssetRef): boolean {
+  if (asset.target.type === "subscriptionLogo") {
+    return writableIndexes.has(asset.target.subscriptionIndex) && Boolean(prepared.payload.subscriptions[asset.target.subscriptionIndex]);
+  }
+  return Boolean(prepared.payload.customConfig?.paymentMethods[asset.target.paymentMethodIndex]);
 }
 
 async function parseHeavyFileInWorker(
   buffer: ArrayBuffer,
   context: ImportBuildBaseContext,
   wallosUserId?: string,
+  maxFileBytes = MAX_IMPORT_FILE_BYTES,
+  signal?: AbortSignal,
 ): Promise<PreparedImport> {
-  if (typeof Worker === "undefined") {
-    throw new Error(IMPORT_MESSAGE_CODES.workerUnsupported);
-  }
-  const id = workerRequestId + 1;
-  workerRequestId = id;
-  const worker = new Worker(new URL("./wallos-import-worker.ts", import.meta.url), { type: "module" });
-  try {
-    return await new Promise<PreparedImport>((resolve, reject) => {
-      worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-        const response = event.data;
-        if (response.id !== id) return;
-        if (response.ok) {
-          resolve(response.prepared);
-        } else {
-          reject(new Error(response.error));
-        }
-      };
-      worker.onerror = () => reject(new Error(IMPORT_MESSAGE_CODES.workerParseFailed));
-      // ZIP/SQLite 只在用户显式选择文件后传入 Worker；不从后端代取 Wallos URL，避免 SSRF/CORS 差异。
-      worker.postMessage({ id, buffer, context, ...(wallosUserId ? { wallosUserId } : {}) }, [buffer]);
-    });
-  } finally {
-    worker.terminate();
-  }
-}
-
-function attachSourceFile(prepared: PreparedImport, sourceFile: File): PreparedImport {
-  return {
-    ...prepared,
-    assets: prepared.assets.map((asset) => asset.zipEntryName ? { ...asset, sourceFile } : asset),
-  };
+  // ZIP/SQLite 只在用户显式选择文件后转移给 Worker；buffer 发出后主线程不再拥有其内容。
+  return await runWorkerJob<WallosImportWorkerPayload, WallosImportWorkerResult>({
+    createWorker: () => new Worker(new URL("./wallos-import-worker.ts", import.meta.url), { type: "module" }),
+    payload: { buffer, context, maxFileBytes, ...(wallosUserId ? { wallosUserId } : {}) },
+    transfer: [buffer],
+    ...(signal ? { signal } : {}),
+  });
 }
 
 function buildPayloadWithLogoOverrides(payload: ImportPayload, logoOverrides: ReadonlyMap<number, string | null>): ImportPayload {
@@ -244,17 +242,26 @@ function buildPayloadWithLogoOverrides(payload: ImportPayload, logoOverrides: Re
   return importPayloadSchema.parse({ ...payload, subscriptions });
 }
 
+function buildPayloadWithAssetOverrides(
+  payload: ImportPayload,
+  logoOverrides: ReadonlyMap<number, string | null>,
+  iconOverrides: ReadonlyMap<number, string>,
+): ImportPayload {
+  const nextPayload = buildPayloadWithLogoOverrides(payload, logoOverrides);
+  if (iconOverrides.size === 0 || !nextPayload.customConfig) return nextPayload;
+  const customConfig = {
+    ...nextPayload.customConfig,
+    paymentMethods: nextPayload.customConfig.paymentMethods.map((item, index) => {
+      const icon = iconOverrides.get(index);
+      return icon === undefined ? item : { ...item, icon };
+    }),
+  };
+  return importPayloadSchema.parse({ ...nextPayload, customConfig });
+}
+
 function optionalRows(value: unknown): WallosTableRow[] {
   if (!Array.isArray(value)) return [];
   return value.filter((row): row is WallosTableRow => Boolean(row) && typeof row === "object" && !Array.isArray(row));
-}
-
-async function getZip(file: File): Promise<JSZip> {
-  const cached = ZIP_CACHE.get(file);
-  if (cached) return cached;
-  const promise: Promise<JSZip> = import("jszip").then(({ default: JSZipCtor }) => JSZipCtor.loadAsync(file, { checkCRC32: false }));
-  ZIP_CACHE.set(file, promise);
-  return await promise;
 }
 
 async function runWithConcurrency<T>(

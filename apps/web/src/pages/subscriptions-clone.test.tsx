@@ -1,9 +1,21 @@
 import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { assertDateOnly } from "@/lib/time/date-only";
+import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
 import { DEFAULT_SETTINGS, type Subscription } from "@/types/subscription";
+import { appSettingsSecretStatus } from "@renewlet/shared/schemas/settings";
+import type { SubscriptionListFilters } from "@/services/subscription-service";
+import type { SettingsReadModel } from "@/services/settings-service";
+import {
+  subscriptionFacetsQueryFixture,
+  subscriptionIndexQueryFixture,
+} from "./subscriptions.test-fixtures";
 import Subscriptions from "./subscriptions";
 
 interface MockInfiniteSubscriptionsResult {
@@ -13,15 +25,19 @@ interface MockInfiniteSubscriptionsResult {
   isFetchingNextPage?: boolean;
   fetchNextPage?: () => void;
 }
+type MockSettingsEnvelopeResult = { data?: SettingsReadModel };
+type MockSubscriptionIndexResult = ReturnType<typeof subscriptionIndexQueryFixture>;
+type MockSubscriptionFacetsResult = ReturnType<typeof subscriptionFacetsQueryFixture>;
 
-const cloneSource = vi.hoisted(() => ({
-  value: null as Subscription | null,
+const cloneSource = vi.hoisted<{ value: Subscription | null }>(() => ({
+  value: null,
 }));
 
 const mocks = vi.hoisted(() => ({
   useInfiniteSubscriptions: vi.fn<() => MockInfiniteSubscriptionsResult>(),
-  useSubscriptions: vi.fn(),
-  useSettings: vi.fn(),
+  useSubscriptionIndex: vi.fn<(filters?: SubscriptionListFilters) => MockSubscriptionIndexResult>(),
+  useSubscriptionFacets: vi.fn<() => MockSubscriptionFacetsResult>(),
+  useSettingsEnvelope: vi.fn<() => MockSettingsEnvelopeResult>(),
   handleAddSubscription: vi.fn(),
   handleDeleteSubscription: vi.fn(),
   handleEditSubscription: vi.fn(),
@@ -37,17 +53,26 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/use-subscriptions", () => ({
+  prefetchSubscriptionDetail: vi.fn(),
   useInfiniteSubscriptions: mocks.useInfiniteSubscriptions,
-  useSubscriptions: mocks.useSubscriptions,
+  useSubscriptionIndex: mocks.useSubscriptionIndex,
+  useSubscriptionFacets: mocks.useSubscriptionFacets,
+  useSubscriptionDetail: () => ({ data: undefined, error: null, isPending: false }),
 }));
 
 vi.mock("@/hooks/use-settings", () => ({
-  useSettings: mocks.useSettings,
+  useSettingsEnvelope: mocks.useSettingsEnvelope,
+  useSettings: () => {
+    const envelope = mocks.useSettingsEnvelope();
+    return { ...envelope, data: envelope.data?.settings };
+  },
 }));
 
 vi.mock("@/hooks/use-exchange-rates", () => ({
   useExchangeRates: () => ({
     convert: (amount: number) => amount,
+    loading: false,
+    sourceDate: "2026-08-01",
   }),
 }));
 
@@ -56,7 +81,7 @@ vi.mock("@/hooks/use-media-query", () => ({
 }));
 
 vi.mock("@/contexts/CustomConfigContext", () => ({
-  useCustomConfig: () => ({
+  useCustomConfigState: () => ({
     config: {
       categories: [],
       statuses: [],
@@ -216,19 +241,19 @@ vi.mock("@/components/edit-subscription-dialog", () => ({
 }));
 
 vi.mock("@/components/import-data-dialog", () => ({
-  ImportDataDialog: () => null,
+  ImportDataDialogContent: () => null,
 }));
 
 vi.mock("@/components/ai-recognize-subscription-dialog", () => ({
-  AIRecognizeSubscriptionDialog: () => null,
+  AIRecognizeSubscriptionDialogContent: () => null,
 }));
 
-function subscription(overrides: Partial<Subscription> = {}): Subscription {
+function subscription(overrides: SubscriptionFixtureOverrides<Subscription> = {}): Subscription {
   return {
     id: "sub",
     name: "Service",
     logo: undefined,
-    price: 10,
+    price: "10",
     currency: "USD",
     category: "productivity",
     status: "active",
@@ -247,19 +272,21 @@ function subscription(overrides: Partial<Subscription> = {}): Subscription {
     repeatReminderEnabled: false,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
-    billingCycle: "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
-    oneTimeTermCount: undefined,
-    oneTimeTermUnit: undefined,
+    extra: {},
     ...overrides,
-  } as Subscription;
+    ...subscriptionCycleFixture(overrides),
+  };
 }
 
 function renderSubscriptionsPage() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
     <div id="root">
-      <Subscriptions />
+      <QueryClientProvider client={queryClient}>
+        <Subscriptions />
+      </QueryClientProvider>
     </div>,
   );
 }
@@ -267,11 +294,16 @@ function renderSubscriptionsPage() {
 beforeEach(() => {
   cloneSource.value = null;
   mocks.cloneDialogOpen = false;
-  mocks.useSettings.mockReturnValue({ data: DEFAULT_SETTINGS });
-  mocks.useSubscriptions.mockImplementation(() => {
-    const infinite = mocks.useInfiniteSubscriptions();
-    return { data: infinite.subscriptions ?? [], isPending: false };
+  mocks.useSettingsEnvelope.mockReturnValue({
+    data: {
+      settings: DEFAULT_SETTINGS,
+      secretStatus: appSettingsSecretStatus(DEFAULT_SETTINGS),
+    },
   });
+  mocks.useSubscriptionIndex.mockImplementation((filters) =>
+    subscriptionIndexQueryFixture(mocks.useInfiniteSubscriptions().subscriptions ?? [], filters));
+  mocks.useSubscriptionFacets.mockImplementation(() =>
+    subscriptionFacetsQueryFixture(mocks.useInfiniteSubscriptions().subscriptions ?? []));
   mocks.useInfiniteSubscriptions.mockReturnValue({
     subscriptions: [subscription({ id: "copyable", name: "Copyable Service" })],
     isPending: false,

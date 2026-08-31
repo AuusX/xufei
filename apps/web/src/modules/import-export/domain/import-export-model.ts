@@ -1,4 +1,12 @@
-import type { ImportPayload, ImportSubscription, RenewletExportV1 } from "@/lib/api/schemas/import-export";
+import {
+  IMPORT_PREVIEW_MAX_BYTES,
+  IMPORT_PREVIEW_SUBSCRIPTION_LIMIT,
+  toRenewletExportSettingsV1,
+  type ImportPayload,
+  type ImportSubscription,
+  type RenewletExportSettingsV1,
+  type RenewletExportV1,
+} from "@/lib/api/schemas/import-export";
 import type { AppSettings, BillingCycle, CustomCycleUnit, Subscription } from "@/types/subscription";
 import type { ConfigItem, CustomConfig } from "@/types/config";
 import { labels } from "@/i18n/locales";
@@ -8,21 +16,29 @@ import { isValidDateOnly } from "@renewlet/shared/runtime";
 /**
  * 导入文件大小上限。
  *
- * JSON/ZIP/SQLite 解析都发生在浏览器端；50MiB 是为了允许 Wallos 备份带 Logo，同时避免主线程/Worker 被异常文件拖垮。
+ * JSON/ZIP/SQLite 解析都发生在浏览器端；8 MiB 上限与两个后端预览 body 契约保持一致。
  */
-export const MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024;
+export const MAX_IMPORT_FILE_BYTES = IMPORT_PREVIEW_MAX_BYTES;
+export const MAX_IMPORT_PREVIEW_SUBSCRIPTIONS = IMPORT_PREVIEW_SUBSCRIPTION_LIMIT;
+
+export type ImportAssetKind = "logo" | "icon";
+
+export type ImportAssetTarget =
+  | { type: "subscriptionLogo"; subscriptionIndex: number }
+  | { type: "paymentMethodIcon"; paymentMethodIndex: number };
 
 /**
- * ImportAssetRef 描述导入流程中尚未上传到 Renewlet 的 Logo 资产。
+ * ImportAssetRef 描述导入流程中尚未上传到 Renewlet 的私有资产。
  *
- * subscriptionIndex 绑定预览行，最终 apply 前会上传并改写 payload.logo 为 `/api/app/assets/{id}`。
+ * target 绑定最终要改写的 payload 字段；apply 前必须先落资产表，再写 `/api/app/assets/{id}` 代理路径。
  */
 export interface ImportAssetRef {
-  subscriptionIndex: number;
+  target: ImportAssetTarget;
+  kind: ImportAssetKind;
   filename: string;
   blob?: Blob;
-  zipEntryName?: string;
-  sourceFile?: File;
+  buffer?: ArrayBuffer;
+  mimeType?: string;
   previewUrl?: string;
 }
 
@@ -69,15 +85,10 @@ export const IMPORT_MESSAGE_CODES = {
   onlyCurrencyId: "IMPORT_WARNING_WALLOS_CURRENCY_ID_ONLY",
   externalLogo: "IMPORT_WARNING_WALLOS_EXTERNAL_LOGO",
   unknownCycle: "IMPORT_WARNING_WALLOS_UNKNOWN_CYCLE",
+  fileTooLarge: "IMPORT_ERROR_FILE_TOO_LARGE",
   unrecognizedFile: "IMPORT_ERROR_UNRECOGNIZED_FILE",
   wallosTableTooLarge: "IMPORT_ERROR_WALLOS_TABLE_TOO_LARGE",
   workerParseFailed: "IMPORT_ERROR_WORKER_PARSE_FAILED",
-  workerUnsupported: "IMPORT_ERROR_WORKER_UNSUPPORTED",
-  aiBillingCycleDefaulted: "IMPORT_WARNING_AI_BILLING_CYCLE_DEFAULTED",
-  aiCurrencyDefaulted: "IMPORT_WARNING_AI_CURRENCY_DEFAULTED",
-  aiCustomCycleDefaulted: "IMPORT_WARNING_AI_CUSTOM_CYCLE_DEFAULTED",
-  aiDateDefaulted: "IMPORT_WARNING_AI_DATE_DEFAULTED",
-  aiPriceDefaulted: "IMPORT_WARNING_AI_PRICE_DEFAULTED",
   aiWebsiteSuggested: "IMPORT_WARNING_AI_WEBSITE_SUGGESTED",
 } as const;
 
@@ -123,8 +134,9 @@ type RenewletExportSubscription = RenewletExportV1["data"]["subscriptions"][numb
  * sanitizeSettingsForExport 移除默认不应进入备份的通知和账号 secret。
  *
  * includeSecrets 只由用户显式选择触发；普通备份不能意外携带通知、Webhook、PushPlus 等凭证。
+ * 返回前统一投影为稳定 v1 settings，避免浏览器导出泄漏当前内部字段形状。
  */
-export function sanitizeSettingsForExport(settings: AppSettings, includeSecrets: boolean): Partial<AppSettings> {
+export function sanitizeSettingsForExport(settings: AppSettings, includeSecrets: boolean): RenewletExportSettingsV1 {
   const entries = Object.entries(settings).filter(([key]) => includeSecrets || !SECRET_SETTING_KEYS.has(key as keyof AppSettings));
   const sanitized = Object.fromEntries(entries) as Partial<AppSettings>;
   if (!includeSecrets && sanitized.aiRecognition) {
@@ -134,7 +146,7 @@ export function sanitizeSettingsForExport(settings: AppSettings, includeSecrets:
       apiKey: "",
     };
   }
-  return sanitized;
+  return toRenewletExportSettingsV1(sanitized);
 }
 
 /**
@@ -144,7 +156,7 @@ export function sanitizeSettingsForExport(settings: AppSettings, includeSecrets:
  */
 export function subscriptionToImportSubscription(subscription: Subscription, sourceId = subscription.id): ImportSubscription {
   const extra = {
-    ...(subscription.extra ?? {}),
+    ...subscription.extra,
     import: { source: "renewlet" as const, sourceId, confidence: "high" as const },
   };
   return {
@@ -174,6 +186,7 @@ export function subscriptionToImportSubscription(subscription: Subscription, sou
     repeatReminderEnabled: subscription.repeatReminderEnabled,
     repeatReminderInterval: subscription.repeatReminderInterval,
     repeatReminderWindow: subscription.repeatReminderWindow,
+    costSharing: subscription.costSharing ?? null,
     extra,
   };
 }
@@ -184,17 +197,12 @@ export function subscriptionToImportSubscription(subscription: Subscription, sou
  * 这里保留原始 status/extra，和 CSV 的“有效状态”报表口径分开，保证备份可用于未来迁移。
  */
 export function subscriptionToExportRow(subscription: Subscription): RenewletExportSubscription {
-  return {
+  const common = {
     id: subscription.id,
     name: subscription.name,
     ...(subscription.logo ? { logo: subscription.logo } : {}),
     price: subscription.price,
     currency: subscription.currency,
-    billingCycle: subscription.billingCycle,
-    ...(subscription.billingCycle === "custom" ? { customDays: subscription.customDays, customCycleUnit: subscription.customCycleUnit } : {}),
-    ...(subscription.billingCycle === "one-time" && subscription.oneTimeTermCount && subscription.oneTimeTermUnit
-      ? { oneTimeTermCount: subscription.oneTimeTermCount, oneTimeTermUnit: subscription.oneTimeTermUnit }
-      : {}),
     category: subscription.category,
     status: subscription.status,
     pinned: subscription.pinned,
@@ -212,8 +220,32 @@ export function subscriptionToExportRow(subscription: Subscription): RenewletExp
     repeatReminderEnabled: subscription.repeatReminderEnabled,
     repeatReminderInterval: subscription.repeatReminderInterval,
     repeatReminderWindow: subscription.repeatReminderWindow,
-    extra: subscription.extra ?? {},
+    ...(subscription.costSharing ? { costSharing: subscription.costSharing } : {}),
+    extra: subscription.extra,
   };
+
+  if (subscription.billingCycle === "custom") {
+    return {
+      ...common,
+      billingCycle: "custom",
+      customDays: subscription.customDays,
+      customCycleUnit: subscription.customCycleUnit,
+    };
+  }
+
+  if (subscription.billingCycle === "one-time") {
+    if (typeof subscription.oneTimeTermCount === "number" && subscription.oneTimeTermUnit) {
+      return {
+        ...common,
+        billingCycle: "one-time",
+        oneTimeTermCount: subscription.oneTimeTermCount,
+        oneTimeTermUnit: subscription.oneTimeTermUnit,
+      };
+    }
+    return { ...common, billingCycle: "one-time" };
+  }
+
+  return { ...common, billingCycle: subscription.billingCycle };
 }
 
 /** cloneImportPayload 深拷贝导入 payload，供预览交互在不污染原始解析结果的情况下重算。 */
@@ -315,7 +347,7 @@ export function toBillingCycleFromUnit(count: number, unit: CustomCycleUnit): Im
   return { billingCycle: "custom", customDays: normalizedCount, customCycleUnit: unit };
 }
 
-/** privateAssetIdFromLogo 只识别受控资产代理路径，外链 Logo 不参与 ZIP 资产导出。 */
+/** privateAssetIdFromLogo 只识别受控资产代理路径；历史命名保留，当前同时服务订阅 Logo 和支付方式 Icon。 */
 export function privateAssetIdFromLogo(value: string | undefined): string | null {
   const match = value?.match(/^\/api\/app\/assets\/([A-Za-z0-9_-]+)$/);
   return match?.[1] ?? null;

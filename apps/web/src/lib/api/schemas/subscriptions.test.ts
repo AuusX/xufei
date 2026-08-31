@@ -7,7 +7,7 @@ const success = <T>(data: T) => ({ ok: true, data });
 const validSubscriptionCreateBody = {
   name: "Logo Test",
   logo: null,
-  price: 0.83,
+  price: "0.83",
   currency: "CNY",
   billingCycle: "monthly",
   customDays: null,
@@ -37,9 +37,6 @@ const validSubscriptionResponseBody = {
   price: validSubscriptionCreateBody.price,
   currency: validSubscriptionCreateBody.currency,
   billingCycle: validSubscriptionCreateBody.billingCycle,
-  customCycleUnit: undefined,
-  oneTimeTermCount: undefined,
-  oneTimeTermUnit: undefined,
   category: validSubscriptionCreateBody.category,
   status: validSubscriptionCreateBody.status,
   pinned: validSubscriptionCreateBody.pinned,
@@ -53,6 +50,24 @@ const validSubscriptionResponseBody = {
   repeatReminderEnabled: validSubscriptionCreateBody.repeatReminderEnabled,
   repeatReminderInterval: validSubscriptionCreateBody.repeatReminderInterval,
   repeatReminderWindow: validSubscriptionCreateBody.repeatReminderWindow,
+  extra: {},
+};
+
+const validSubscriptionCollectionBody = {
+  id: validSubscriptionResponseBody.id,
+  name: validSubscriptionResponseBody.name,
+  price: validSubscriptionResponseBody.price,
+  currency: validSubscriptionResponseBody.currency,
+  billingCycle: validSubscriptionResponseBody.billingCycle,
+  category: validSubscriptionResponseBody.category,
+  status: validSubscriptionResponseBody.status,
+  pinned: validSubscriptionResponseBody.pinned,
+  publicHidden: validSubscriptionResponseBody.publicHidden,
+  startDate: validSubscriptionResponseBody.startDate,
+  nextBillingDate: validSubscriptionResponseBody.nextBillingDate,
+  autoRenew: validSubscriptionResponseBody.autoRenew,
+  autoCalculateNextBillingDate: validSubscriptionResponseBody.autoCalculateNextBillingDate,
+  reminderDays: validSubscriptionResponseBody.reminderDays,
 };
 
 describe("subscription API schemas", () => {
@@ -192,8 +207,8 @@ describe("subscription API schemas", () => {
       ...equalSharing,
       splitMode: "custom",
       members: [
-        { id: "partner", name: "Partner", customAmount: 0.33 },
-        { id: "child", name: "Child", customAmount: 0.5 },
+        { id: "partner", name: "Partner", customAmount: "0.33" },
+        { id: "child", name: "Child", customAmount: "0.5" },
       ],
     };
 
@@ -246,7 +261,7 @@ describe("subscription API schemas", () => {
         splitMode: "custom",
         members: [
           { id: "partner", name: "Partner" },
-          { id: "child", name: "Child", customAmount: 0.1 },
+          { id: "child", name: "Child", customAmount: "0.1" },
         ],
       },
     }).success).toBe(false);
@@ -256,8 +271,8 @@ describe("subscription API schemas", () => {
         ...baseSharing,
         splitMode: "custom",
         members: [
-          { id: "partner", name: "Partner", customAmount: 0.1 },
-          { id: "child", name: "Child", customAmount: 0.1 },
+          { id: "partner", name: "Partner", customAmount: "0.1" },
+          { id: "child", name: "Child", customAmount: "0.1" },
         ],
       },
     }).success).toBe(true);
@@ -338,6 +353,7 @@ describe("subscription API schemas", () => {
       billingCycle: "one-time",
       oneTimeTermCount: 2,
       oneTimeTermUnit: "year",
+      autoRenew: false,
       autoCalculateNextBillingDate: false,
     }).success).toBe(true);
 
@@ -403,19 +419,19 @@ describe("subscription API schemas", () => {
 
   it("requires paginated subscription list responses", () => {
     expect(subscriptionsListResponseSchema.safeParse(success({
-      subscriptions: [validSubscriptionResponseBody],
+      subscriptions: [validSubscriptionCollectionBody],
       nextCursor: null,
       total: 1,
     })).success).toBe(true);
 
     expect(subscriptionsListResponseSchema.safeParse({
-      subscriptions: [validSubscriptionResponseBody],
+      subscriptions: [validSubscriptionCollectionBody],
       nextCursor: null,
       total: 1,
     }).success).toBe(false);
 
     expect(subscriptionsListResponseSchema.safeParse(success({
-      subscriptions: [validSubscriptionResponseBody],
+      subscriptions: [validSubscriptionCollectionBody],
     })).success).toBe(false);
   });
 });

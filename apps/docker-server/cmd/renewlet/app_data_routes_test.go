@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,7 +11,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-func TestSettingsReadCreatesEnglishDefaultsWithoutHeader(t *testing.T) {
+func TestSettingsReadCreatesAutoDefaultsWithoutHeader(t *testing.T) {
 	app := newSchemaTestApp(t)
 	if err := ensureSchema(app); err != nil {
 		t.Fatal(err)
@@ -26,18 +24,18 @@ func TestSettingsReadCreatesEnglishDefaultsWithoutHeader(t *testing.T) {
 		t.Fatalf("expected settings read 200, got %d: %s", read.Code, read.Body.String())
 	}
 	body := decodeAPISuccessDataForTest[settingsResponse](t, read.Body.Bytes())
-	if body.Settings.Locale != string(localeEnUS) {
-		t.Fatalf("expected default locale en-US, got %q", body.Settings.Locale)
+	if body.Settings.LocalePreference != string(autoLocalePreference) {
+		t.Fatalf("expected default locale preference auto, got %q", body.Settings.LocalePreference)
 	}
 	if got := countUserRecords(t, app, "settings", user.Id); got != 1 {
 		t.Fatalf("expected settings read to create one settings row, got %d", got)
 	}
-	if got := settingsRecordLocale(t, app, user.Id); got != string(localeEnUS) {
-		t.Fatalf("expected persisted locale en-US, got %q", got)
+	if got := settingsRecordLocalePreference(t, app, user.Id); got != string(autoLocalePreference) {
+		t.Fatalf("expected persisted locale preference auto, got %q", got)
 	}
 }
 
-func TestSettingsReadCreatesRequestLocaleOnce(t *testing.T) {
+func TestSettingsReadDoesNotPersistRequestLocale(t *testing.T) {
 	app := newSchemaTestApp(t)
 	if err := ensureSchema(app); err != nil {
 		t.Fatal(err)
@@ -52,8 +50,8 @@ func TestSettingsReadCreatesRequestLocaleOnce(t *testing.T) {
 		t.Fatalf("expected first settings read 200, got %d: %s", first.Code, first.Body.String())
 	}
 	firstBody := decodeAPISuccessDataForTest[settingsResponse](t, first.Body.Bytes())
-	if firstBody.Settings.Locale != string(localeZhCN) {
-		t.Fatalf("expected first settings locale zh-CN, got %q", firstBody.Settings.Locale)
+	if firstBody.Settings.LocalePreference != string(autoLocalePreference) {
+		t.Fatalf("expected first settings locale preference auto, got %q", firstBody.Settings.LocalePreference)
 	}
 
 	second := serveTestRequestWithHeaders(t, app, http.MethodGet, "/api/app/settings", "", token, map[string]string{
@@ -63,12 +61,12 @@ func TestSettingsReadCreatesRequestLocaleOnce(t *testing.T) {
 		t.Fatalf("expected second settings read 200, got %d: %s", second.Code, second.Body.String())
 	}
 	secondBody := decodeAPISuccessDataForTest[settingsResponse](t, second.Body.Bytes())
-	if secondBody.Settings.Locale != string(localeZhCN) || settingsRecordLocale(t, app, user.Id) != string(localeZhCN) {
-		t.Fatalf("expected existing settings to keep zh-CN, got response=%q persisted=%q", secondBody.Settings.Locale, settingsRecordLocale(t, app, user.Id))
+	if secondBody.Settings.LocalePreference != string(autoLocalePreference) || settingsRecordLocalePreference(t, app, user.Id) != string(autoLocalePreference) {
+		t.Fatalf("expected request locale not to affect account preference, got response=%q persisted=%q", secondBody.Settings.LocalePreference, settingsRecordLocalePreference(t, app, user.Id))
 	}
 }
 
-func TestSettingsUpdateCreatesDefaultsFromRequestLocale(t *testing.T) {
+func TestSettingsUpdateCreatesAutoDefaultsRegardlessOfRequestLocale(t *testing.T) {
 	app := newSchemaTestApp(t)
 	if err := ensureSchema(app); err != nil {
 		t.Fatal(err)
@@ -76,22 +74,22 @@ func TestSettingsUpdateCreatesDefaultsFromRequestLocale(t *testing.T) {
 	registerRecordHooks(app)
 	user, token := createRouteTestUser(t, app, "settings-update-locale")
 
-	update := serveTestRequestWithHeaders(t, app, http.MethodPut, "/api/app/settings", `{"monthlyBudget":2333}`, token, map[string]string{
+	update := serveTestRequestWithHeaders(t, app, http.MethodPut, "/api/app/settings", `{"monthlyBudget":"2333"}`, token, map[string]string{
 		"X-Renewlet-Locale": "zh-CN",
 	})
 	if update.Code != http.StatusOK {
 		t.Fatalf("expected settings update 200, got %d: %s", update.Code, update.Body.String())
 	}
 	body := decodeAPISuccessDataForTest[settingsResponse](t, update.Body.Bytes())
-	if body.Settings.Locale != string(localeZhCN) || body.Settings.MonthlyBudget != 2333 {
-		t.Fatalf("expected update to create zh-CN settings with monthly budget, got %#v", body.Settings)
+	if body.Settings.LocalePreference != string(autoLocalePreference) || body.Settings.MonthlyBudget != "2333" {
+		t.Fatalf("expected update to create auto settings with monthly budget, got %#v", body.Settings)
 	}
-	if got := settingsRecordLocale(t, app, user.Id); got != string(localeZhCN) {
-		t.Fatalf("expected persisted locale zh-CN, got %q", got)
+	if got := settingsRecordLocalePreference(t, app, user.Id); got != string(autoLocalePreference) {
+		t.Fatalf("expected persisted locale preference auto, got %q", got)
 	}
 }
 
-func TestSettingsUpdateRejectsUnsupportedLocaleWithoutCreatingRecord(t *testing.T) {
+func TestSettingsUpdateRejectsUnsupportedOrLegacyLocaleWithoutCreatingRecord(t *testing.T) {
 	app := newSchemaTestApp(t)
 	if err := ensureSchema(app); err != nil {
 		t.Fatal(err)
@@ -99,7 +97,7 @@ func TestSettingsUpdateRejectsUnsupportedLocaleWithoutCreatingRecord(t *testing.
 	registerRecordHooks(app)
 	user, token := createRouteTestUser(t, app, "settings-invalid-locale")
 
-	update := serveTestRequestWithHeaders(t, app, http.MethodPut, "/api/app/settings", `{"locale":"fr-FR"}`, token, map[string]string{
+	update := serveTestRequestWithHeaders(t, app, http.MethodPut, "/api/app/settings", `{"localePreference":"fr-FR"}`, token, map[string]string{
 		"X-Renewlet-Locale": "zh-CN",
 	})
 	if update.Code != http.StatusBadRequest {
@@ -107,6 +105,14 @@ func TestSettingsUpdateRejectsUnsupportedLocaleWithoutCreatingRecord(t *testing.
 	}
 	if got := countUserRecords(t, app, "settings", user.Id); got != 0 {
 		t.Fatalf("expected invalid settings update not to create a settings row, got %d", got)
+	}
+
+	legacy := serveTestRequest(t, app, http.MethodPut, "/api/app/settings", `{"locale":"zh-CN"}`, token)
+	if legacy.Code != http.StatusBadRequest {
+		t.Fatalf("expected legacy locale field update 400, got %d: %s", legacy.Code, legacy.Body.String())
+	}
+	if got := countUserRecords(t, app, "settings", user.Id); got != 0 {
+		t.Fatalf("expected legacy settings update not to create a settings row, got %d", got)
 	}
 }
 
@@ -118,12 +124,12 @@ func TestSettingsProductAPIRoundTripAndStrictJSON(t *testing.T) {
 	registerRecordHooks(app)
 	_, token := createRouteTestUser(t, app, "settings-api")
 
-	update := serveTestRequest(t, app, http.MethodPut, "/api/app/settings", `{"monthlyBudget":2333,"timezone":"Asia/Shanghai"}`, token)
+	update := serveTestRequest(t, app, http.MethodPut, "/api/app/settings", `{"monthlyBudget":"2333","timezone":"Asia/Shanghai"}`, token)
 	if update.Code != http.StatusOK {
 		t.Fatalf("expected settings update 200, got %d: %s", update.Code, update.Body.String())
 	}
 	updateBody := decodeAPISuccessDataForTest[settingsResponse](t, update.Body.Bytes())
-	if updateBody.Settings.MonthlyBudget != 2333 || updateBody.Settings.Timezone != "Asia/Shanghai" {
+	if updateBody.Settings.MonthlyBudget != "2333" || updateBody.Settings.Timezone != "Asia/Shanghai" {
 		t.Fatalf("unexpected settings response: %#v", updateBody.Settings)
 	}
 
@@ -132,7 +138,7 @@ func TestSettingsProductAPIRoundTripAndStrictJSON(t *testing.T) {
 		t.Fatalf("expected settings read 200, got %d: %s", read.Code, read.Body.String())
 	}
 	readBody := decodeAPISuccessDataForTest[settingsResponse](t, read.Body.Bytes())
-	if readBody.Settings.MonthlyBudget != 2333 || readBody.Settings.Timezone != "Asia/Shanghai" {
+	if readBody.Settings.MonthlyBudget != "2333" || readBody.Settings.Timezone != "Asia/Shanghai" {
 		t.Fatalf("expected persisted settings, got %#v", readBody.Settings)
 	}
 
@@ -142,13 +148,22 @@ func TestSettingsProductAPIRoundTripAndStrictJSON(t *testing.T) {
 	}
 }
 
-func settingsRecordLocale(t *testing.T, app core.App, userID string) string {
+func settingsRecordLocalePreference(t *testing.T, app core.App, userID string) string {
 	t.Helper()
 	record, err := app.FindFirstRecordByFilter("settings", "user = {:user}", dbx.Params{"user": userID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return settingsFromRecord(record).Locale
+	return mustSettingsFromRecord(t, record).LocalePreference
+}
+
+func mustSettingsFromRecord(t *testing.T, record *core.Record) appSettings {
+	t.Helper()
+	settings, err := settingsFromRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return settings
 }
 
 func TestCustomConfigProductAPIRoundTrip(t *testing.T) {
@@ -189,20 +204,32 @@ func TestSubscriptionsProductAPIUsesOwnerScopedCRUD(t *testing.T) {
 		t.Fatalf("expected subscription create 201, got %d: %s", create.Code, create.Body.String())
 	}
 	created := decodeAPISuccessDataForTest[subscriptionResponse](t, create.Body.Bytes())
-	id, _ := created.Subscription["id"].(string)
+	id := created.Subscription.ID
 	if id == "" {
 		t.Fatalf("expected created subscription id, got %#v", created.Subscription)
+	}
+	stored, err := app.FindRecordById("subscriptions", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Set("pinned", true)
+	stored.Set("trialEndDate", "2026-01-20")
+	stored.Set("extra", map[string]interface{}{
+		"import": map[string]interface{}{"source": "wallos", "sourceId": "wallos-1"},
+	})
+	if err := app.Save(stored); err != nil {
+		t.Fatal(err)
 	}
 
 	list := serveTestRequest(t, app, http.MethodGet, "/api/app/subscriptions?limit=10", "", token)
 	if list.Code != http.StatusOK {
 		t.Fatalf("expected subscription list 200, got %d: %s", list.Code, list.Body.String())
 	}
-	listBody := decodeAPISuccessDataForTest[subscriptionsListResponse](t, list.Body.Bytes())
-	if len(listBody.Subscriptions) != 1 || listBody.Subscriptions[0]["name"] != "Route API" || listBody.Total != 1 {
+	listBody := decodeAPISuccessDataForTest[subscriptionCollectionListResponse](t, list.Body.Bytes())
+	if len(listBody.Subscriptions) != 1 || listBody.Subscriptions[0].Name != "Route API" || listBody.Total != 1 {
 		t.Fatalf("unexpected subscription list: %#v", listBody)
 	}
-	if _, ok := listBody.Subscriptions[0]["user"]; ok {
+	if strings.Contains(list.Body.String(), `"user"`) {
 		t.Fatalf("subscription API must not expose owner field: %#v", listBody.Subscriptions[0])
 	}
 
@@ -211,13 +238,32 @@ func TestSubscriptionsProductAPIUsesOwnerScopedCRUD(t *testing.T) {
 		t.Fatalf("expected foreign delete 404, got %d: %s", foreignDelete.Code, foreignDelete.Body.String())
 	}
 
-	patch := serveTestRequest(t, app, http.MethodPatch, "/api/app/subscriptions/"+id, `{"name":"Renamed API","price":20}`, token)
+	patch := serveTestRequest(t, app, http.MethodPatch, "/api/app/subscriptions/"+id, `{"name":"Renamed API","price":"20"}`, token)
 	if patch.Code != http.StatusOK {
 		t.Fatalf("expected subscription patch 200, got %d: %s", patch.Code, patch.Body.String())
 	}
 	patched := decodeAPISuccessDataForTest[subscriptionResponse](t, patch.Body.Bytes())
-	if patched.Subscription["name"] != "Renamed API" || patched.Subscription["price"] != float64(20) {
+	if patched.Subscription.Name != "Renamed API" || patched.Subscription.Price != "20" {
 		t.Fatalf("unexpected patched subscription: %#v", patched.Subscription)
+	}
+	if !patched.Subscription.Pinned || patched.Subscription.TrialEndDate == nil || *patched.Subscription.TrialEndDate != "2026-01-20" {
+		t.Fatalf("subscription patch replaced non-form state: %#v", patched.Subscription)
+	}
+	importMetadata, ok := patched.Subscription.Extra["import"].(map[string]interface{})
+	if !ok || importMetadata["source"] != "wallos" || importMetadata["sourceId"] != "wallos-1" {
+		t.Fatalf("subscription patch replaced import metadata: %#v", patched.Subscription.Extra)
+	}
+	reloaded, err := app.FindRecordById("subscriptions", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.GetBool("pinned") || reloaded.GetString("trialEndDate") != "2026-01-20" {
+		t.Fatalf("subscription patch did not preserve persisted non-form state: pinned=%v trialEndDate=%q", reloaded.GetBool("pinned"), reloaded.GetString("trialEndDate"))
+	}
+	reloadedExtra := subscriptionRecordJSONMap(reloaded, "extra")
+	reloadedImport, ok := reloadedExtra["import"].(map[string]interface{})
+	if !ok || reloadedImport["source"] != "wallos" || reloadedImport["sourceId"] != "wallos-1" {
+		t.Fatalf("subscription patch did not preserve persisted import metadata: %#v", reloadedExtra)
 	}
 
 	del := serveTestRequest(t, app, http.MethodDelete, "/api/app/subscriptions/"+id, "", token)
@@ -247,11 +293,11 @@ func TestSubscriptionsProductAPIAcceptsRecurringSubscriptionWithoutStartDate(t *
 		t.Fatalf("expected subscription create 201, got %d: %s", create.Code, create.Body.String())
 	}
 	created := decodeAPISuccessDataForTest[subscriptionResponse](t, create.Body.Bytes())
-	if value, ok := created.Subscription["startDate"]; !ok || value != nil {
-		t.Fatalf("expected startDate JSON null, got %#v in %#v", value, created.Subscription)
+	if created.Subscription.StartDate != nil {
+		t.Fatalf("expected startDate JSON null, got %#v in %#v", created.Subscription.StartDate, created.Subscription)
 	}
-	if created.Subscription["autoCalculateNextBillingDate"] != false {
-		t.Fatalf("expected manual date anchor, got %#v", created.Subscription["autoCalculateNextBillingDate"])
+	if created.Subscription.AutoCalculateNextBillingDate {
+		t.Fatalf("expected manual date anchor, got %#v", created.Subscription.AutoCalculateNextBillingDate)
 	}
 }
 
@@ -277,11 +323,11 @@ func TestSubscriptionsProductAPICursorAdvancesWithoutRepeatingRows(t *testing.T)
 		if res.Code != http.StatusOK {
 			t.Fatalf("expected subscription page %d to return 200, got %d: %s", page+1, res.Code, res.Body.String())
 		}
-		body := decodeAPISuccessDataForTest[subscriptionsListResponse](t, res.Body.Bytes())
+		body := decodeAPISuccessDataForTest[subscriptionCollectionListResponse](t, res.Body.Bytes())
 		if len(body.Subscriptions) != 1 {
 			t.Fatalf("expected one subscription on page %d, got %#v", page+1, body.Subscriptions)
 		}
-		id, _ := body.Subscriptions[0]["id"].(string)
+		id := body.Subscriptions[0].ID
 		if id == "" {
 			t.Fatalf("expected page %d subscription id, got %#v", page+1, body.Subscriptions[0])
 		}
@@ -368,11 +414,11 @@ func TestSubscriptionsProductAPIFiltersAcrossOwnerScopedDataset(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected filtered subscription list 200, got %d: %s", res.Code, res.Body.String())
 	}
-	body := decodeAPISuccessDataForTest[subscriptionsListResponse](t, res.Body.Bytes())
+	body := decodeAPISuccessDataForTest[subscriptionCollectionListResponse](t, res.Body.Bytes())
 	if body.Total != 1 || len(body.Subscriptions) != 1 {
 		t.Fatalf("expected exactly one filtered subscription, got %#v", body)
 	}
-	if got, _ := body.Subscriptions[0]["id"].(string); got != target.Id {
+	if got := body.Subscriptions[0].ID; got != target.Id {
 		t.Fatalf("expected owner target subscription %q, got %#v", target.Id, body.Subscriptions[0])
 	}
 }
@@ -410,11 +456,11 @@ func TestSubscriptionsProductAPIFiltersEffectiveStatusAndCursorTotal(t *testing.
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected expired filtered list 200, got %d: %s", res.Code, res.Body.String())
 	}
-	first := decodeAPISuccessDataForTest[subscriptionsListResponse](t, res.Body.Bytes())
+	first := decodeAPISuccessDataForTest[subscriptionCollectionListResponse](t, res.Body.Bytes())
 	if first.Total != 2 || len(first.Subscriptions) != 1 || first.NextCursor == nil {
 		t.Fatalf("expected first filtered page to expose total=2 and next cursor, got %#v", first)
 	}
-	if got, _ := first.Subscriptions[0]["id"].(string); got != legacyOverdue.Id && got != storedExpired.Id {
+	if got := first.Subscriptions[0].ID; got != legacyOverdue.Id && got != storedExpired.Id {
 		t.Fatalf("expected first filtered page to contain an expired match, got %#v", first.Subscriptions[0])
 	}
 
@@ -422,12 +468,12 @@ func TestSubscriptionsProductAPIFiltersEffectiveStatusAndCursorTotal(t *testing.
 	if next.Code != http.StatusOK {
 		t.Fatalf("expected second expired filtered page 200, got %d: %s", next.Code, next.Body.String())
 	}
-	second := decodeAPISuccessDataForTest[subscriptionsListResponse](t, next.Body.Bytes())
+	second := decodeAPISuccessDataForTest[subscriptionCollectionListResponse](t, next.Body.Bytes())
 	if second.Total != 2 || len(second.Subscriptions) != 1 || second.NextCursor != nil {
 		t.Fatalf("expected second filtered page to keep total=2 and finish cursor, got %#v", second)
 	}
-	secondID, _ := second.Subscriptions[0]["id"].(string)
-	firstID, _ := first.Subscriptions[0]["id"].(string)
+	secondID := second.Subscriptions[0].ID
+	firstID := first.Subscriptions[0].ID
 	if secondID == "" || secondID == firstID {
 		t.Fatalf("expected filtered cursor to advance to another expired row, first=%q second=%q", firstID, secondID)
 	}
@@ -713,52 +759,11 @@ func TestAssetProductAPIDeleteIgnoresForeignCustomConfigReferences(t *testing.T)
 	}
 }
 
-func TestAssetProductAPIDeleteRemovesMetadataWhenFileIsMissing(t *testing.T) {
-	app := newSchemaTestApp(t)
-	if err := ensureSchema(app); err != nil {
-		t.Fatal(err)
-	}
-	registerRecordHooks(app)
-	_, token := createRouteTestUser(t, app, "assets-missing-file")
-
-	upload := serveMultipartTestRequest(
-		t,
-		app,
-		"/api/app/assets",
-		token,
-		map[string]string{"kind": "logo"},
-		"file",
-		"missing.svg",
-		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>`,
-	)
-	if upload.Code != http.StatusCreated {
-		t.Fatalf("expected asset upload 201, got %d: %s", upload.Code, upload.Body.String())
-	}
-	uploaded := decodeAPISuccessDataForTest[uploadAssetResponse](t, upload.Body.Bytes())
-	id := strings.TrimPrefix(uploaded.URL, "/api/app/assets/")
-	record, err := app.FindRecordById("assets", id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	filePath := filepath.Join(app.DataDir(), "storage", record.Collection().Id, record.Id, record.GetString("file"))
-	if err := os.Remove(filePath); err != nil {
-		t.Fatal(err)
-	}
-
-	del := serveTestRequest(t, app, http.MethodDelete, "/api/app/assets/"+id, "", token)
-	if del.Code != http.StatusOK {
-		t.Fatalf("expected missing-file asset delete 200, got %d: %s", del.Code, del.Body.String())
-	}
-	if _, err := app.FindRecordById("assets", id); err == nil {
-		t.Fatalf("expected missing-file asset metadata to be deleted")
-	}
-}
-
 func subscriptionCreateBody(name string) string {
 	body := map[string]interface{}{
 		"name":                         name,
 		"logo":                         nil,
-		"price":                        12,
+		"price":                        "12",
 		"currency":                     "USD",
 		"billingCycle":                 "monthly",
 		"customDays":                   nil,
@@ -774,7 +779,6 @@ func subscriptionCreateBody(name string) string {
 		"nextBillingDate":              "2026-02-01",
 		"autoRenew":                    false,
 		"autoCalculateNextBillingDate": true,
-		"trialEndDate":                 nil,
 		"website":                      nil,
 		"notes":                        nil,
 		"tags":                         []string{"api"},
@@ -782,7 +786,6 @@ func subscriptionCreateBody(name string) string {
 		"repeatReminderEnabled":        false,
 		"repeatReminderInterval":       defaultRepeatReminderInterval,
 		"repeatReminderWindow":         defaultRepeatReminderWindow,
-		"extra":                        map[string]interface{}{},
 	}
 	data, _ := json.Marshal(body)
 	return string(data)

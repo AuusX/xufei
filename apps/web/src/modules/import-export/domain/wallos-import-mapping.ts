@@ -1,8 +1,14 @@
-import { importPayloadSchema, type ImportSubscription, type RenewletExportV1 } from "@/lib/api/schemas/import-export";
+import {
+  fromRenewletExportSettingsV1,
+  importPayloadSchema,
+  type ImportSubscription,
+  type RenewletExportV1,
+} from "@/lib/api/schemas/import-export";
 import { getIntlCurrencySymbol, SUPPORTED_EXCHANGE_RATE_CURRENCIES } from "@/lib/currency-data";
 import type { CustomConfig } from "@/types/config";
 import { DISABLED_REMINDER_DAYS, INHERIT_REMINDER_DAYS, MAX_REMINDER_DAYS, type AppSettings } from "@/types/subscription";
 import type { DateOnly } from "@/lib/time/date-only";
+import { moneyFromNumber } from "@renewlet/shared/money";
 import {
   WALLOS_DEFAULT_CURRENCIES,
   WALLOS_DEFAULT_CURRENCY_BY_ID,
@@ -28,7 +34,7 @@ import {
 } from "./import-export-model";
 
 export type WallosTableRow = Record<string, unknown>;
-export type ImportAssetSource = Blob | string;
+export type ImportAssetSource = Blob | { buffer: ArrayBuffer; mimeType: string };
 
 /**
  * WallosApiPayload 描述用户粘贴或合并的 Wallos API JSON。
@@ -105,16 +111,16 @@ export function buildFromRenewletExport(
     const logo = typeof subscription.logo === "string" ? subscription.logo : undefined;
     const asset = logo ? assetFiles.get(logo) : undefined;
     if (logo && asset) {
-      assets.push(makeAssetRef(index, logo.split("/").pop() ?? "renewlet-logo", asset));
+      assets.push(makeSubscriptionLogoAssetRef(index, logo.split("/").pop() ?? "renewlet-logo", asset));
     }
     return {
       name: subscription.name,
-      logo: asset ? null : logo ?? null,
+      logo: asset || isExportAssetPath(logo) ? null : logo ?? null,
       price: subscription.price,
       currency: subscription.currency,
       billingCycle: subscription.billingCycle,
-      customDays: subscription.billingCycle === "custom" ? subscription.customDays ?? 1 : null,
-      customCycleUnit: subscription.billingCycle === "custom" ? subscription.customCycleUnit ?? "day" : null,
+      customDays: subscription.billingCycle === "custom" ? subscription.customDays : null,
+      customCycleUnit: subscription.billingCycle === "custom" ? subscription.customCycleUnit : null,
       category: subscription.category,
       status: subscription.status,
       pinned: subscription.pinned,
@@ -133,20 +139,46 @@ export function buildFromRenewletExport(
       repeatReminderInterval: subscription.repeatReminderInterval,
       repeatReminderWindow: subscription.repeatReminderWindow,
       extra: {
-        ...(subscription.extra ?? {}),
+        ...subscription.extra,
         import: { source: "renewlet", sourceId: subscription.id, confidence: "high" },
       },
     };
   });
+  // v1 缺少 locale 表示“不覆盖目标账号语言”，转换结果必须保持局部 settings patch 语义。
   return {
     payload: importPayloadSchema.parse({
       source: "renewlet",
       subscriptions,
-      settings: data.data.settings,
-      customConfig: data.data.customConfig,
+      settings: fromRenewletExportSettingsV1(data.data.settings),
+      customConfig: prepareRenewletExportCustomConfig(data.data.customConfig, assetFiles, assets),
+      exchangeRateSnapshots: data.data.exchangeRateSnapshots,
     }),
     assets,
     warnings,
+  };
+}
+
+function prepareRenewletExportCustomConfig(
+  config: RenewletExportV1["data"]["customConfig"],
+  assetFiles: Map<string, ImportAssetSource>,
+  assets: ImportAssetRef[],
+): RenewletExportV1["data"]["customConfig"] {
+  if (!config) return undefined;
+  return {
+    ...config,
+    paymentMethods: config.paymentMethods.map((item, index) => {
+      const icon = item.icon?.trim();
+      if (!icon) return item;
+      const asset = assetFiles.get(icon);
+      if (asset) {
+        assets.push(makePaymentMethodIconAssetRef(index, icon.split("/").pop() ?? "renewlet-icon", asset));
+      }
+      if (asset || isExportAssetPath(icon)) {
+        const { icon: _icon, ...rest } = item;
+        return rest;
+      }
+      return item;
+    }),
   };
 }
 
@@ -295,7 +327,7 @@ function mapWallosRow(
   const logoAsset = logo ? context.logoFiles.get(logo) : undefined;
   const logoExternal = /^https?:\/\//i.test(logo) ? logo : undefined;
   if (logo && logoAsset) {
-    context.assets.push(makeAssetRef(related.subscriptionIndex, logo, logoAsset));
+    context.assets.push(makeSubscriptionLogoAssetRef(related.subscriptionIndex, logo, logoAsset));
   } else if (logoExternal) {
     localWarnings.push(IMPORT_MESSAGE_CODES.externalLogo);
   } else if (logo) {
@@ -360,7 +392,7 @@ function makeImportSubscription(input: {
   return {
     name: input.name,
     logo: input.logo ?? null,
-    price: Math.max(0, input.price),
+    price: moneyFromNumber(Math.max(0, input.price)),
     currency: input.currency,
     billingCycle: input.billing.billingCycle,
     customDays: input.billing.billingCycle === "custom" ? input.billing.customDays ?? 1 : null,
@@ -407,10 +439,20 @@ function truncateImportNotes(value: string | undefined): string | null {
   return text.length > MAX_IMPORT_NOTES_LENGTH ? text.slice(0, MAX_IMPORT_NOTES_LENGTH) : text;
 }
 
-function makeAssetRef(subscriptionIndex: number, filename: string, source: ImportAssetSource): ImportAssetRef {
-  return typeof source === "string"
-    ? { subscriptionIndex, filename, zipEntryName: source }
-    : { subscriptionIndex, filename, blob: source };
+function makeSubscriptionLogoAssetRef(subscriptionIndex: number, filename: string, source: ImportAssetSource): ImportAssetRef {
+  return source instanceof Blob
+    ? { target: { type: "subscriptionLogo", subscriptionIndex }, kind: "logo", filename, blob: source }
+    : { target: { type: "subscriptionLogo", subscriptionIndex }, kind: "logo", filename, ...source };
+}
+
+function makePaymentMethodIconAssetRef(paymentMethodIndex: number, filename: string, source: ImportAssetSource): ImportAssetRef {
+  return source instanceof Blob
+    ? { target: { type: "paymentMethodIcon", paymentMethodIndex }, kind: "icon", filename, blob: source }
+    : { target: { type: "paymentMethodIcon", paymentMethodIndex }, kind: "icon", filename, ...source };
+}
+
+function isExportAssetPath(value: string | undefined): boolean {
+  return Boolean(value && /^assets\/[^/][A-Za-z0-9._/-]*$/.test(value) && !value.includes(".."));
 }
 
 function wallosBilling(row: WallosTableRow, warnings: string[]): ImportBillingCycle {
@@ -527,10 +569,13 @@ function currencyFromSymbol(symbol: string, config: Pick<CustomConfig, "currenci
   if (stableDefault && (enabledCandidates.includes(stableDefault) || enabledCandidates.length !== 1) && unique.includes(stableDefault)) {
     return stableDefault;
   }
-  if (enabledCandidates.length === 1) return enabledCandidates[0]!;
-  if (unique.length === 1) return unique[0]!;
+  const onlyEnabledCandidate = enabledCandidates.length === 1 ? enabledCandidates.at(0) : undefined;
+  if (onlyEnabledCandidate) return onlyEnabledCandidate;
+  const onlyCandidate = unique.length === 1 ? unique.at(0) : undefined;
+  if (onlyCandidate) return onlyCandidate;
   // Wallos UI JSON 只给符号；多义符号必须落到真实候选币种，不能退到候选外的设置默认币种。
-  const selected = enabledCandidates[0] ?? unique[0]!;
+  const selected = enabledCandidates.at(0) ?? unique.at(0);
+  if (!selected) return fallback;
   warnings.push(importMessage(IMPORT_MESSAGE_CODES.currencySymbolAmbiguous, normalizedSymbol, selected));
   return selected;
 }

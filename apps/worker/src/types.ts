@@ -6,14 +6,16 @@ import type { CustomCycleUnit } from "@renewlet/shared/runtime";
 /**
  * Env 的 binding 字段来自 `wrangler types --env-file /dev/null` 生成结果；这里仅补 CI 注入的可选构建元信息。
  *
- * `SETUP_ENABLED` 在 wrangler.jsonc 中有默认值，但测试和生成配置可能显式省略，运行时仍按关闭外的字符串判断。
+ * `SETUP_ENABLED` 与维护开关在 wrangler.jsonc 中有默认值，但测试和生成配置可能显式省略。
  */
-export type Env = Omit<Cloudflare.Env, "SETUP_ENABLED"> & {
+export type Env = Omit<Cloudflare.Env, "SETUP_ENABLED" | "RENEWLET_MAINTENANCE_MODE" | "MEDIA_ICON_INDEX_REFRESH_QUEUE"> & {
   SETUP_ENABLED?: string;
+  RENEWLET_MAINTENANCE_MODE?: string;
   SESSION_TTL_DAYS?: string;
   RENEWLET_VERSION?: string;
   RENEWLET_COMMIT?: string;
   RENEWLET_BUILD_TIME?: string;
+  MEDIA_ICON_INDEX_REFRESH_QUEUE?: Queue<unknown>;
 };
 
 /** D1 users 行模型；只在 Worker 内部使用，公开用户响应必须经过 shared/admin schema。 */
@@ -31,10 +33,11 @@ export interface UserRow {
   updated_at: string;
 }
 
-/** Worker session 表保存 token hash；浏览器只持有原始 Bearer token，不读取此行结构。 */
+/** Worker session 表保存 session/CSRF hash；浏览器只能通过 HttpOnly cookie 使用原始 session token。 */
 export interface SessionRow {
   id: string;
   token_hash: string;
+  csrf_token_hash: string | null;
   user_id: string;
   expires_at: string;
   created_at: string;
@@ -45,6 +48,7 @@ export interface SessionRow {
 export interface SessionAuthRow extends UserRow {
   session_id: string;
   session_token_hash: string;
+  session_csrf_token_hash: string | null;
   session_user_id: string;
   session_expires_at: string;
   session_created_at: string;
@@ -137,13 +141,23 @@ export interface TelegramBotBindingRow {
   updated_at: string;
 }
 
+/** 站点级登录人机验证配置；key 固定为 global，secret 只给 Worker Siteverify 使用，不进入 status、备份或前端响应。 */
+export interface AuthSecuritySettingsRow {
+  key: "global";
+  turnstile_enabled: number;
+  turnstile_site_key: string;
+  turnstile_secret: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** D1 订阅行模型；snake_case 与整数布尔必须在 `toApiSubscription` 里收敛到 shared schema。 */
 export interface SubscriptionRow {
   id: string;
   user_id: string;
   name: string;
   logo: string | null;
-  price: number;
+  price: string;
   currency: string;
   billing_cycle: string;
   custom_days: number | null;
@@ -168,10 +182,40 @@ export interface SubscriptionRow {
   repeat_reminder_interval: string;
   repeat_reminder_window: string;
   cost_sharing_json?: string;
+  // 内部镜像列只给 D1 通知候选索引使用；API 出站必须继续从 cost_sharing_json 解析。
+  cost_sharing_collection_reminder_enabled: number;
+  cost_sharing_next_collection_reminder_date: string | null;
   extra_json: string;
   created_at: string;
   updated_at: string;
 }
+
+/** 私有集合查询只读取轻量 DTO 所需列，详情字段不会进入列表、统计或日历的 D1 结果集。 */
+export type SubscriptionCollectionRow = Pick<SubscriptionRow,
+  | "id"
+  | "name"
+  | "logo"
+  | "price"
+  | "currency"
+  | "billing_cycle"
+  | "custom_days"
+  | "custom_cycle_unit"
+  | "one_time_term_count"
+  | "one_time_term_unit"
+  | "category"
+  | "status"
+  | "pinned"
+  | "public_hidden"
+  | "payment_method"
+  | "start_date"
+  | "next_billing_date"
+  | "auto_renew"
+  | "auto_calculate_next_billing_date"
+  | "trial_end_date"
+  | "reminder_days"
+  | "cost_sharing_json"
+  | "created_at"
+>;
 
 /** 每用户调度 gate；Cron 先读这里，空状态下不再触碰 subscriptions 候选查询。 */
 export interface SubscriptionSchedulerStateRow {
@@ -215,7 +259,11 @@ export interface SubscriptionListIndexRow {
 export interface SubscriptionUserStatsRow {
   user_id: string;
   total_count: number;
-  status_counts_json: string;
+  trial_count: number;
+  active_count: number;
+  expired_count: number;
+  paused_count: number;
+  cancelled_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -270,6 +318,21 @@ export interface PublicStatusPageRow {
   updated_at: string;
 }
 
+/** 月度汇率快照锁定报表折算口径；只保存 normalized USD rates 和非密来源 metadata。 */
+export interface ExchangeRateSnapshotRow {
+  user_id: string;
+  month: string;
+  base: "USD";
+  rates_json: string;
+  requested_provider: "frankfurter" | "floatrates" | "exchange-api";
+  provider: "frankfurter" | "floatrates" | "exchange-api";
+  source_date: string;
+  captured_at: string;
+  warning_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** 云同步与备份目标；credential_json 是 provider 级 write-only secret，出站只能暴露 credentialSet。 */
 export interface CloudBackupTargetRow {
   user_id: string;
@@ -306,9 +369,24 @@ export interface MediaIconIndexRow {
   updated_at: string;
 }
 
+/** 内置图标刷新 job；HTTP 只入队，Queue consumer 才允许写 R2 并切换 active 索引。 */
+export interface MediaIconIndexRefreshJobRow {
+  id: string;
+  provider: "thesvg" | "selfhst" | "dashboardIcons";
+  status: "queued" | "running" | "succeeded" | "failed";
+  attempts: number;
+  error: string | null;
+  index_hash?: string | null;
+  artifact_hash?: string | null;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** 已通过 Worker session 校验的请求上下文。 */
 export interface AuthContext {
-  token: string;
   session: SessionRow;
   user: UserRow;
 }

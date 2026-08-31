@@ -14,17 +14,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 )
 
-const maxImportJSONBodyBytes int64 = 50 << 20
-const maxImportPreviewSubscriptions = 5000
+const maxImportJSONBodyBytes int64 = 8 << 20
+const maxImportPreviewSubscriptions = 1000
 const maxImportApplySubscriptions = 200
-const importExistingPageSize = 500
 const importWarningLowConfidenceKey = "IMPORT_WARNING_LOW_CONFIDENCE_KEY"
 const importWarningLowConfidenceNameMatched = "IMPORT_WARNING_LOW_CONFIDENCE_NAME_MATCHED"
 
@@ -41,16 +42,17 @@ type importApplyRequest struct {
 }
 
 type importPayload struct {
-	Source        string               `json:"source"`
-	Subscriptions []importSubscription `json:"subscriptions"`
-	Settings      json.RawMessage      `json:"settings,omitempty"`
-	CustomConfig  *customConfigPayload `json:"customConfig,omitempty"`
+	Source                string                    `json:"source"`
+	Subscriptions         []importSubscription      `json:"subscriptions"`
+	Settings              json.RawMessage           `json:"settings,omitempty"`
+	CustomConfig          *customConfigPayload      `json:"customConfig,omitempty"`
+	ExchangeRateSnapshots []exchangeRateSnapshotDTO `json:"exchangeRateSnapshots,omitempty"`
 }
 
 type importSubscription struct {
 	Name                         string                 `json:"name"`
 	Logo                         *string                `json:"logo,omitempty"`
-	Price                        float64                `json:"price"`
+	Price                        string                 `json:"price"`
 	Currency                     string                 `json:"currency"`
 	BillingCycle                 string                 `json:"billingCycle"`
 	CustomDays                   *int                   `json:"customDays,omitempty"`
@@ -74,14 +76,17 @@ type importSubscription struct {
 	RepeatReminderEnabled        bool                   `json:"repeatReminderEnabled"`
 	RepeatReminderInterval       string                 `json:"repeatReminderInterval"`
 	RepeatReminderWindow         string                 `json:"repeatReminderWindow"`
+	CostSharing                  map[string]interface{} `json:"costSharing,omitempty"`
 	Extra                        map[string]interface{} `json:"extra"`
 }
 
 type importPreviewResponse struct {
-	Summary              importSummary       `json:"summary"`
-	Items                []importPreviewItem `json:"items"`
-	IncludesSettings     bool                `json:"includesSettings"`
-	IncludesCustomConfig bool                `json:"includesCustomConfig"`
+	Summary                       importSummary       `json:"summary"`
+	Items                         []importPreviewItem `json:"items"`
+	IncludesSettings              bool                `json:"includesSettings"`
+	IncludesCustomConfig          bool                `json:"includesCustomConfig"`
+	IncludesExchangeRateSnapshots bool                `json:"includesExchangeRateSnapshots"`
+	ExchangeRateSnapshotsCount    int                 `json:"exchangeRateSnapshotsCount"`
 }
 
 type importApplyResponse struct {
@@ -129,12 +134,31 @@ func (r *importApplyRequest) Validate(locale appLocale) error {
 }
 
 func handleImportPreview(app core.App, e *core.RequestEvent) error {
+	startedAt := time.Now()
+	itemCount := 0
+	defer func() {
+		slog.Info("import preview resources",
+			"body_bytes", e.Request.ContentLength,
+			"items", itemCount,
+			"duration", time.Since(startedAt),
+		)
+	}()
 	locale := requestLocale(e.Request)
-	// 导入 payload 不包含二进制资产，但 5000 条订阅和 extra 元数据会超过普通 API 的 1MiB 上限。
+	// 导入请求在完整解析前限制为 8 MiB，避免同时持有大 body、现有订阅和预览结果。
 	body, err := decodeStrictJSONWithLimit[importPreviewRequest](e.Request, locale, maxImportJSONBodyBytes)
 	if err != nil {
+		if isImportTooLargeError(err) {
+			return apiErrorJSON(e, http.StatusRequestEntityTooLarge, "IMPORT_TOO_LARGE", serverText(locale, "import.invalid"), nil)
+		}
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
+	if err := body.Validate(locale); err != nil {
+		if isImportTooLargeError(err) {
+			return apiErrorJSON(e, http.StatusRequestEntityTooLarge, "IMPORT_TOO_LARGE", serverText(locale, "import.invalid"), nil)
+		}
+		return e.BadRequestError(validationErrorMessage(locale, "common.invalidPayload", err), err)
+	}
+	itemCount = len(body.Payload.Subscriptions)
 	response, err := previewImportPayload(app, e.Auth, body.Payload, body.ConflictMode, body.SkipIndexes)
 	if err != nil {
 		return e.BadRequestError(serverText(locale, "import.invalid"), err)
@@ -143,12 +167,31 @@ func handleImportPreview(app core.App, e *core.RequestEvent) error {
 }
 
 func handleImportApply(app core.App, e *core.RequestEvent) error {
+	startedAt := time.Now()
+	itemCount := 0
+	defer func() {
+		slog.Info("import apply resources",
+			"body_bytes", e.Request.ContentLength,
+			"items", itemCount,
+			"duration", time.Since(startedAt),
+		)
+	}()
 	locale := requestLocale(e.Request)
 	// apply 会重新预览再进事务，防止调用方篡改 preview 结果后直接写库。
 	body, err := decodeStrictJSONWithLimit[importApplyRequest](e.Request, locale, maxImportJSONBodyBytes)
 	if err != nil {
+		if isImportTooLargeError(err) {
+			return apiErrorJSON(e, http.StatusRequestEntityTooLarge, "IMPORT_TOO_LARGE", serverText(locale, "import.invalid"), nil)
+		}
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
+	if err := body.Validate(locale); err != nil {
+		if isImportTooLargeError(err) {
+			return apiErrorJSON(e, http.StatusRequestEntityTooLarge, "IMPORT_TOO_LARGE", serverText(locale, "import.invalid"), nil)
+		}
+		return e.BadRequestError(validationErrorMessage(locale, "common.invalidPayload", err), err)
+	}
+	itemCount = len(body.Payload.Subscriptions)
 	preview, err := previewImportPayload(app, e.Auth, body.Payload, body.ConflictMode, body.SkipIndexes)
 	if err != nil {
 		return e.BadRequestError(serverText(locale, "import.invalid"), err)
@@ -162,6 +205,11 @@ func handleImportApply(app core.App, e *core.RequestEvent) error {
 	return apiSuccessJSON(e, http.StatusOK, importApplyResponse{importPreviewResponse: preview})
 }
 
+func isImportTooLargeError(err error) bool {
+	message := err.Error()
+	return strings.Contains(message, "body too large") || strings.Contains(message, "IMPORT_TOO_MANY_SUBSCRIPTIONS")
+}
+
 func validateImportPayload(payload importPayload, conflictMode string, skipIndexes []int, maxSubscriptions int, _ appLocale) error {
 	if conflictMode != "replace" && conflictMode != "skip" {
 		return errors.New("IMPORT_CONFLICT_MODE_INVALID")
@@ -171,6 +219,12 @@ func validateImportPayload(payload importPayload, conflictMode string, skipIndex
 	}
 	if len(payload.Subscriptions) > maxSubscriptions {
 		return errors.New("IMPORT_TOO_MANY_SUBSCRIPTIONS")
+	}
+	if len(payload.ExchangeRateSnapshots) > maxExchangeRateSnapshotsPerUser {
+		return errors.New("IMPORT_TOO_MANY_EXCHANGE_RATE_SNAPSHOTS")
+	}
+	if len(payload.ExchangeRateSnapshots) > 0 && payload.Source != "renewlet" {
+		return errors.New("IMPORT_EXCHANGE_RATE_SNAPSHOTS_SOURCE_INVALID")
 	}
 	if _, err := importSkippedIndexSet(skipIndexes, len(payload.Subscriptions)); err != nil {
 		return err
@@ -192,11 +246,16 @@ func validateImportPayload(payload importPayload, conflictMode string, skipIndex
 			return err
 		}
 	}
+	for index := range payload.ExchangeRateSnapshots {
+		if err := normalizeExchangeRateSnapshotDTO(&payload.ExchangeRateSnapshots[index]); err != nil {
+			return fmt.Errorf("exchangeRateSnapshots %d: %w", index+1, err)
+		}
+	}
 	return nil
 }
 
 func previewImportPayload(app core.App, user *core.Record, payload importPayload, conflictMode string, skipIndexes []int) (importPreviewResponse, error) {
-	rows, err := listImportExistingSubscriptions(app, user.Id)
+	rows, err := listOwnedSubscriptionRecords(app, user.Id)
 	if err != nil {
 		return importPreviewResponse{}, err
 	}
@@ -264,17 +323,19 @@ func previewImportPayload(app core.App, user *core.Record, payload importPayload
 		items = append(items, item)
 	}
 	return importPreviewResponse{
-		Summary:              summarizeImportItems(items),
-		Items:                items,
-		IncludesSettings:     len(strings.TrimSpace(string(payload.Settings))) > 0,
-		IncludesCustomConfig: payload.CustomConfig != nil,
+		Summary:                       summarizeImportItems(items),
+		Items:                         items,
+		IncludesSettings:              len(strings.TrimSpace(string(payload.Settings))) > 0,
+		IncludesCustomConfig:          payload.CustomConfig != nil,
+		IncludesExchangeRateSnapshots: len(payload.ExchangeRateSnapshots) > 0,
+		ExchangeRateSnapshotsCount:    len(payload.ExchangeRateSnapshots),
 	}, nil
 }
 
 func applyImportPayload(app core.App, user *core.Record, payload importPayload, conflictMode string, skipIndexes []int) error {
 	// 导入写入包在 PocketBase 事务内完成；任意订阅、settings 或 custom config 失败都不能留下半套迁移数据。
 	return app.RunInTransaction(func(txApp core.App) error {
-		rows, err := listImportExistingSubscriptions(txApp, user.Id)
+		rows, err := listOwnedSubscriptionRecords(txApp, user.Id)
 		if err != nil {
 			return err
 		}
@@ -308,28 +369,24 @@ func applyImportPayload(app core.App, user *core.Record, payload importPayload, 
 				return err
 			}
 		}
-		if err := applyImportedSettings(txApp, user, payload.Settings); err != nil {
+		scheduleChanged, err := applyImportedSettings(txApp, user, payload.Settings)
+		if err != nil {
 			return err
+		}
+		if scheduleChanged {
+			// 导入 settings 与订阅事实同处一个事务；重建失败必须回滚整包，不能留下旧时区下的 due-index。
+			if _, err := refreshSubscriptionSchedulerState(txApp, user.Id, false); err != nil {
+				return err
+			}
 		}
 		if err := applyImportedCustomConfig(txApp, user, payload.CustomConfig); err != nil {
 			return err
 		}
+		if err := applyImportedExchangeRateSnapshots(txApp, user, payload.ExchangeRateSnapshots); err != nil {
+			return err
+		}
 		return nil
 	})
-}
-
-func listImportExistingSubscriptions(app core.App, userID string) ([]*core.Record, error) {
-	rows := []*core.Record{}
-	for offset := 0; ; offset += importExistingPageSize {
-		page, err := app.FindRecordsByFilter("subscriptions", "user = {:user}", "-created", importExistingPageSize, offset, dbx.Params{"user": userID})
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, page...)
-		if len(page) < importExistingPageSize {
-			return rows, nil
-		}
-	}
 }
 
 func validateImportSubscription(app core.App, user *core.Record, subscription importSubscription) error {
@@ -346,7 +403,7 @@ func validateImportSubscription(app core.App, user *core.Record, subscription im
 	record := core.NewRecord(collection)
 	setImportSubscriptionRecord(record, user.Id, subscription)
 	// 预览只校验不写库；复用 hooks 的核心规范化，保证 Docker 与普通订阅写入边界一致。
-	return normalizeSubscriptionRecord(record)
+	return normalizeSubscriptionRecordWithApp(app, record)
 }
 
 func setImportSubscriptionRecord(record *core.Record, userID string, subscription importSubscription) {
@@ -393,35 +450,53 @@ func setImportSubscriptionRecord(record *core.Record, userID string, subscriptio
 	record.Set("repeatReminderEnabled", subscription.RepeatReminderEnabled)
 	record.Set("repeatReminderInterval", subscription.RepeatReminderInterval)
 	record.Set("repeatReminderWindow", subscription.RepeatReminderWindow)
+	if subscription.CostSharing != nil {
+		record.Set("costSharing", subscription.CostSharing)
+	} else {
+		record.Set("costSharing", emptyJSONPayload{})
+	}
 	// extra.import 是导入唯一同源键；只写 allowlist 字段后再整体存入 JSON，避免用户 payload 扩权。
 	record.Set("extra", subscription.Extra)
 }
 
-func applyImportedSettings(app core.App, user *core.Record, raw json.RawMessage) error {
+func applyImportedSettings(app core.App, user *core.Record, raw json.RawMessage) (bool, error) {
 	if len(strings.TrimSpace(string(raw))) == 0 {
-		return nil
+		return false, nil
 	}
 	current := defaultAppSettings()
 	record, err := app.FindFirstRecordByFilter("settings", "user = {:user}", dbx.Params{"user": user.Id})
 	if err == nil && record != nil {
-		current = settingsFromRecord(record)
+		current, err = settingsFromRecord(record)
+		if err != nil {
+			return false, err
+		}
 	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return false, err
 	}
 	next, err := mergeSettingsForWrite(current, raw)
 	if err != nil {
-		return err
+		return false, err
 	}
+	scheduleChanged := importSettingsAffectSchedule(current, next)
 	if record == nil {
 		collection, err := app.FindCollectionByNameOrId("settings")
 		if err != nil {
-			return err
+			return false, err
 		}
 		record = core.NewRecord(collection)
 		record.Set("user", user.Id)
 	}
 	record.Set("settings", next)
-	return app.Save(record)
+	if err := app.Save(record); err != nil {
+		return false, err
+	}
+	return scheduleChanged, nil
+}
+
+func importSettingsAffectSchedule(before appSettings, after appSettings) bool {
+	return before.Timezone != after.Timezone ||
+		before.NotificationTimeLocal != after.NotificationTimeLocal ||
+		before.NotificationReminderDays != after.NotificationReminderDays
 }
 
 func applyImportedCustomConfig(app core.App, user *core.Record, config *customConfigPayload) error {

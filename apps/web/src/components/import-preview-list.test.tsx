@@ -6,8 +6,8 @@ import type { ImportPayload, ImportPreviewResponse } from "@/lib/api/schemas/imp
 import type { PreparedImport } from "@/modules/import-export/domain/import-export-model";
 
 vi.mock("@/components/import-logo-editor", () => ({
-  ImportLogoEditor: ({ name }: { name: string }) => (
-    <button type="button">修改 {name} Logo</button>
+  ImportLogoEditor: ({ name, website }: { name: string; website?: string | null }) => (
+    <button type="button" data-website={website ?? ""}>修改 {name} Logo</button>
   ),
 }));
 
@@ -17,7 +17,7 @@ const payload = {
     {
       name: "ngrok",
       logo: "https://example.com/ngrok.svg",
-      price: 12,
+      price: "12",
       currency: "USD",
       category: "developer_tools",
       status: "active",
@@ -78,6 +78,8 @@ const preview = {
   ],
   includesSettings: false,
   includesCustomConfig: false,
+  includesExchangeRateSnapshots: false,
+  exchangeRateSnapshotsCount: 0,
 } satisfies ImportPreviewResponse;
 
 describe("ImportPreviewList", () => {
@@ -101,6 +103,30 @@ describe("ImportPreviewList", () => {
     expect(logo).toHaveClass("subscription-logo-image", "object-contain");
     expect(logo).not.toHaveClass("media-thumbnail-image", "invert", "brightness-125", "mix-blend-screen");
     expect(logoTile).not.toHaveClass("media-thumbnail-canvas");
-    expect(logoTile).not.toHaveClass("bg-gradient-to-br");
+    expect(logoTile).not.toHaveClass("bg-linear-to-br");
+  });
+
+  it("passes the imported website to each row Logo editor", () => {
+    const preparedWithWebsite = {
+      ...prepared,
+      payload: {
+        ...payload,
+        subscriptions: [{ ...payload.subscriptions[0]!, website: "https://ngrok.com/" }],
+      },
+    } satisfies PreparedImport;
+
+    render(
+      <ImportPreviewList
+        prepared={preparedWithWebsite}
+        preview={preview}
+        filter="all"
+        skippedIndexes={new Set<number>()}
+        onFilterChange={vi.fn()}
+        onLogoChange={vi.fn()}
+        onSkipChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "修改 ngrok Logo" })).toHaveAttribute("data-website", "https://ngrok.com/");
   });
 });

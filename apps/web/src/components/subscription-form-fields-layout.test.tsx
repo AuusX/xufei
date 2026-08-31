@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useManagedCurrencyOptions } from "@/hooks/use-managed-currency-options";
 import { assertDateOnly } from "@/lib/time/date-only";
 import { createSubscriptionFormState, type SubscriptionFormState } from "@/types/subscription-form";
 import { SubscriptionFormFields, type SubscriptionFormErrors } from "./subscription-form-fields";
@@ -37,6 +38,11 @@ function Harness({
     nextBillingDate: assertDateOnly("2026-02-01"),
     ...formOverrides,
   }));
+  const currencyOptions = useManagedCurrencyOptions({
+    currencies: config.currencies,
+    includeDisabledCurrent: formData.currency,
+    locale: "zh-CN",
+  });
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -45,6 +51,7 @@ function Harness({
         config={config}
         formData={formData}
         setFormData={setFormData}
+        currencyOptions={currencyOptions}
         showLogoField={false}
         onLogoUploadStatusChange={vi.fn()}
         errors={formErrors}
@@ -75,6 +82,8 @@ describe("SubscriptionFormFields layout", () => {
     expect(error).toHaveAttribute("id", "price-error");
     expect(priceField).not.toContainElement(error);
     expect(priceRow).toContainElement(error);
+    expect(priceRow).toHaveAttribute("data-align-at", "sm");
+    expect(priceRow).toHaveAttribute("data-tracks", "2");
   });
 
   it("keeps start date before next billing date in the date row", () => {
@@ -86,7 +95,7 @@ describe("SubscriptionFormFields layout", () => {
     expect(Boolean(startLabel.compareDocumentPosition(nextLabel) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
-  it("renders missing next billing date errors inside the next billing date field", () => {
+  it("renders missing next billing date errors in the shared date row", () => {
     render(<Harness
       errors={{ dates: "请选择到期日期" }}
       formOverrides={{ startDate: undefined, nextBillingDate: undefined }}
@@ -101,7 +110,8 @@ describe("SubscriptionFormFields layout", () => {
     expect(nextBillingDateButton).toHaveAttribute("aria-invalid", "true");
     expect(nextBillingDateButton).toHaveAttribute("aria-describedby", "nextBillingDate-error");
     expect(dateError).toHaveAttribute("id", "nextBillingDate-error");
-    expect(nextBillingDateField).toContainElement(dateError);
+    expect(nextBillingDateField).not.toContainElement(dateError);
+    expect(nextBillingDateButton?.closest('[data-slot="form-field-row"]')).toContainElement(dateError);
     expect(startDateField).not.toContainElement(dateError);
   });
 
@@ -121,11 +131,12 @@ describe("SubscriptionFormFields layout", () => {
     expect(startDateButton).toHaveAttribute("aria-describedby", "startDate-error");
     expect(nextBillingDateButton).toHaveAttribute("aria-invalid", "false");
     expect(dateError).toHaveAttribute("id", "startDate-error");
-    expect(startDateField).toContainElement(dateError);
+    expect(startDateField).not.toContainElement(dateError);
+    expect(startDateButton?.closest('[data-slot="form-field-row"]')).toContainElement(dateError);
     expect(nextBillingDateField).not.toContainElement(dateError);
   });
 
-  it("renders date-order errors inside the next billing date field", () => {
+  it("renders date-order errors in the shared date row", () => {
     render(<Harness
       errors={{ dates: "到期日期不能早于开始日期" }}
       formOverrides={{
@@ -141,7 +152,8 @@ describe("SubscriptionFormFields layout", () => {
     expect(nextBillingDateButton).toHaveAttribute("aria-invalid", "true");
     expect(nextBillingDateButton).toHaveAttribute("aria-describedby", "nextBillingDate-error");
     expect(dateError).toHaveAttribute("id", "nextBillingDate-error");
-    expect(nextBillingDateField).toContainElement(dateError);
+    expect(nextBillingDateField).not.toContainElement(dateError);
+    expect(nextBillingDateButton?.closest('[data-slot="form-field-row"]')).toContainElement(dateError);
   });
 
   it("clears stale date errors when switching billing cycle shape", async () => {
@@ -180,6 +192,10 @@ describe("SubscriptionFormFields layout", () => {
     />);
 
     expect(screen.getByText("请输入有效的服务时长")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "一次性购买类型" })).toHaveAttribute(
+      "aria-labelledby",
+      "oneTimeMode-label",
+    );
 
     await user.click(screen.getByRole("button", { name: "长期有效" }));
 

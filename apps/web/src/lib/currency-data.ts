@@ -1,32 +1,23 @@
 /**
  * 汇率适配器、设置页和订阅表单共享的货币数据。
  *
- * 支持集合固定为 fawazahmed0/exchange-api 与 FloatRates JSON Feeds 的交集，
- * 已在 2026-05-17 核验。标签和符号运行时由 Intl 派生，让列表保持紧凑且支持 locale。
+ * 支持集合固定为 Frankfurter、fawazahmed0/exchange-api 与 FloatRates 可互补覆盖的法币集合。
+ * 三方少量漂移由汇率 store 补齐并提示；标签和符号运行时由 Intl 派生，让列表保持紧凑且支持 locale。
  */
 import { DEFAULT_LOCALE, type Locale } from "@/i18n/locales";
+import {
+  SUPPORTED_EXCHANGE_RATE_CURRENCIES,
+  type SupportedExchangeRateCurrency,
+} from "@renewlet/shared/schemas/exchange-rates";
 
-export const SUPPORTED_EXCHANGE_RATE_CURRENCIES = [
-  "AED", "AFN", "ALL", "AMD", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT",
-  "BHD", "BIF", "BND", "BOB", "BRL", "BSD", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF",
-  "CLP", "CNY", "COP", "CRC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP",
-  "ERN", "ETB", "EUR", "FJD", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD",
-  "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK", "JMD", "JOD",
-  "JPY", "KES", "KGS", "KHR", "KMF", "KRW", "KWD", "KZT", "LAK", "LBP", "LKR", "LRD",
-  "LSL", "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR",
-  "MWK", "MXN", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR", "PAB",
-  "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD", "RUB", "RWF", "SAR",
-  "SBD", "SCR", "SDG", "SEK", "SGD", "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL",
-  "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD",
-  "UYU", "UZS", "VES", "VND", "VUV", "WST", "XAF", "XCD", "XCG", "XOF", "XPF", "YER",
-  "ZAR", "ZMW",
-] as const;
-
-export type SupportedExchangeRateCurrency = (typeof SUPPORTED_EXCHANGE_RATE_CURRENCIES)[number];
+export {
+  SUPPORTED_EXCHANGE_RATE_CURRENCIES,
+  type SupportedExchangeRateCurrency,
+};
 
 const SUPPORTED_EXCHANGE_RATE_CURRENCY_SET = new Set<string>(SUPPORTED_EXCHANGE_RATE_CURRENCIES);
 
-/** 产品级常用货币顺序：只用于默认货币管理顺序、旧默认快照迁移和汇率预览口径。 */
+/** 产品级常用货币顺序：只用于生成空配置/新用户的默认货币管理顺序。 */
 export const COMMON_CURRENCY_PRIORITY = [
   "CNY", "USD", "EUR", "GBP", "AUD", "TRY", "NGN", "ARS", "PHP",
 ] as const satisfies readonly SupportedExchangeRateCurrency[];
@@ -77,6 +68,20 @@ export function getIntlCurrencySymbol(currency: string, locale: Locale = DEFAULT
       maximumFractionDigits: 0,
     }).formatToParts(0);
     return symbolParts.find((part) => part.type === "currency")?.value ?? narrowSymbol ?? currency;
+  } catch {
+    return currency;
+  }
+}
+
+export function getIntlCurrencyNarrowSymbol(currency: string, locale: Locale = DEFAULT_LOCALE): string {
+  try {
+    const parts = new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency,
+      currencyDisplay: "narrowSymbol",
+      maximumFractionDigits: 0,
+    }).formatToParts(0);
+    return parts.find((part) => part.type === "currency")?.value ?? currency;
   } catch {
     return currency;
   }

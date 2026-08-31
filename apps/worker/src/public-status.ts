@@ -18,6 +18,7 @@ import { requireAuth } from "./auth";
 import { HttpError, ok, readJson, requestLocale, successJson } from "./http";
 import { serverText, type AppLocale } from "./server-i18n";
 import { calendarFeedBuiltInCategoryLabelKey } from "./calendar-feed-built-in-labels";
+import { getExchangeRatePublicBasis } from "./exchange-rate-snapshots";
 import { requestOrigin } from "./request-origin";
 import type { AssetRow, Env, PublicStatusPageRow, SubscriptionRow } from "./types";
 
@@ -82,7 +83,8 @@ export async function readPublicStatus(request: Request, env: Env, token: string
   const page = await getPublicStatusPageByToken(env, token);
   if (!page) throw new HttpError(404, serverText(locale, "common.notFound"), "NOT_FOUND");
   const settings = await getSettings(env, page.user_id);
-  const resolver = await newPublicStatusCategoryResolver(env, page.user_id, settings.locale);
+  // 公开状态页属于访客界面；分类标签跟随本次请求，不继承页面 owner 的账号内容语言。
+  const resolver = await newPublicStatusCategoryResolver(env, page.user_id, locale);
   const { rows, truncated } = await listPublicStatusSubscriptions(env, page.user_id);
   const today = todayDateOnly(settings.timezone);
   const showPrices = intToBool(page.show_prices);
@@ -91,6 +93,7 @@ export async function readPublicStatus(request: Request, env: Env, token: string
       title: "Renewlet",
       showPrices,
       ...(showPrices ? { currency: effectivePublicStatusCurrency(settings) } : {}),
+      ...(showPrices ? { exchangeRateBasis: await getExchangeRatePublicBasis(env, page.user_id) } : {}),
       generatedAt: nowIso(),
       truncated,
     },
@@ -254,7 +257,9 @@ function todayDateOnly(timezone: string): string {
 function publicStatusLogoUrl(request: Request, token: string, logo: string): string {
   const match = privateAssetLogoPattern.exec(logo);
   if (!match) return logo;
-  return `${requestOrigin(request)}/api/public/status/${encodeURIComponent(token)}/assets/${encodeURIComponent(match[1]!)}`;
+  const assetId = match[1];
+  if (!assetId) return logo;
+  return `${requestOrigin(request)}/api/public/status/${encodeURIComponent(token)}/assets/${encodeURIComponent(assetId)}`;
 }
 
 async function publicStatusAssetIsReferenced(env: Env, userId: string, assetId: string): Promise<boolean> {

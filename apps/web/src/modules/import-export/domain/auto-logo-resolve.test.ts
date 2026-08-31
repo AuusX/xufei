@@ -20,7 +20,7 @@ function prepared(): PreparedImport {
         {
           name: "Netflix",
           logo: null,
-          price: 9.99,
+          price: "9.99",
           currency: "USD",
           billingCycle: "monthly",
           customDays: null,
@@ -49,7 +49,7 @@ function prepared(): PreparedImport {
         {
           name: "Unknown Tool",
           logo: null,
-          price: 3,
+          price: "3",
           currency: "USD",
           billingCycle: "monthly",
           customDays: null,
@@ -114,7 +114,7 @@ describe("resolveAutoLogosForPreparedImport", () => {
       {
         id: "0",
         autoCandidate: candidate({ url: "https://cdn.example.com/netflix.svg" }),
-        candidates: { best: null, builtIn: [], favicon: [] },
+        candidates: { best: null, builtIn: [], appStore: [], favicon: [] },
       },
       {
         id: "1",
@@ -124,11 +124,11 @@ describe("resolveAutoLogosForPreparedImport", () => {
           url: "https://icons.example.com/favicon.png",
           confidence: "exact",
         }),
-        candidates: { best: null, builtIn: [], favicon: [] },
+        candidates: { best: null, builtIn: [], appStore: [], favicon: [] },
       },
     ]));
 
-    const resolved = await resolveAutoLogosForPreparedImport(prepared());
+    const resolved = await resolveAutoLogosForPreparedImport(prepared(), new AbortController().signal);
 
     expect(resolved.payload.subscriptions[0]?.logo).toBe("https://cdn.example.com/netflix.svg");
     expect(resolved.payload.subscriptions[1]?.logo).toBeNull();
@@ -146,13 +146,53 @@ describe("resolveAutoLogosForPreparedImport", () => {
       {
         id: "0",
         autoCandidate: candidate({ confidence: "weak" }),
-        candidates: { best: null, builtIn: [], favicon: [] },
+        candidates: { best: null, builtIn: [], appStore: [], favicon: [] },
       },
     ]));
 
-    const resolved = await resolveAutoLogosForPreparedImport(prepared());
+    const resolved = await resolveAutoLogosForPreparedImport(prepared(), new AbortController().signal);
 
     expect(resolved.payload.subscriptions[0]?.logo).toBeNull();
     expect(resolved.logoAutoMatches).toBeUndefined();
+  });
+
+  it("does not treat staged payment method icons as subscription logo assets", async () => {
+    resolveMock.mockResolvedValue(response([
+      {
+        id: "0",
+        autoCandidate: candidate({ url: "https://cdn.example.com/netflix.svg" }),
+        candidates: { best: null, builtIn: [], appStore: [], favicon: [] },
+      },
+    ]));
+    const source = prepared();
+    source.assets = [{
+      target: { type: "paymentMethodIcon", paymentMethodIndex: 0 },
+      kind: "icon",
+      filename: "card.svg",
+      blob: new Blob(["svg"], { type: "image/svg+xml" }),
+    }];
+
+    const signal = new AbortController().signal;
+    const resolved = await resolveAutoLogosForPreparedImport(source, signal);
+
+    expect(resolveMock).toHaveBeenCalledWith({
+      kind: "logo",
+      mode: "auto",
+      items: [{ id: "0", name: "Netflix", website: "https://netflix.com/" }, { id: "1", name: "Unknown Tool", website: "https://example.com/" }],
+      limit: 1,
+    }, signal);
+    expect(resolved.payload.subscriptions[0]?.logo).toBe("https://cdn.example.com/netflix.svg");
+  });
+
+  it("propagates session cancellation instead of continuing with an unmodified preview", async () => {
+    const controller = new AbortController();
+    resolveMock.mockImplementationOnce(async () => {
+      controller.abort();
+      throw controller.signal.reason;
+    });
+
+    await expect(resolveAutoLogosForPreparedImport(prepared(), controller.signal)).rejects.toBe(
+      controller.signal.reason,
+    );
   });
 });

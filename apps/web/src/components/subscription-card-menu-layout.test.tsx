@@ -1,7 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { EXPLICIT_LOCALE_PREFERENCE_KEY } from "@/i18n/locales";
 import { assertDateOnly } from "@/lib/time/date-only";
 import type { Subscription } from "@/types/subscription";
 import { SubscriptionCard } from "./subscription-card";
@@ -10,7 +9,7 @@ const subscription: Subscription = {
   id: "sub-1",
   name: "Supabase Pro",
   logo: undefined,
-  price: 25,
+  price: "25",
   currency: "USD",
   billingCycle: "monthly",
   customDays: undefined,
@@ -32,6 +31,7 @@ const subscription: Subscription = {
   repeatReminderEnabled: false,
   repeatReminderInterval: "1h",
   repeatReminderWindow: "72h",
+  extra: {},
   pinned: false,
   publicHidden: false,
 };
@@ -52,6 +52,9 @@ function renderCard() {
           }],
         ])}
         paymentMethodByValue={new Map()}
+        currencyConvert={(amount) => Number(amount)}
+        currencyRatesReady={true}
+        priceReferenceCurrency={null}
         onEdit={vi.fn()}
         onDelete={vi.fn()}
         onClone={vi.fn()}
@@ -71,11 +74,14 @@ describe("SubscriptionCard menu layout", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-18T00:00:00.000Z"));
-    localStorage.setItem(EXPLICIT_LOCALE_PREFERENCE_KEY, "en-US");
+    Object.defineProperty(globalThis.navigator, "languages", { configurable: true, value: ["en-US"] });
+    Object.defineProperty(globalThis.navigator, "language", { configurable: true, value: "en-US" });
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    Object.defineProperty(globalThis.navigator, "languages", { configurable: true, value: ["zh-CN"] });
+    Object.defineProperty(globalThis.navigator, "language", { configurable: true, value: "zh-CN" });
   });
 
   it("keeps long English action labels on one line", () => {

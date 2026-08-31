@@ -2,7 +2,7 @@
   "name": "@renewlet/shared",
   "private": true,
   "license": "MIT",
-  "version": "0.2.91",
+  "version": "0.3.23",
   "type": "module",
   "exports": {
     "./schemas/api": "./src/schemas/api.ts",
@@ -22,6 +22,7 @@
     "./schemas/notifications": "./src/schemas/notifications.ts",
     "./schemas/public-api": "./src/schemas/public-api.ts",
     "./schemas/public-status": "./src/schemas/public-status.ts",
+    "./schemas/secrets": "./src/schemas/secrets.ts",
     "./schemas/settings": "./src/schemas/settings.ts",
     "./schemas/subscriptions": "./src/schemas/subscriptions.ts",
     "./schemas/telegram-bot": "./src/schemas/telegram-bot.ts",
@@ -34,29 +35,35 @@
     "./built-in-icon-index-builder": "./src/built-in-icon-index-builder.ts",
     "./calendar-events": "./src/calendar-events.ts",
     "./cost-sharing": "./src/cost-sharing.ts",
+    "./currency-region-hints": "./src/currency-region-hints.ts",
     "./contract-fixtures": "./src/contract-fixtures.ts",
     "./favicon-domains": "./src/favicon-domains.ts",
     "./media-resolver": "./src/media-resolver.ts",
     "./media-resolver-config": "./src/media-resolver-config.ts",
     "./media-resolver-fixtures": "./src/media-resolver-fixtures.ts",
+    "./money": "./src/money.ts",
+    "./online-icon-sources": "./src/online-icon-sources.ts",
     "./email-template": "./src/email-template.ts",
     "./ics": "./src/ics.ts",
+    "./i18n-config": "./src/i18n-config.ts",
     "./subscription-billing": "./src/subscription-billing.ts",
     "./subscription-renewal": "./src/subscription-renewal.ts",
+    "./settings-normalization": "./src/settings-normalization.ts",
     "./settings-defaults": "./src/settings-defaults.ts",
     "./runtime": "./src/runtime.ts"
   },
   "scripts": {
-    "test:run": "vitest run",
+    "test:perf": "vitest run src/contract-fixtures.performance.test.ts",
+    "test:run": "vitest run --exclude '**/*.performance.test.ts'",
     "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
     "@js-temporal/polyfill": "^0.5.1",
-    "ical-generator": "10.2.0",
+    "ical-generator": "11.1.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "typescript": "6.0.3",
+    "vitest": "^4.1.10"
   }
 }

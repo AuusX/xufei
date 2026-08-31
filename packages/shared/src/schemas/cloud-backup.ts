@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RENEWLET_EXPORT_SCHEMA_VERSION } from "./import-export";
 import {
   UPSTREAM_RAW_RESPONSE_TEXT_MAX_CHARS,
   upstreamErrorDetailsSchema,
@@ -8,7 +9,7 @@ import { okPayloadSchema, okResponseSchema } from "./common";
 
 export const CLOUD_BACKUP_DEFAULT_RETENTION = 7;
 export const CLOUD_BACKUP_MAX_RETENTION = 30;
-export const CLOUD_BACKUP_MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024;
+export const CLOUD_BACKUP_MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 export const CLOUD_BACKUP_RAW_RESPONSE_TEXT_MAX_CHARS = UPSTREAM_RAW_RESPONSE_TEXT_MAX_CHARS;
 export const CLOUD_BACKUP_DEFAULT_SCHEDULE_TIME = "03:00";
 export const CLOUD_BACKUP_DEFAULT_SCHEDULE_WEEKDAY = "monday";
@@ -175,7 +176,7 @@ export const cloudBackupSnapshotManifestSchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   exportKind: z.literal("renewlet-export"),
-  exportSchemaVersion: z.literal(1),
+  exportSchemaVersion: z.literal(RENEWLET_EXPORT_SCHEMA_VERSION),
 }).strict();
 export type CloudBackupSnapshotManifest = z.infer<typeof cloudBackupSnapshotManifestSchema>;
 

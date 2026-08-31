@@ -4,8 +4,16 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { assertDateOnly } from "@/lib/time/date-only";
-import type { CostSharingMember, Subscription, SubscriptionDraft } from "@/types/subscription";
-import { SubscriptionDialog } from "./subscription-dialog";
+import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
+import type {
+  CostSharingMember,
+  Subscription,
+  SubscriptionFormSubmission,
+} from "@/types/subscription";
+import { preloadSubscriptionDialog, SubscriptionDialog } from "./subscription-dialog";
 
 const mocks = vi.hoisted(() => ({
   config: {
@@ -22,13 +30,7 @@ const mocks = vi.hoisted(() => ({
 const FIXED_DIALOG_NOW = new Date("2026-06-01T12:00:00.000Z");
 
 vi.mock("@/contexts/CustomConfigContext", () => ({
-  useCustomConfig: () => ({
-    config: mocks.config,
-    updateCategories: vi.fn(),
-    updateStatuses: vi.fn(),
-    updatePaymentMethods: vi.fn(),
-    updateCurrencies: vi.fn(),
-  }),
+  useCustomConfigState: () => ({ config: mocks.config }),
 }));
 
 vi.mock("@/hooks/use-settings", () => ({
@@ -47,10 +49,11 @@ vi.mock("@/components/logo-picker", () => ({
   LogoPicker: () => null,
 }));
 
-beforeAll(() => {
+beforeAll(async () => {
   Element.prototype.hasPointerCapture ??= vi.fn(() => false);
   Element.prototype.setPointerCapture ??= vi.fn();
   Element.prototype.releasePointerCapture ??= vi.fn();
+  await preloadSubscriptionDialog();
 });
 
 beforeEach(() => {
@@ -66,22 +69,20 @@ function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
 
-function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
+function makeSubscription(overrides: SubscriptionFixtureOverrides<Subscription> = {}): Subscription {
   return {
     id: "sub-1",
     name: "Critical SaaS",
     logo: undefined,
-    price: 99,
+    price: "99",
     currency: "USD",
-    billingCycle: "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
     category: "productivity",
     status: "active",
     publicHidden: false,
     paymentMethod: "alipay",
     startDate: assertDateOnly("2026-05-14"),
     nextBillingDate: assertDateOnly("2026-06-13"),
+    autoRenew: false,
     autoCalculateNextBillingDate: false,
     trialEndDate: undefined,
     website: undefined,
@@ -91,19 +92,22 @@ function makeSubscription(overrides: Partial<Subscription> = {}): Subscription {
     repeatReminderEnabled: true,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
+    extra: {},
     pinned: false,
     ...overrides,
-  } as Subscription;
+    ...subscriptionCycleFixture(overrides),
+  };
 }
 
 describe("SubscriptionDialog", () => {
   it("shows field errors on empty create submit instead of relying on native validation", async () => {
     const user = setupUser();
-    const onSubmit = vi.fn<(subscription: SubscriptionDraft) => void>();
+    const onSubmit = vi.fn<(submission: SubscriptionFormSubmission) => void>();
 
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="create"
           open
           onOpenChange={vi.fn()}
@@ -130,7 +134,8 @@ describe("SubscriptionDialog", () => {
     expect(startDateButton).toHaveAttribute("aria-invalid", "false");
     expect(nextBillingDateButton).toHaveAttribute("aria-invalid", "true");
     expect(nextBillingDateButton).toHaveAttribute("aria-describedby", "nextBillingDate-error");
-    expect(nextBillingDateField).toContainElement(dateError);
+    expect(nextBillingDateButton.closest('[data-slot="form-field-row"]')).toContainElement(dateError);
+    expect(nextBillingDateField).not.toContainElement(dateError);
     expect(startDateField).not.toContainElement(dateError);
     expect(onSubmit).not.toHaveBeenCalled();
   });
@@ -139,6 +144,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="create"
           open
           onOpenChange={vi.fn()}
@@ -168,27 +174,32 @@ describe("SubscriptionDialog", () => {
   it("keeps cost sharing member rows in a bounded manager view", async () => {
     const user = setupUser();
     const onOpenChange = vi.fn();
-    let submittedMembers: CostSharingMember[] = [];
-    const onSubmit = vi.fn<(subscription: Subscription) => void>((subscription) => {
-      submittedMembers = subscription.costSharing?.members ?? [];
+    let submittedMembers: CostSharingMember[] = [], submittedCostSharing: Subscription["costSharing"];
+    const onSubmit = vi.fn<(submission: SubscriptionFormSubmission) => void>((submission) => {
+      submittedCostSharing = submission.costSharing;
+      submittedMembers = submission.costSharing?.members ?? [];
     });
 
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={onOpenChange}
           onSubmit={onSubmit}
           subscription={makeSubscription({
-            price: 50,
+            price: "50",
             currency: "CNY",
+            startDate: assertDateOnly("2026-01-01"),
+            nextBillingDate: assertDateOnly("2026-04-01"),
             costSharing: {
               enabled: true,
               splitMode: "custom",
+              collectionReminder: { enabled: true, reminderDays: -1 },
               members: [
-                { id: "partner", name: "伴侣", currency: "CNY", customAmount: 10 },
-                { id: "friend", name: "朋友", currency: "CNY", customAmount: 10 },
+                { id: "partner", name: "伴侣", currency: "CNY", customAmount: "10", joinedDate: assertDateOnly("2026-01-01") },
+                { id: "friend", name: "朋友", currency: "CNY", customAmount: "10", joinedDate: assertDateOnly("2026-03-01") },
               ],
             },
           })}
@@ -201,10 +212,7 @@ describe("SubscriptionDialog", () => {
     if (!form) throw new Error("Subscription dialog form was not rendered");
     const nameInput = screen.getByLabelText("服务名称");
     expect(screen.queryByLabelText("成员名称")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "管理成员" })).toBeInTheDocument();
-    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/成员合计\s*¥20/);
-    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/你的份额\s*¥30/);
-    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/可回收金额\s*¥20/);
+    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/成员合计\s*¥20 CNY\s*你的份额\s*¥30 CNY\s*可回收金额\s*¥20 CNY/);
     const formScrollRegion = document.querySelector<HTMLElement>("[data-subscription-dialog-scroll]");
     if (!formScrollRegion) throw new Error("Subscription dialog scroll region was not rendered");
     formScrollRegion.scrollTop = 320;
@@ -217,7 +225,8 @@ describe("SubscriptionDialog", () => {
     expect(subscriptionHeader).toHaveTextContent("编辑订阅");
     expect(subscriptionHeader?.closest('[role="dialog"]')).toHaveAttribute("data-state", "open");
     const memberDialog = screen.getByRole("dialog", { name: "管理共享成员" });
-    expect(memberDialog).toBeInTheDocument();
+    expect(within(memberDialog).queryByRole("button", { name: "返回表单" })).not.toBeInTheDocument();
+    expect(within(memberDialog).getAllByRole("button", { name: "完成" })).toHaveLength(1);
     expect(screen.getAllByRole("dialog", { hidden: true })).toHaveLength(2);
     expect(form).toContainElement(nameInput);
     expect(formScrollRegion.scrollTop).toBe(320);
@@ -225,14 +234,20 @@ describe("SubscriptionDialog", () => {
     const manager = within(memberDialog).getByTestId("cost-sharing-members-view");
     expect(within(manager).getAllByLabelText("成员名称")).toHaveLength(2);
     const memberNameInputs = within(manager).getAllByLabelText("成员名称");
+    expect(manager.querySelector('input[type="date"]')).toBeNull();
+    const joinedDateButtons = within(manager).getAllByRole("button", { name: /上车日期/ });
     expect(within(manager).queryByRole("button", { name: "设为我" })).not.toBeInTheDocument();
     expect(within(manager).queryByRole("button", { name: "设为付款人" })).not.toBeInTheDocument();
+    expect(joinedDateButtons[0]).toHaveTextContent("2026年1月1日");
     expect(memberNameInputs[0]!).toHaveFocus();
     await user.click(memberNameInputs[1]!);
     expect(memberNameInputs[1]).toHaveFocus();
     await user.clear(memberNameInputs[1]!);
     await user.type(memberNameInputs[1]!, "队友");
     expect(memberNameInputs[1]).toHaveValue("队友");
+    await user.click(joinedDateButtons[1]!);
+    await user.click(await screen.findByRole("button", { name: /2026年3月15日/ }));
+    expect(within(manager).getAllByRole("button", { name: /上车日期/ })[1]).toHaveTextContent("2026年3月15日");
     const amountInputs = within(manager).getAllByLabelText("应收金额");
     await user.clear(amountInputs[1]!);
     await user.type(amountInputs[1]!, "15");
@@ -245,22 +260,21 @@ describe("SubscriptionDialog", () => {
     expect(form).not.toHaveAttribute("aria-hidden");
     expect(screen.getByRole("button", { name: "管理成员" })).toHaveFocus();
     expect(screen.queryByLabelText("成员名称")).not.toBeInTheDocument();
-    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/成员合计\s*¥25/);
-    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/你的份额\s*¥25/);
-    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/可回收金额\s*¥25/);
+    expect(screen.getByTestId("cost-sharing-summary")).toHaveTextContent(/成员合计\s*¥25 CNY\s*你的份额\s*¥25 CNY\s*可回收金额\s*¥25 CNY/);
 
     await user.click(screen.getByRole("button", { name: "管理成员" }));
     const reopenedMemberDialog = screen.getByRole("dialog", { name: "管理共享成员" });
-    expect(reopenedMemberDialog).toBeInTheDocument();
     await user.click(within(reopenedMemberDialog).getByRole("button", { name: "关闭" }));
     expect(screen.queryByRole("dialog", { name: "管理共享成员" })).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "编辑订阅" })).toBeInTheDocument();
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(screen.getByRole("button", { name: "管理成员" })).toHaveFocus();
 
     await user.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(submittedCostSharing?.collectionReminder).toEqual({ enabled: true, reminderDays: -1 });
     expect(submittedMembers).toEqual([
-      expect.objectContaining({ id: "partner", customAmount: 10 }),
-      expect.objectContaining({ id: "friend", name: "队友", customAmount: 15 }),
+      expect.objectContaining({ id: "partner", customAmount: "10", joinedDate: assertDateOnly("2026-01-01") }),
+      expect.objectContaining({ id: "friend", name: "队友", customAmount: "15", joinedDate: assertDateOnly("2026-03-15") }),
     ]);
   });
 
@@ -268,6 +282,7 @@ describe("SubscriptionDialog", () => {
     const user = setupUser();
     const dialogProps = {
       mode: "edit" as const,
+      loadingPreview: null,
       onOpenChange: vi.fn(),
       onSubmit: vi.fn(),
       subscription: makeSubscription({
@@ -306,6 +321,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="create"
           open
           onOpenChange={vi.fn()}
@@ -338,6 +354,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="create"
           open
           onOpenChange={vi.fn()}
@@ -368,6 +385,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="create"
           open
           onOpenChange={vi.fn()}
@@ -396,6 +414,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -418,18 +437,19 @@ describe("SubscriptionDialog", () => {
     await user.click(screen.getByRole("button", { name: "保存修改" }));
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      id: "sub-1",
       billingCycle: "custom",
       customDays: 3,
       customCycleUnit: "year",
       nextBillingDate: "2029-05-14",
     }));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty("id");
   });
 
   it("keeps explicit reminder days when editing historical subscriptions", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -446,6 +466,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -462,6 +483,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -483,7 +505,7 @@ describe("SubscriptionDialog", () => {
       id: "sub-1",
       name: "OpenAI",
       logo: undefined,
-      price: 20,
+      price: "20",
       currency: "USD",
       billingCycle: "monthly",
       customDays: undefined,
@@ -505,11 +527,13 @@ describe("SubscriptionDialog", () => {
       repeatReminderEnabled: true,
       repeatReminderInterval: "1h",
       repeatReminderWindow: "72h",
+      extra: {},
     };
 
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -533,6 +557,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -558,6 +583,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -583,6 +609,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -606,6 +633,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -641,6 +669,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -666,6 +695,7 @@ describe("SubscriptionDialog", () => {
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -684,13 +714,14 @@ describe("SubscriptionDialog", () => {
     }));
   });
 
-  it("submits edited website and notes while preserving the subscription id", async () => {
+  it("submits editable website and notes without leaking read-model identity", async () => {
     const user = setupUser();
     const onSubmit = vi.fn();
 
     render(
       <TooltipProvider delayDuration={0}>
         <SubscriptionDialog
+          loadingPreview={null}
           mode="edit"
           open
           onOpenChange={vi.fn()}
@@ -711,87 +742,10 @@ describe("SubscriptionDialog", () => {
     await user.click(screen.getByRole("button", { name: "保存修改" }));
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
-      id: "sub-edit-website-notes",
       website: "https://new.example.com",
       notes: "新备注",
     }));
+    expect(onSubmit.mock.calls[0]?.[0]).not.toHaveProperty("id");
   });
 
-  it("shows repeat reminder controls when enabled for an edited subscription", () => {
-    const subscription: Subscription = {
-      id: "sub-1",
-      name: "Critical SaaS",
-      logo: undefined,
-      price: 99,
-      currency: "USD",
-      billingCycle: "monthly",
-      customDays: undefined,
-      customCycleUnit: undefined,
-      category: "productivity",
-      status: "active",
-      publicHidden: false,
-      pinned: false,
-      paymentMethod: "alipay",
-      startDate: assertDateOnly("2026-05-14"),
-      nextBillingDate: assertDateOnly("2026-05-17"),
-      autoRenew: false,
-      autoCalculateNextBillingDate: false,
-      trialEndDate: undefined,
-      website: undefined,
-      notes: undefined,
-      reminderDays: 3,
-      tags: [],
-      repeatReminderEnabled: true,
-      repeatReminderInterval: "3h",
-      repeatReminderWindow: "full",
-    };
-
-    render(
-      <TooltipProvider delayDuration={0}>
-        <SubscriptionDialog
-          mode="edit"
-          open
-          onOpenChange={vi.fn()}
-          onSubmit={vi.fn()}
-          subscription={subscription}
-        />
-      </TooltipProvider>,
-    );
-
-    expect(screen.getByLabelText("重复提醒")).toBeChecked();
-    expect(screen.getByRole("combobox", { name: "间隔" })).toHaveTextContent("每 3 小时");
-    expect(screen.getByRole("combobox", { name: "重复范围" })).toHaveTextContent("从首次提醒后开始");
-  });
-
-  it("explains repeat reminders from the first reminder when the range covers the lead time", () => {
-    render(
-      <TooltipProvider delayDuration={0}>
-        <SubscriptionDialog
-          mode="edit"
-          open
-          onOpenChange={vi.fn()}
-          onSubmit={vi.fn()}
-          subscription={makeSubscription({ reminderDays: 1 })}
-        />
-      </TooltipProvider>,
-    );
-
-    expect(screen.getByText("首次提醒后，每 1 小时重复一次，直到到期日通知时间。")).toBeInTheDocument();
-  });
-
-  it("explains that repeats only run in the final range when the lead time is longer", () => {
-    render(
-      <TooltipProvider delayDuration={0}>
-        <SubscriptionDialog
-          mode="edit"
-          open
-          onOpenChange={vi.fn()}
-          onSubmit={vi.fn()}
-          subscription={makeSubscription({ reminderDays: 30 })}
-        />
-      </TooltipProvider>,
-    );
-
-    expect(screen.getByText("首次提醒照常发送，重复提醒只在到期前最后 72 小时内发送。")).toBeInTheDocument();
-  });
 });

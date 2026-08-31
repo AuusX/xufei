@@ -2,7 +2,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { apiFetch, ApiError } from "@/lib/api-client";
 import AdminUsersPage from "./index";
@@ -116,9 +116,7 @@ const messages: Record<string, string> = {
   "passwordReset.newPassword": "新密码",
   "passwordReset.passwordLength": "密码至少需要 8 位",
   "passwordReset.passwordMismatch": "两次输入的密码不一致",
-  "passwordReset.passwordUpdated": "密码已更新",
   "passwordReset.saveNew": "保存新密码",
-  "passwordReset.useNewNextLogin": "下次登录请使用新密码",
   "settings.changePassword": "修改密码",
   "settings.confirmPasswordPlaceholder": "再输入一次",
   "settings.currentPassword": "当前密码",
@@ -201,7 +199,7 @@ describe("AdminUsersPage", () => {
     mocks.useI18n.mockReturnValue({ t: makeT() });
     mocks.useSession.mockReturnValue({
       data: {
-        session: { id: "token" },
+        session: { expiresAt: "2026-07-01T00:00:00.000Z" },
         user: {
           id: "current-admin",
           email: "admin@example.com",

@@ -6,65 +6,49 @@
 import {
   subscriptionCreateBodySchema,
   subscriptionPayloadSchema,
+  subscriptionRenewBodySchema,
+  type SubscriptionRenewBody,
   subscriptionsListPayloadSchema,
   subscriptionsListQuerySchema,
   subscriptionUpdateBodySchema,
 } from "@renewlet/shared/schemas/subscriptions";
-import { boolToInt, getSettings, getSubscription, newId, nowIso, parseJsonObject, parseStringArray, parseSubscriptionCursor, subscriptionCursor, toApiSubscription } from "./db";
+import { boolToInt, getSettings, getSubscription, newId, nowIso, parseJsonObject, parseStringArray, parseSubscriptionCursor, SUBSCRIPTION_COLUMNS, subscriptionCursor, subscriptionRowValues, toApiSubscription, toApiSubscriptionCollectionItem } from "./db";
 import { listSubscriptionsForQuery } from "./subscription-list-filters";
+import { subscriptionCollectionQueryInput } from "./subscription-query";
 import { advanceSubscriptionRenewal, dateOnlyInZone } from "./subscription-renewal";
-import { refreshSubscriptionDerivedState } from "./subscription-derived-state";
-import { HttpError, ok, readJson, readOptionalJson, requestLocale, successJson } from "./http";
+import type { SubscriptionRenewalResult } from "@renewlet/shared/subscription-renewal";
+import { subscriptionDerivedMutationPlan } from "./subscription-derived-state";
+import { HttpError, ok, readJson, requestLocale, successJson } from "./http";
 import { serverText } from "./server-i18n";
 import { requireAuth } from "./auth";
 import type { Env, SubscriptionRow } from "./types";
 import { z } from "zod";
+import type { ApiAppSettings } from "@renewlet/shared/schemas/settings";
+import { nextCostSharingCollectionReminderDate } from "@renewlet/shared/cost-sharing";
 
 const subscriptionStorageBodySchema = subscriptionCreateBodySchema.refine((body) => body.startDate === null || body.nextBillingDate >= body.startDate, {
   path: ["nextBillingDate"],
   message: "NEXT_BILLING_DATE_BEFORE_START_DATE",
 });
-const emptyBodySchema = z.object({}).strict();
 
 /** 读取当前用户订阅页；cursor 只决定分页位置，权限始终来自 Worker session。 */
 export async function readSubscriptions(request: Request, env: Env): Promise<Response> {
   const auth = await requireAuth(request, env);
   const url = new URL(request.url);
-  const parsed = subscriptionsListQuerySchema.parse({
-    limit: url.searchParams.get("limit") ?? undefined,
-    cursor: url.searchParams.get("cursor") ?? undefined,
-    q: url.searchParams.get("q") ?? undefined,
-    category: repeatedSearchParam(url.searchParams, "category"),
-    tag: repeatedSearchParam(url.searchParams, "tag"),
-    billingCycle: repeatedSearchParam(url.searchParams, "billingCycle"),
-    paymentMethod: repeatedSearchParam(url.searchParams, "paymentMethod"),
-    currency: repeatedSearchParam(url.searchParams, "currency"),
-    status: url.searchParams.get("status") ?? undefined,
-    renewal: url.searchParams.get("renewal") ?? undefined,
-    nextBillingFrom: url.searchParams.get("nextBillingFrom") ?? undefined,
-    nextBillingTo: url.searchParams.get("nextBillingTo") ?? undefined,
-    pinned: url.searchParams.get("pinned") ?? undefined,
-    publicHidden: url.searchParams.get("publicHidden") ?? undefined,
-    reminderMode: url.searchParams.get("reminderMode") ?? undefined,
-    repeatReminder: url.searchParams.get("repeatReminder") ?? undefined,
-  });
+  const parsed = subscriptionsListQuerySchema.parse(subscriptionCollectionQueryInput(url.searchParams));
   if (parsed.cursor && !parseSubscriptionCursor(parsed.cursor)) {
     throw new HttpError(400, serverText(requestLocale(request), "common.invalidRequestParameters"), "INVALID_CURSOR");
   }
   const today = parsed.status ? dateOnlyInZone(new Date(), (await getSettings(env, auth.user.id)).timezone) : "";
   const page = await listSubscriptionsForQuery(env, auth.user.id, parsed, today);
   const pageRows = page.rows.slice(0, parsed.limit);
-  const nextCursor = page.rows.length > parsed.limit ? subscriptionCursor(pageRows[pageRows.length - 1]!) : null;
+  const lastPageRow = pageRows.at(-1);
+  const nextCursor = page.rows.length > parsed.limit && lastPageRow ? subscriptionCursor(lastPageRow) : null;
   return successJson(subscriptionsListPayloadSchema.parse({
-    subscriptions: pageRows.map(toApiSubscription),
+    subscriptions: pageRows.map(toApiSubscriptionCollectionItem),
     nextCursor,
     total: page.total,
   }));
-}
-
-function repeatedSearchParam(params: URLSearchParams, name: string): string[] | undefined {
-  const values = params.getAll(name);
-  return values.length > 0 ? values : undefined;
 }
 
 /** 新建订阅走 shared create schema，确保 D1 写入边界与 Go/PocketBase API 保持同形。 */
@@ -73,16 +57,19 @@ export async function createSubscription(request: Request, env: Env): Promise<Re
   const auth = await requireAuth(request, env);
   const body = parseSubscriptionBodyForStorage(await readJson(request, subscriptionCreateBodySchema, locale), locale);
   const timestamp = nowIso();
-  const row = toSubscriptionRow(newId("sub"), auth.user.id, body, timestamp, timestamp);
-  await env.DB.prepare(`
+  const settings = await getSettings(env, auth.user.id);
+  const row = toSubscriptionRow(newId("sub"), auth.user.id, body, timestamp, timestamp, { settings });
+  const factStatement = env.DB.prepare(`
     INSERT INTO subscriptions (
       id, user_id, name, logo, price, currency, billing_cycle, custom_days, custom_cycle_unit, one_time_term_count, one_time_term_unit,
       category, status, pinned, public_hidden, payment_method,
       start_date, next_billing_date, auto_renew, auto_calculate_next_billing_date, trial_end_date, website, notes, tags_json,
-      reminder_days, repeat_reminder_enabled, repeat_reminder_interval, repeat_reminder_window, cost_sharing_json, extra_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(...subscriptionRowValues(row)).run();
-  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
+      reminder_days, repeat_reminder_enabled, repeat_reminder_interval, repeat_reminder_window, cost_sharing_json,
+      cost_sharing_collection_reminder_enabled, cost_sharing_next_collection_reminder_date, extra_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(...subscriptionRowValues(row));
+  const derived = subscriptionDerivedMutationPlan(env, { before: null, after: row, kind: "create" }, settings);
+  await env.DB.batch([...derived.beforeFact, factStatement, ...derived.afterFact]);
   return successJson(subscriptionPayloadSchema.parse({ subscription: toApiSubscription(row) }), { status: 201 });
 }
 
@@ -94,16 +81,18 @@ export async function updateSubscription(request: Request, env: Env, id: string)
   if (!existing) throw new HttpError(404, serverText(locale, "subscription.notFound"));
   const patch = await readJson(request, subscriptionUpdateBodySchema, locale);
   const timestamp = nowIso();
+  const settings = await getSettings(env, auth.user.id);
   // Worker 没有 PocketBase hook 可二次归一；切换计费类型时先清理互斥字段，再合并 patch 走同一套 create schema。
   const mergedBody = parseSubscriptionBodyForStorage(mergeSubscriptionPatchForStorage(toBody(existing), stripUndefined(patch)), locale);
-  const merged = toSubscriptionRow(existing.id, auth.user.id, mergedBody, existing.created_at, timestamp);
-  await env.DB.prepare(`
+  const merged = toSubscriptionRow(existing.id, auth.user.id, mergedBody, existing.created_at, timestamp, { settings });
+  const factStatement = env.DB.prepare(`
     UPDATE subscriptions SET
       name = ?, logo = ?, price = ?, currency = ?, billing_cycle = ?, custom_days = ?, custom_cycle_unit = ?,
       one_time_term_count = ?, one_time_term_unit = ?, category = ?, status = ?,
       pinned = ?, public_hidden = ?, payment_method = ?, start_date = ?, next_billing_date = ?, auto_renew = ?, auto_calculate_next_billing_date = ?,
       trial_end_date = ?, website = ?, notes = ?, tags_json = ?, reminder_days = ?, repeat_reminder_enabled = ?,
-      repeat_reminder_interval = ?, repeat_reminder_window = ?, cost_sharing_json = ?, extra_json = ?, updated_at = ?
+      repeat_reminder_interval = ?, repeat_reminder_window = ?, cost_sharing_json = ?,
+      cost_sharing_collection_reminder_enabled = ?, cost_sharing_next_collection_reminder_date = ?, extra_json = ?, updated_at = ?
     WHERE user_id = ? AND id = ?
   `).bind(
     merged.name,
@@ -133,21 +122,27 @@ export async function updateSubscription(request: Request, env: Env, id: string)
     merged.repeat_reminder_interval,
     merged.repeat_reminder_window,
     merged.cost_sharing_json,
+    merged.cost_sharing_collection_reminder_enabled,
+    merged.cost_sharing_next_collection_reminder_date,
     merged.extra_json,
     timestamp,
     auth.user.id,
     id,
-  ).run();
-  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
+  );
+  const derived = subscriptionDerivedMutationPlan(env, { before: existing, after: merged, kind: "update" }, settings);
+  await env.DB.batch([...derived.beforeFact, factStatement, ...derived.afterFact]);
   return successJson(subscriptionPayloadSchema.parse({ subscription: toApiSubscription(merged) }));
 }
 
 export async function deleteSubscription(request: Request, env: Env, id: string): Promise<Response> {
   const locale = requestLocale(request);
   const auth = await requireAuth(request, env);
-  const result = await env.DB.prepare("DELETE FROM subscriptions WHERE user_id = ? AND id = ?").bind(auth.user.id, id).run();
-  if ((result.meta.changes ?? 0) === 0) throw new HttpError(404, serverText(locale, "subscription.notFound"));
-  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
+  const existing = await getSubscription(env, auth.user.id, id);
+  if (!existing) throw new HttpError(404, serverText(locale, "subscription.notFound"));
+  const settings = await getSettings(env, auth.user.id);
+  const derived = subscriptionDerivedMutationPlan(env, { before: existing, after: null, kind: "delete" }, settings);
+  const factStatement = env.DB.prepare("DELETE FROM subscriptions WHERE user_id = ? AND id = ?").bind(auth.user.id, id);
+  await env.DB.batch([...derived.beforeFact, factStatement, ...derived.afterFact]);
   return ok();
 }
 
@@ -155,34 +150,82 @@ export async function deleteSubscription(request: Request, env: Env, id: string)
 export async function renewSubscription(request: Request, env: Env, id: string): Promise<Response> {
   const locale = requestLocale(request);
   const auth = await requireAuth(request, env);
-  await readOptionalJson(request, emptyBodySchema, locale);
+  const body = await readJson(request, subscriptionRenewBodySchema, locale);
   const existing = await getSubscription(env, auth.user.id, id);
   if (!existing) throw new HttpError(404, serverText(locale, "subscription.notFound"), "NOT_FOUND");
 
   const settings = await getSettings(env, auth.user.id);
-  const result = advanceSubscriptionRenewal(existing, dateOnlyInZone(new Date(), settings.timezone), "manual");
+  const today = dateOnlyInZone(new Date(), settings.timezone);
+  const result = advanceSubscriptionRenewal(existing, today, "manual");
   if (!result) throw new HttpError(400, serverText(locale, "common.invalidPayload"), "SUBSCRIPTION_RENEW_NOT_ALLOWED");
 
   const timestamp = nowIso();
-  const merged = { ...existing, next_billing_date: result.nextBillingDate, status: result.status, updated_at: timestamp } satisfies SubscriptionRow;
-  await env.DB.prepare(`
-    UPDATE subscriptions SET next_billing_date = ?, status = ?, updated_at = ?
+  // Worker 没有 PocketBase hook；续订也必须先收敛成完整写入 body，才能重新执行 costSharing/date 镜像规则。
+  const merged = renewSubscriptionRow(existing, body, result, timestamp, settings, today, locale);
+  const factStatement = env.DB.prepare(`
+    UPDATE subscriptions SET
+      price = ?, currency = ?, start_date = ?, next_billing_date = ?, auto_calculate_next_billing_date = ?,
+      cost_sharing_collection_reminder_enabled = ?, cost_sharing_next_collection_reminder_date = ?, status = ?, updated_at = ?
     WHERE user_id = ? AND id = ?
-  `).bind(merged.next_billing_date, merged.status, timestamp, auth.user.id, id).run();
-  await refreshSubscriptionDerivedState(env, auth.user.id, { resetAutoRenewCheck: true });
+  `).bind(
+    merged.price,
+    merged.currency,
+    merged.start_date,
+    merged.next_billing_date,
+    merged.auto_calculate_next_billing_date,
+    merged.cost_sharing_collection_reminder_enabled,
+    merged.cost_sharing_next_collection_reminder_date,
+    merged.status,
+    timestamp,
+    auth.user.id,
+    id,
+  );
+  const derived = subscriptionDerivedMutationPlan(env, { before: existing, after: merged, kind: "update" }, settings);
+  await env.DB.batch([...derived.beforeFact, factStatement, ...derived.afterFact]);
   return successJson(subscriptionPayloadSchema.parse({ subscription: toApiSubscription(merged) }));
 }
 
 export type SubscriptionBody = ReturnType<typeof subscriptionCreateBodySchema.parse>;
 
+function renewSubscriptionRow(
+  existing: SubscriptionRow,
+  body: SubscriptionRenewBody,
+  continueResult: SubscriptionRenewalResult,
+  timestamp: string,
+  settings: Pick<ApiAppSettings, "timezone" | "notificationReminderDays">,
+  referenceDate: string,
+  locale: ReturnType<typeof requestLocale>,
+): SubscriptionRow {
+  if (body.mode === "restart" && !body.startDate) {
+    throw new HttpError(400, "INVALID_RENEW_START_DATE", "INVALID_PAYLOAD");
+  }
+  const existingBody = toBody(existing);
+  // continue 忽略请求里的日期，restart 才写入用户选择的新日期；两者都保留其它订阅字段并重新过 shared 写入 schema。
+  const mergedBody = parseSubscriptionBodyForStorage({
+    ...existingBody,
+    price: body.price,
+    currency: body.currency,
+    startDate: body.mode === "restart" ? body.startDate : existingBody.startDate,
+    nextBillingDate: body.mode === "restart" ? body.nextBillingDate : continueResult.nextBillingDate,
+    autoCalculateNextBillingDate: body.mode === "restart"
+      ? body.autoCalculateNextBillingDate
+      : existingBody.autoCalculateNextBillingDate,
+    status: body.mode === "restart" && existing.status === "expired" ? "active" : continueResult.status,
+  }, locale);
+  return toSubscriptionRow(existing.id, existing.user_id, mergedBody, existing.created_at, timestamp, { settings, referenceDate });
+}
+
 export function normalizeSubscriptionBodyForStorage(body: unknown): SubscriptionBody {
   const parsed = subscriptionStorageBodySchema.parse(body);
   // Worker 没有 PocketBase hook；这里承接 Go 持久层同款规范化，供 create/update/import 三条写入路径共用。
   if (parsed.billingCycle === "custom") {
+    if (parsed.customDays === null || parsed.customDays === undefined || parsed.customCycleUnit === null || parsed.customCycleUnit === undefined) {
+      throw new Error("SUBSCRIPTION_CUSTOM_CYCLE_INVARIANT_VIOLATION");
+    }
     return {
       ...parsed,
-      customDays: parsed.customDays ?? 1,
-      customCycleUnit: parsed.customCycleUnit ?? "day",
+      customDays: parsed.customDays,
+      customCycleUnit: parsed.customCycleUnit,
       oneTimeTermCount: null,
       oneTimeTermUnit: null,
     };
@@ -194,7 +237,7 @@ export function normalizeSubscriptionBodyForStorage(body: unknown): Subscription
       customDays: null,
       customCycleUnit: null,
       oneTimeTermCount: hasTerm ? parsed.oneTimeTermCount : null,
-      oneTimeTermUnit: hasTerm ? parsed.oneTimeTermUnit ?? "month" : null,
+      oneTimeTermUnit: hasTerm ? parsed.oneTimeTermUnit : null,
       autoRenew: false,
       autoCalculateNextBillingDate: false,
     };
@@ -263,7 +306,10 @@ export function toSubscriptionRow(
   body: SubscriptionBody,
   createdAt: string,
   updatedAt: string,
+  options: { settings?: Pick<ApiAppSettings, "timezone" | "notificationReminderDays">; referenceDate?: string } = {},
 ): SubscriptionRow {
+  const costSharingMirror = collectionReminderMirror(body, options);
+  const customCycle = subscriptionCustomCycleForStorage(body);
   return {
     id,
     user_id: userId,
@@ -273,8 +319,8 @@ export function toSubscriptionRow(
     currency: body.currency,
     billing_cycle: body.billingCycle,
     // 非 custom 周期必须把自定义字段清空，否则后续编辑会把旧自定义周期“复活”。
-    custom_days: body.billingCycle === "custom" ? body.customDays ?? 1 : null,
-    custom_cycle_unit: body.billingCycle === "custom" ? body.customCycleUnit ?? "day" : null,
+    custom_days: customCycle.days,
+    custom_cycle_unit: customCycle.unit,
     // one-time 服务期是“预付权益期”契约；非 one-time 清空，避免旧买断字段被周期订阅误用于摊销。
     one_time_term_count: body.billingCycle === "one-time" ? body.oneTimeTermCount ?? null : null,
     one_time_term_unit: body.billingCycle === "one-time" ? body.oneTimeTermUnit ?? null : null,
@@ -300,6 +346,9 @@ export function toSubscriptionRow(
     repeat_reminder_window: body.repeatReminderWindow,
     // D1 没有 JSON 类型；空对象表示未开启分摊，非空对象必须保持 shared costSharing wire shape。
     cost_sharing_json: JSON.stringify(body.costSharing ?? {}),
+    // 镜像列只服务通知 cron 的 D1 索引候选；真实配置和出站响应继续以 cost_sharing_json 为准。
+    cost_sharing_collection_reminder_enabled: boolToInt(costSharingMirror.enabled),
+    cost_sharing_next_collection_reminder_date: costSharingMirror.nextReminderDate,
     // extra 不走 UI 展示；它给 seed/import 留稳定幂等键，编辑订阅时必须随原记录保留。
     extra_json: JSON.stringify(body.extra ?? {}),
     created_at: createdAt,
@@ -307,15 +356,81 @@ export function toSubscriptionRow(
   };
 }
 
-export function subscriptionRowValues(row: SubscriptionRow): unknown[] {
-  return [
-    row.id, row.user_id, row.name, row.logo, row.price, row.currency, row.billing_cycle, row.custom_days, row.custom_cycle_unit,
-    row.one_time_term_count, row.one_time_term_unit,
-    row.category, row.status, row.pinned, row.public_hidden, row.payment_method, row.start_date, row.next_billing_date,
-    row.auto_renew, row.auto_calculate_next_billing_date, row.trial_end_date, row.website, row.notes, row.tags_json,
-    row.reminder_days, row.repeat_reminder_enabled, row.repeat_reminder_interval, row.repeat_reminder_window,
-    row.cost_sharing_json, row.extra_json, row.created_at, row.updated_at,
-  ];
+function subscriptionCustomCycleForStorage(body: SubscriptionBody): { days: number | null; unit: SubscriptionRow["custom_cycle_unit"] } {
+  if (body.billingCycle !== "custom") return { days: null, unit: null };
+  if (body.customDays === null || body.customDays === undefined || body.customCycleUnit === null || body.customCycleUnit === undefined) {
+    throw new Error("SUBSCRIPTION_CUSTOM_CYCLE_INVARIANT_VIOLATION");
+  }
+  return { days: body.customDays, unit: body.customCycleUnit };
+}
+
+export async function refreshCostSharingCollectionReminderMirrors(
+  env: Env,
+  userId: string,
+  settings: Pick<ApiAppSettings, "timezone" | "notificationReminderDays">,
+  referenceDate = dateOnlyInZone(new Date(), settings.timezone),
+): Promise<void> {
+  const statements = await buildCostSharingCollectionReminderMirrorStatements(env, userId, settings, referenceDate);
+  if (statements.length > 0) await env.DB.batch(statements);
+}
+
+export async function buildCostSharingCollectionReminderMirrorStatements(
+  env: Env,
+  userId: string,
+  settings: Pick<ApiAppSettings, "timezone" | "notificationReminderDays">,
+  referenceDate = dateOnlyInZone(new Date(), settings.timezone),
+): Promise<D1PreparedStatement[]> {
+  const rows = await env.DB.prepare(`SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions WHERE user_id = ?`)
+    .bind(userId)
+    .all<SubscriptionRow>();
+  const statements: D1PreparedStatement[] = [];
+  for (const row of rows.results) {
+    const costSharingJson = parseJsonObject(row.cost_sharing_json ?? "{}");
+    const costSharing = Object.keys(costSharingJson).length > 0 ? costSharingJson as SubscriptionBody["costSharing"] : null;
+    const mirror = collectionReminderMirror({ ...toBody(row), costSharing }, { settings, referenceDate });
+    const enabled = boolToInt(mirror.enabled);
+    if (row.cost_sharing_collection_reminder_enabled === enabled && row.cost_sharing_next_collection_reminder_date === mirror.nextReminderDate) {
+      continue;
+    }
+    // settings 的全局提醒天数/时区会影响 inherited 收款提醒；刷新只动内部索引镜像，不反写 cost_sharing_json。
+    statements.push(env.DB.prepare(`
+      UPDATE subscriptions
+      SET cost_sharing_collection_reminder_enabled = ?, cost_sharing_next_collection_reminder_date = ?
+      WHERE user_id = ? AND id = ?
+    `).bind(enabled, mirror.nextReminderDate, userId, row.id));
+  }
+  return statements;
+}
+
+function collectionReminderMirror(
+  body: Pick<SubscriptionBody,
+    "costSharing" | "startDate" | "nextBillingDate" | "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit"
+  >,
+  options: { settings?: Pick<ApiAppSettings, "timezone" | "notificationReminderDays">; referenceDate?: string },
+): { enabled: boolean; nextReminderDate: string | null } {
+  const reminder = body.costSharing?.collectionReminder;
+  if (!body.costSharing?.enabled || !reminder?.enabled) {
+    return { enabled: false, nextReminderDate: null };
+  }
+  const settings = {
+    timezone: options.settings?.timezone ?? "UTC",
+    notificationReminderDays: options.settings?.notificationReminderDays ?? 3,
+  };
+  const referenceDate = options.referenceDate ?? dateOnlyInZone(new Date(), settings.timezone);
+  const nextReminderDate = nextCostSharingCollectionReminderDate({
+    costSharing: body.costSharing ?? undefined,
+    subscriptionStartDate: body.startDate,
+    nextBillingDate: body.nextBillingDate,
+    billingCycle: body.billingCycle,
+    customDays: body.customDays,
+    customCycleUnit: body.customCycleUnit,
+    oneTimeTermCount: body.oneTimeTermCount,
+    oneTimeTermUnit: body.oneTimeTermUnit,
+    notificationReminderDays: settings.notificationReminderDays,
+    referenceDate,
+  });
+  // 镜像字段只服务 D1 索引候选，不能成为公共 API 事实源；真实配置仍以 cost_sharing_json 为准。
+  return { enabled: Boolean(nextReminderDate), nextReminderDate };
 }
 
 function stripUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {

@@ -2,7 +2,7 @@
 import rootPackageJson from "../../../package.json";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readSuccessData } from "./api-test-helpers";
-import { systemRestart, systemUpdate, systemVersion } from "./system";
+import { systemRestart, systemUpdate, systemUpdateStatus, systemVersion } from "./system";
 import type { Env } from "./types";
 
 const authMocks = vi.hoisted(() => ({
@@ -11,16 +11,16 @@ const authMocks = vi.hoisted(() => ({
 
 vi.mock("./auth", () => ({
   requireAuth: vi.fn(async () => ({
-    token: "session-token",
     user: { id: "usr_current", email: "current@example.com", name: "Current", role: authMocks.role, banned: 0 },
+    session: { id: "ses_current" },
   })),
   requireAdmin: vi.fn(async () => {
     if (authMocks.role !== "admin") {
       throw Object.assign(new Error("Administrator permission required"), { status: 403 });
     }
     return {
-      token: "session-token",
       user: { id: "usr_admin", email: "admin@example.com", name: "Admin", role: "admin", banned: 0 },
+      session: { id: "ses_admin" },
     };
   }),
 }));
@@ -325,6 +325,12 @@ describe("Cloudflare system update contract", () => {
     });
   });
 
+  it("returns an empty update task for the shared status protocol", async () => {
+    const response = await systemUpdateStatus(new Request("https://renewlet.example/api/app/admin/system/update/status"), envFixture());
+    expect(response.status).toBe(200);
+    await expect(readSuccessData(response)).resolves.toEqual({ operation: null });
+  });
+
   it("rejects executable restarts in the Worker runtime with a restart-specific code", async () => {
     await expect(systemRestart(new Request("https://renewlet.example/api/app/admin/system/restart", {
       headers: { "accept-language": "en-US" },
@@ -341,6 +347,7 @@ describe("Cloudflare system update contract", () => {
     await expect(systemUpdate(new Request("https://renewlet.example/api/app/admin/system/update", {
       method: "POST",
     }), envFixture())).rejects.toMatchObject({ status: 403 });
+    await expect(systemUpdateStatus(new Request("https://renewlet.example/api/app/admin/system/update/status"), envFixture())).rejects.toMatchObject({ status: 403 });
     await expect(systemRestart(new Request("https://renewlet.example/api/app/admin/system/restart", {
       method: "POST",
     }), envFixture())).rejects.toMatchObject({ status: 403 });

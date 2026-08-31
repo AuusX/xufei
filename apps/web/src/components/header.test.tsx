@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { SystemVersionResponse } from "@/lib/api/schemas/app";
@@ -14,12 +14,12 @@ const mocks = vi.hoisted(() => ({
   signOut: vi.fn(),
   useSystemVersion: vi.fn(),
   useSystemUpdate: vi.fn(),
+  useSystemUpdateStatus: vi.fn(),
   useSystemRestart: vi.fn(),
-  toast: vi.fn(),
+  toast: { success: vi.fn(), error: vi.fn() },
   setTheme: vi.fn(),
   theme: "dark",
   writeAppearancePendingToStorage: vi.fn(),
-  scheduleAuthenticatedRoutePreloads: vi.fn(() => vi.fn()),
   useRoutePreloadPending: vi.fn(() => false),
 }));
 
@@ -33,11 +33,12 @@ vi.mock("@/lib/auth-client", () => ({
 vi.mock("@/hooks/use-system-version", () => ({
   useSystemVersion: mocks.useSystemVersion,
   useSystemUpdate: mocks.useSystemUpdate,
+  useSystemUpdateStatus: mocks.useSystemUpdateStatus,
   useSystemRestart: mocks.useSystemRestart,
 }));
 
-vi.mock("@/hooks/use-toast", () => ({
-  useToast: () => ({ toast: mocks.toast }),
+vi.mock("@/components/ui/sonner", () => ({
+  toast: mocks.toast,
 }));
 
 vi.mock("@/lib/theme-provider", () => ({
@@ -52,7 +53,6 @@ vi.mock("@/lib/theme-storage", () => ({
 }));
 
 vi.mock("@/lib/route-resources", () => ({
-  scheduleAuthenticatedRoutePreloads: mocks.scheduleAuthenticatedRoutePreloads,
   useRoutePreloadPending: mocks.useRoutePreloadPending,
 }));
 
@@ -75,7 +75,6 @@ vi.mock("@/i18n/I18nProvider", () => ({
         "system.checkDeferredTitle": "暂时无法检查更新",
         "system.currentVersion": "当前版本",
         "system.latestVersion": "最新版本",
-        "system.noUpdateDescription": "无需操作。",
         "system.noUpdateTitle": "已是最新版本",
         "system.openUpdateDialog": "打开系统更新",
         "system.cloudflareDeployGuide": "Cloudflare 部署说明",
@@ -138,7 +137,7 @@ function versionFixture(overrides: Partial<SystemVersionResponse> = {}): SystemV
 function adminSession(role: "admin" | "user") {
   return {
     data: {
-      session: { id: "session-1" },
+      session: { expiresAt: "2026-07-01T00:00:00.000Z" },
       user: { id: "user-1", email: "alice@example.com", name: "Alice", role, banned: false },
     },
     isPending: false,
@@ -167,13 +166,13 @@ describe("Header system version entry", () => {
     mocks.signOut.mockReset();
     mocks.useSystemVersion.mockReset();
     mocks.useSystemUpdate.mockReset();
+    mocks.useSystemUpdateStatus.mockReset();
     mocks.useSystemRestart.mockReset();
-    mocks.toast.mockReset();
+    mocks.toast.success.mockReset();
+    mocks.toast.error.mockReset();
     mocks.setTheme.mockReset();
     mocks.theme = "dark";
     mocks.writeAppearancePendingToStorage.mockReset();
-    mocks.scheduleAuthenticatedRoutePreloads.mockReset();
-    mocks.scheduleAuthenticatedRoutePreloads.mockReturnValue(vi.fn());
     mocks.useRoutePreloadPending.mockReset();
     mocks.useRoutePreloadPending.mockReturnValue(false);
     mocks.useSystemVersion.mockReturnValue({
@@ -190,6 +189,7 @@ describe("Header system version entry", () => {
       reset: vi.fn(),
       data: undefined,
     });
+    mocks.useSystemUpdateStatus.mockReturnValue({ data: { operation: null } });
     mocks.useSystemRestart.mockReturnValue({
       isPending: false,
       mutateAsync: vi.fn(),
@@ -212,6 +212,7 @@ describe("Header system version entry", () => {
 
     expect(screen.getByText("可更新到 v1.1.0")).toBeInTheDocument();
     expect(screen.getByText("当前版本")).toBeInTheDocument();
+    expect(mocks.useSystemUpdateStatus).toHaveBeenLastCalledWith(true, false);
   });
 
   it("shows the version badge for non-admin users without update actions", async () => {
@@ -235,6 +236,7 @@ describe("Header system version entry", () => {
     expect(screen.getByText("当前版本")).toBeInTheDocument();
     expect(screen.getByText("需要管理员权限")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "立即更新" })).not.toBeInTheDocument();
+    expect(mocks.useSystemUpdateStatus).toHaveBeenLastCalledWith(false, false);
   });
 
   it("waits for a signed-in session before showing the version badge", () => {
@@ -244,15 +246,13 @@ describe("Header system version entry", () => {
 
     expect(screen.queryByRole("button", { name: "打开系统更新" })).not.toBeInTheDocument();
     expect(mocks.useSystemVersion).not.toHaveBeenCalled();
-    expect(mocks.scheduleAuthenticatedRoutePreloads).not.toHaveBeenCalled();
   });
 
-  it("preloads primary routes after sign-in without changing header layout", () => {
+  it("keeps the header stable after sign-in without scheduling private route preloads", () => {
     mocks.useSession.mockReturnValue(adminSession("user"));
 
     renderHeader();
 
-    expect(mocks.scheduleAuthenticatedRoutePreloads).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("app-header-route-preload-indicator")).toHaveClass("opacity-0");
   });
 

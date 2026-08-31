@@ -1,5 +1,6 @@
 import { apiFetch } from "@/lib/api-client";
 import {
+  IMPORT_APPLY_SUBSCRIPTION_LIMIT,
   importApplyPayloadSchema,
   importApplyResponseSchema,
   importPreviewResponseSchema,
@@ -10,18 +11,22 @@ import {
   type ImportPreviewResponse,
 } from "@/lib/api/schemas/import-export";
 
-const APPLY_CHUNK_SIZE = 200;
-
 /**
  * 导入导出服务。
  *
  * preview 和 apply 都由后端重新计算冲突；前端分块只解决请求体/事务上限，不改变幂等语义。
  */
 export const importExportService = {
-  async preview(payload: ImportPayload, conflictMode: ImportConflictMode, skipIndexes: readonly number[] = []): Promise<ImportPreviewResponse> {
+  async preview(
+    payload: ImportPayload,
+    conflictMode: ImportConflictMode,
+    signal: AbortSignal,
+    skipIndexes: readonly number[] = [],
+  ): Promise<ImportPreviewResponse> {
     return await apiFetch("/api/app/import/preview", importPreviewResponseSchema, {
       method: "POST",
       body: JSON.stringify({ payload, conflictMode, skipIndexes }),
+      signal,
     });
   },
 
@@ -35,14 +40,14 @@ export const importExportService = {
     skipIndexes: readonly number[] = [],
     onProgress?: (done: number, total: number) => void,
   ): Promise<ImportApplyResponse> {
-    if (payload.subscriptions.length <= APPLY_CHUNK_SIZE) {
+    if (payload.subscriptions.length <= IMPORT_APPLY_SUBSCRIPTION_LIMIT) {
       const result = await applyImportPayload(payload, conflictMode, skipIndexes);
       onProgress?.(payload.subscriptions.length, payload.subscriptions.length);
       return result;
     }
 
     // Docker 与 Cloudflare 共享 200 条 apply 上限；顺序切包靠 extra.import 幂等键支持失败后重试收敛。
-    const chunks = chunkSubscriptions(payload.subscriptions, APPLY_CHUNK_SIZE);
+    const chunks = chunkSubscriptions(payload.subscriptions, IMPORT_APPLY_SUBSCRIPTION_LIMIT);
     if (chunks.length === 0) {
       return await applyImportPayload(payload, conflictMode);
     }
@@ -52,13 +57,14 @@ export const importExportService = {
     onProgress?.(done, payload.subscriptions.length);
 
     for (let index = 0; index < chunks.length; index += 1) {
-      const offset = index * APPLY_CHUNK_SIZE;
+      const offset = index * IMPORT_APPLY_SUBSCRIPTION_LIMIT;
       const chunk = chunks[index] ?? [];
       const chunkPayload: ImportPayload = {
         source: payload.source,
         subscriptions: chunk,
         ...(index === chunks.length - 1 && payload.settings ? { settings: payload.settings } : {}),
         ...(index === chunks.length - 1 && payload.customConfig ? { customConfig: payload.customConfig } : {}),
+        ...(index === chunks.length - 1 && payload.exchangeRateSnapshots ? { exchangeRateSnapshots: payload.exchangeRateSnapshots } : {}),
       };
       const chunkSkipIndexes = skipIndexes
         .filter((itemIndex) => itemIndex >= offset && itemIndex < offset + chunk.length)
@@ -80,6 +86,8 @@ export const importExportService = {
       items,
       includesSettings: Boolean(payload.settings),
       includesCustomConfig: Boolean(payload.customConfig),
+      includesExchangeRateSnapshots: Boolean(payload.exchangeRateSnapshots?.length),
+      exchangeRateSnapshotsCount: payload.exchangeRateSnapshots?.length ?? 0,
     });
   },
 };

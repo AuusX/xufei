@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	calendarFeedScopeAll          = "all"
-	calendarFeedScopeSubscription = "subscription"
-	calendarFeedTokenBytes        = 32
+	calendarFeedScopeAll             = "all"
+	calendarFeedScopeSubscription    = "subscription"
+	calendarFeedSubscriptionPageSize = 500
+	calendarFeedTokenBytes           = 32
 )
 
 type calendarFeedStatus struct {
@@ -53,7 +54,7 @@ type calendarFeedCreateResponse struct {
 type calendarFeedSubscription struct {
 	ID               string
 	Name             string
-	Price            float64
+	Price            string
 	Currency         string
 	BillingCycle     string
 	CustomDays       int
@@ -93,7 +94,7 @@ func handleCalendarFeedStatus(app core.App, e *core.RequestEvent) error {
 	if err != nil {
 		return e.InternalServerError(serverText(requestLocale(e.Request), "calendarFeed.loadFailed"), err)
 	}
-	return apiSuccessJSON(e, http.StatusOK, calendarFeedStatusResponse{CalendarFeed: calendarFeedStatusFromRecord(e.Request, record)})
+	return calendarFeedSuccessJSON(e, http.StatusOK, calendarFeedStatusResponse{CalendarFeed: calendarFeedStatusFromRecord(e.Request, record)})
 }
 
 func handleCalendarFeedCreate(app core.App, e *core.RequestEvent) error {
@@ -105,25 +106,22 @@ func handleCalendarFeedCreate(app core.App, e *core.RequestEvent) error {
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "calendarFeed.createFailed"), err)
 	}
-	return apiSuccessJSON(e, http.StatusOK, calendarFeedCreateResponse{CalendarFeed: calendarFeedCreateStatus{
-		Enabled:   true,
-		CreatedAt: record.GetDateTime("created").Time().UTC().Format(time.RFC3339),
-		UpdatedAt: record.GetDateTime("updated").Time().UTC().Format(time.RFC3339),
-		FeedURL:   calendarFeedURL(e.Request, record.GetString("token")),
-	}})
+	return calendarFeedSuccessJSON(e, http.StatusOK, calendarFeedCreateResponse{CalendarFeed: calendarFeedCreateStatusFromRecord(e.Request, record)})
 }
 
 func handleCalendarFeedDelete(app core.App, e *core.RequestEvent) error {
+	locale := requestLocale(e.Request)
 	record, err := findGlobalCalendarFeedForUser(app, e.Auth.Id)
 	if err != nil {
-		return e.InternalServerError(serverText(requestLocale(e.Request), "calendarFeed.revokeFailed"), err)
+		return e.InternalServerError(serverText(locale, "calendarFeed.revokeFailed"), err)
 	}
-	if record != nil {
-		if err := app.Delete(record); err != nil {
-			return e.InternalServerError(serverText(requestLocale(e.Request), "calendarFeed.revokeFailed"), err)
-		}
+	if record == nil {
+		return e.NotFoundError(serverText(locale, "calendarFeed.notFound"), nil)
 	}
-	return apiEmptySuccessJSON(e, http.StatusOK)
+	if err := app.Delete(record); err != nil {
+		return e.InternalServerError(serverText(locale, "calendarFeed.revokeFailed"), err)
+	}
+	return calendarFeedSuccessJSON(e, http.StatusOK, nil)
 }
 
 func handleSubscriptionCalendarFeedStatus(app core.App, e *core.RequestEvent) error {
@@ -137,7 +135,7 @@ func handleSubscriptionCalendarFeedStatus(app core.App, e *core.RequestEvent) er
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "calendarFeed.loadFailed"), err)
 	}
-	return apiSuccessJSON(e, http.StatusOK, calendarFeedStatusResponse{CalendarFeed: calendarFeedStatusFromRecord(e.Request, record)})
+	return calendarFeedSuccessJSON(e, http.StatusOK, calendarFeedStatusResponse{CalendarFeed: calendarFeedStatusFromRecord(e.Request, record)})
 }
 
 func handleSubscriptionCalendarFeedCreate(app core.App, e *core.RequestEvent) error {
@@ -154,12 +152,7 @@ func handleSubscriptionCalendarFeedCreate(app core.App, e *core.RequestEvent) er
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "calendarFeed.createFailed"), err)
 	}
-	return apiSuccessJSON(e, http.StatusOK, calendarFeedCreateResponse{CalendarFeed: calendarFeedCreateStatus{
-		Enabled:   true,
-		CreatedAt: record.GetDateTime("created").Time().UTC().Format(time.RFC3339),
-		UpdatedAt: record.GetDateTime("updated").Time().UTC().Format(time.RFC3339),
-		FeedURL:   calendarFeedURL(e.Request, record.GetString("token")),
-	}})
+	return calendarFeedSuccessJSON(e, http.StatusOK, calendarFeedCreateResponse{CalendarFeed: calendarFeedCreateStatusFromRecord(e.Request, record)})
 }
 
 func handleSubscriptionCalendarFeedDelete(app core.App, e *core.RequestEvent) error {
@@ -168,10 +161,17 @@ func handleSubscriptionCalendarFeedDelete(app core.App, e *core.RequestEvent) er
 	if _, err := findCalendarFeedSubscriptionByID(app, e.Auth.Id, subscriptionID); err != nil {
 		return e.NotFoundError(serverText(locale, "subscription.notFound"), err)
 	}
-	if err := deleteSubscriptionCalendarFeeds(app, e.Auth.Id, subscriptionID); err != nil {
+	record, err := findSubscriptionCalendarFeedForUser(app, e.Auth.Id, subscriptionID)
+	if err != nil {
 		return e.InternalServerError(serverText(locale, "calendarFeed.revokeFailed"), err)
 	}
-	return apiEmptySuccessJSON(e, http.StatusOK)
+	if record == nil {
+		return e.NotFoundError(serverText(locale, "calendarFeed.notFound"), nil)
+	}
+	if err := app.Delete(record); err != nil {
+		return e.InternalServerError(serverText(locale, "calendarFeed.revokeFailed"), err)
+	}
+	return calendarFeedSuccessJSON(e, http.StatusOK, nil)
 }
 
 func handleSubscriptionCalendarICSDownload(app core.App, e *core.RequestEvent) error {
@@ -234,6 +234,8 @@ func renderCalendarFeedICS(app core.App, request *http.Request, feed *core.Recor
 		return "", "", err
 	}
 	sourceURL := calendarFeedURL(request, feed.GetString("token"))
+	// 日历客户端的请求语言不稳定且没有账号会话；Feed 内容必须始终由 owner 的账号内容语言决定。
+	contentLocale := accountContentLocale(settings)
 	switch feed.GetString("scope") {
 	case calendarFeedScopeSubscription:
 		subscription, err := findCalendarFeedSubscriptionByID(app, userID, feed.GetString("subscriptionId"))
@@ -241,7 +243,7 @@ func renderCalendarFeedICS(app core.App, request *http.Request, feed *core.Recor
 			return "", "", err
 		}
 		body := buildCalendarFeedICS(calendarFeedBuildOptions{
-			Name:              serverFormat(normalizeAppLocale(settings.Locale), "calendarFeed.subscriptionCalendarName", map[string]interface{}{"name": subscription.Name}),
+			Name:              serverFormat(contentLocale, "calendarFeed.subscriptionCalendarName", map[string]interface{}{"name": subscription.Name}),
 			SourceURL:         sourceURL,
 			Now:               time.Now().UTC(),
 			Settings:          settings,
@@ -255,7 +257,7 @@ func renderCalendarFeedICS(app core.App, request *http.Request, feed *core.Recor
 			return "", "", err
 		}
 		body := buildCalendarFeedICS(calendarFeedBuildOptions{
-			Name:              serverText(normalizeAppLocale(settings.Locale), "calendarFeed.calendarName"),
+			Name:              serverText(contentLocale, "calendarFeed.calendarName"),
 			SourceURL:         sourceURL,
 			Now:               time.Now().UTC(),
 			Settings:          settings,
@@ -277,9 +279,9 @@ func renderSubscriptionCalendarICSDownload(app core.App, userID string, subscrip
 	if err != nil {
 		return "", err
 	}
-	// 登录态下载是一次性 .ics 文件，不写 SOURCE/TTL，避免外部日历把它误当成可刷新的订阅 feed。
+	// 一次性 .ics 进入外部日历后脱离当前请求，因此沿用账号内容语言，且不写 SOURCE/TTL。
 	return buildCalendarFeedICS(calendarFeedBuildOptions{
-		Name:              serverFormat(normalizeAppLocale(settings.Locale), "calendarFeed.subscriptionCalendarName", map[string]interface{}{"name": subscription.Name}),
+		Name:              serverFormat(accountContentLocale(settings), "calendarFeed.subscriptionCalendarName", map[string]interface{}{"name": subscription.Name}),
 		Now:               time.Now().UTC(),
 		Settings:          settings,
 		Events:            subscriptionCalendarFeedEvents(subscription, settings, labels),
@@ -329,7 +331,7 @@ func calendarFeedSettingsForUser(app core.App, userID string) (appSettings, erro
 		}
 		return settings, err
 	}
-	return settingsFromRecord(record), nil
+	return settingsFromRecord(record)
 }
 
 func errorsIsNoRows(err error) bool {
@@ -390,27 +392,11 @@ func ensureSubscriptionCalendarFeed(app core.App, userID string, subscriptionID 
 }
 
 func deleteSubscriptionCalendarFeeds(app core.App, userID string, subscriptionID string) error {
-	for {
-		records, err := app.FindRecordsByFilter(
-			"calendar_feeds",
-			"user = {:user} && scope = {:scope} && subscriptionId = {:subscriptionId}",
-			"created",
-			notificationSubscriptionPageSize,
-			0,
-			dbx.Params{"user": userID, "scope": calendarFeedScopeSubscription, "subscriptionId": subscriptionID},
-		)
-		if err != nil {
-			return err
-		}
-		for _, record := range records {
-			if err := app.Delete(record); err != nil {
-				return err
-			}
-		}
-		if len(records) < notificationSubscriptionPageSize {
-			return nil
-		}
-	}
+	_, err := app.DB().NewQuery(`DELETE FROM calendar_feeds
+		WHERE user = {:user} AND scope = {:scope} AND subscriptionId = {:subscriptionId}`).
+		Bind(dbx.Params{"user": userID, "scope": calendarFeedScopeSubscription, "subscriptionId": subscriptionID}).
+		Execute()
+	return err
 }
 
 func calendarFeedStatusFromRecord(request *http.Request, record *core.Record) calendarFeedStatus {
@@ -439,15 +425,15 @@ func calendarFeedURL(request *http.Request, token string) string {
 
 func listCalendarFeedSubscriptions(app core.App, userID string) ([]calendarFeedSubscription, error) {
 	items := []calendarFeedSubscription{}
-	for offset := 0; ; offset += notificationSubscriptionPageSize {
-		rows, err := app.FindRecordsByFilter("subscriptions", "user = {:user}", "nextBillingDate,name", notificationSubscriptionPageSize, offset, dbx.Params{"user": userID})
+	for offset := 0; ; offset += calendarFeedSubscriptionPageSize {
+		rows, err := app.FindRecordsByFilter("subscriptions", "user = {:user}", "nextBillingDate,name", calendarFeedSubscriptionPageSize, offset, dbx.Params{"user": userID})
 		if err != nil {
 			return nil, err
 		}
 		for _, row := range rows {
 			items = append(items, calendarFeedSubscriptionFromRecord(row))
 		}
-		if len(rows) < notificationSubscriptionPageSize {
+		if len(rows) < calendarFeedSubscriptionPageSize {
 			return items, nil
 		}
 	}
@@ -465,7 +451,7 @@ func calendarFeedSubscriptionFromRecord(row *core.Record) calendarFeedSubscripti
 	return calendarFeedSubscription{
 		ID:               row.Id,
 		Name:             row.GetString("name"),
-		Price:            row.GetFloat("price"),
+		Price:            moneyForRecord(row.Get("price")),
 		Currency:         row.GetString("currency"),
 		BillingCycle:     row.GetString("billingCycle"),
 		CustomDays:       row.GetInt("customDays"),
@@ -484,7 +470,7 @@ func calendarFeedSubscriptionFromRecord(row *core.Record) calendarFeedSubscripti
 
 func newCalendarFeedLabelResolver(app core.App, userID string, settings appSettings) (calendarFeedLabelResolver, error) {
 	resolver := calendarFeedLabelResolver{
-		locale:               normalizeAppLocale(settings.Locale),
+		locale:               accountContentLocale(settings),
 		categoryByValue:      map[string]string{},
 		paymentMethodByValue: map[string]string{},
 	}
@@ -575,7 +561,7 @@ type calendarFeedBuildOptions struct {
 }
 
 func buildCalendarFeedICS(options calendarFeedBuildOptions) string {
-	locale := normalizeAppLocale(options.Settings.Locale)
+	locale := accountContentLocale(options.Settings)
 	events := options.Events
 	cal := ics.NewCalendar()
 	cal.SetProductId("-//Renewlet//Renewal Calendar//EN")
@@ -689,7 +675,7 @@ func calendarFeedAlarmDescription(event calendarFeedEvent, locale appLocale) str
 }
 
 func calendarFeedDescription(item calendarFeedSubscription, settings appSettings, labels calendarFeedLabelResolver) string {
-	locale := normalizeAppLocale(settings.Locale)
+	locale := accountContentLocale(settings)
 	lines := []string{
 		serverFormat(locale, "calendarFeed.description.amount", map[string]interface{}{"amount": formatAmount(item.Price), "currency": item.Currency}),
 		serverFormat(locale, "calendarFeed.description.billingCycle", map[string]interface{}{"cycle": calendarFeedBillingCycleLabel(item, locale)}),
@@ -707,18 +693,11 @@ func calendarFeedDescription(item calendarFeedSubscription, settings appSettings
 func calendarFeedBillingCycleLabel(item calendarFeedSubscription, locale appLocale) string {
 	if item.BillingCycle == "custom" {
 		unit := item.CustomCycleUnit
-		if !isValidCustomCycleUnit(unit) {
-			unit = "day"
-		}
 		unitLabel := serverText(locale, "calendarFeed.customCycleUnit."+unit)
 		if unitLabel == "calendarFeed.customCycleUnit."+unit {
 			unitLabel = unit
 		}
-		count := item.CustomDays
-		if count <= 0 {
-			count = 1
-		}
-		return serverFormat(locale, "calendarFeed.billingCycle.customValue", map[string]interface{}{"count": count, "unit": unitLabel})
+		return serverFormat(locale, "calendarFeed.billingCycle.customValue", map[string]interface{}{"count": item.CustomDays, "unit": unitLabel})
 	}
 	key := "calendarFeed.billingCycle." + item.BillingCycle
 	label := serverText(locale, key)
@@ -759,7 +738,7 @@ func addCalendarFeedSource(cal *ics.Calendar, sourceURL string) {
 	cal.CalendarProperties = append(cal.CalendarProperties, ics.CalendarProperty{
 		BaseProperty: ics.BaseProperty{
 			IANAToken:      "SOURCE",
-			ICalParameters: map[string][]string{"VALUE": []string{string(ics.ValueDataTypeUri)}},
+			ICalParameters: map[string][]string{"VALUE": {string(ics.ValueDataTypeUri)}},
 			Value:          sourceURL,
 		},
 	})

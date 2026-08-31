@@ -21,6 +21,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -28,7 +29,13 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkCloudflareDevRunner } from "./check-cloudflare-dev-runner.mjs";
+import { checkCloudflareD1DeployContract } from "./check-cloudflare-d1-deploy-contract.mjs";
+import { checkCloudflareMigrationSafety } from "./check-cloudflare-migration-safety.mjs";
+import { checkCustomHeadHTMLDeployContract } from "./check-custom-head-html-deploy-contract.mjs";
+import { checkDockerBuildContract } from "./check-docker-build-contract.mjs";
 import { checkSyncRenewletUpstream } from "./check-deploy-sync-upstream.mjs";
+import { checkWorkflowContracts } from "./check-workflow-contracts.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const deployScript = join(repoRoot, "deploy/docker-deploy.sh");
@@ -175,28 +182,115 @@ function checkComposeConfig() {
   run("docker", ["compose", "-f", "docker-compose.ghcr.yml", "config"]);
 }
 
+function checkGoToolchainConsistency() {
+  const goModPath = join(repoRoot, "apps/docker-server/go.mod");
+  const goDirectives = [...readFileSync(goModPath, "utf8").matchAll(/^go\s+(\d+\.\d+\.\d+)\s*$/gm)];
+  if (goDirectives.length !== 1) {
+    throw new Error("apps/docker-server/go.mod must contain exactly one patch-level Go directive.");
+  }
+  const goVersion = goDirectives[0][1];
+
+  const dockerfile = readFileSync(join(repoRoot, "Dockerfile"), "utf8");
+  const dockerBuilder = /^FROM(?:\s+--platform=\S+)?\s+golang:(?<version>\d+\.\d+\.\d+)-\S+\s+AS\s+server-builder\s*$/m.exec(
+    dockerfile,
+  );
+  if (!dockerBuilder?.groups?.version) {
+    throw new Error("Dockerfile must keep a patch-pinned golang server-builder image.");
+  }
+  if (dockerBuilder.groups.version !== goVersion) {
+    throw new Error(
+      `Dockerfile Go version ${dockerBuilder.groups.version} must match go.mod ${goVersion}.`,
+    );
+  }
+
+  const workflowDir = join(repoRoot, ".github/workflows");
+  const workflowFiles = readdirSync(workflowDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /\.ya?ml$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  let setupGoCount = 0;
+
+  // go.mod 是漏洞扫描、CI 构建和 Docker 发布的唯一 Go 版本源；漂移会把未修复的标准库带进成品。
+  for (const workflowFile of workflowFiles) {
+    const lines = readFileSync(join(workflowDir, workflowFile), "utf8").split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const usesMatch = /^(?<indent>\s*)(?:-\s+)?uses:\s*actions\/setup-go@\S+\s*$/.exec(
+        lines[index],
+      );
+      if (!usesMatch?.groups) {
+        continue;
+      }
+
+      setupGoCount += 1;
+      const usesIndent = usesMatch.groups.indent.length;
+      let stepEnd = lines.length;
+      for (let candidate = index + 1; candidate < lines.length; candidate += 1) {
+        const nextStep = /^(?<indent>\s*)-\s+/.exec(lines[candidate]);
+        if (nextStep?.groups && nextStep.groups.indent.length <= usesIndent) {
+          stepEnd = candidate;
+          break;
+        }
+      }
+
+      const stepLines = lines.slice(index, stepEnd);
+      const versionFileValues = stepLines.flatMap((line) => {
+        const match = /^\s*go-version-file:\s*(?<value>.+?)\s*$/.exec(line);
+        return match?.groups ? [match.groups.value.replace(/^['"]|['"]$/g, "")] : [];
+      });
+      if (stepLines.some((line) => /^\s*go-version:\s*/.test(line))) {
+        throw new Error(`${workflowFile} setup-go step must not hardcode go-version.`);
+      }
+      if (
+        versionFileValues.length !== 1 ||
+        versionFileValues[0] !== "apps/docker-server/go.mod"
+      ) {
+        throw new Error(
+          `${workflowFile} setup-go step must use go-version-file: apps/docker-server/go.mod.`,
+        );
+      }
+    }
+  }
+
+  if (setupGoCount === 0) {
+    throw new Error("At least one GitHub Actions workflow must configure actions/setup-go.");
+  }
+}
+
 function checkDockerSelfUpdateLayout() {
   const dockerfile = readFileSync(join(repoRoot, "Dockerfile"), "utf8");
-  const entrypoint = readFileSync(join(repoRoot, "deploy/docker-entrypoint.sh"), "utf8");
+  const containerInit = readFileSync(join(repoRoot, "apps/docker-server/cmd/container-init/main.go"), "utf8");
   const compose = readFileSync(join(repoRoot, "deploy/docker-compose.yml"), "utf8");
   const releaseWorkflow = readFileSync(join(repoRoot, ".github/workflows/release-publish.yml"), "utf8");
 
-  // 页面内更新依赖 Dockerfile、entrypoint、compose、release 资产四处同频；这里把布局当契约锁住。
+  // 页面内更新依赖 Dockerfile、静态 init、compose、release 资产四处同频；这里把布局当契约锁住。
   for (const snippet of [
     "/opt/renewlet/current/renewlet",
     "RENEWLET_SELF_UPDATE_ENABLED=true",
-    "ln -s /opt/renewlet/current/renewlet /renewlet",
+    "COPY --from=server-builder --chown=1000:1000 /out/renewlet /opt/renewlet/current/renewlet",
+    'ENTRYPOINT ["/container-init"]',
   ]) {
     if (!dockerfile.includes(snippet)) {
       throw new Error(`Dockerfile must keep self-update layout snippet: ${snippet}`);
     }
   }
-  if (
-    !entrypoint.includes("mkdir -p /pb_data /opt/renewlet/current /opt/renewlet/backups") ||
-    !entrypoint.includes("rm -f /renewlet") ||
-    !entrypoint.includes("ln -s /opt/renewlet/current/renewlet /renewlet")
-  ) {
-    throw new Error("docker-entrypoint.sh must keep /opt/renewlet/current and backups writable");
+  for (const { pattern, label } of [
+    { pattern: /stableBinaryPath\s*=\s*"\/renewlet"/, label: "stable /renewlet path" },
+    { pattern: /renewletBinaryPath\s*=\s*"\/opt\/renewlet\/current\/renewlet"/, label: "replaceable binary path" },
+    { pattern: /dataPath\s*=\s*"\/pb_data"/, label: "PocketBase data path" },
+    { pattern: /backupPath\s*=\s*"\/opt\/renewlet\/backups"/, label: "self-update backup path" },
+    { pattern: /os\.Symlink\(targetPath, linkPath\)/, label: "stable symlink creation" },
+    { pattern: /os\.Lchown/, label: "symlink-safe ownership" },
+    { pattern: /syscall\.Setgroups/, label: "all-thread supplementary group cleanup" },
+    { pattern: /syscall\.Setgid/, label: "all-thread gid drop" },
+    { pattern: /syscall\.Setuid/, label: "all-thread uid drop" },
+    { pattern: /unix\.Exec/, label: "PID 1 exec" },
+  ]) {
+    if (!pattern.test(containerInit)) {
+      throw new Error(`container-init must keep runtime ownership and exec contract: ${label}`);
+    }
+  }
+  if (existsSync(join(repoRoot, "deploy/docker-entrypoint.sh"))) {
+    throw new Error("The removed shell Docker entrypoint must not return alongside container-init.");
   }
   if (!compose.includes('test: [ "CMD", "/renewlet", "healthcheck" ]')) {
     throw new Error("Docker healthcheck must keep /renewlet as the stable entrypoint");
@@ -219,32 +313,11 @@ function checkDockerSelfUpdateLayout() {
     "uses: actions/github-script@v9.0.0",
     "item.draft && item.tag_name === tag",
     "github.rest.repos.deleteRelease",
-    "uses: softprops/action-gh-release@v3.0.0",
+    "uses: softprops/action-gh-release@v3.0.2",
     "fail_on_unmatched_files: true",
   ]) {
     if (!releaseWorkflow.includes(snippet)) {
       throw new Error(`release-publish.yml must keep GitHub Release hygiene snippet: ${snippet}`);
-    }
-  }
-}
-
-function checkDockerCustomHeadScriptEnv() {
-  const expectedEnv = "RENEWLET_CUSTOM_HEAD_SCRIPT";
-  const files = [
-    ".env.example",
-    "deploy/env.example",
-    "docker-compose.yml",
-    "docker-compose.ghcr.yml",
-    "deploy/docker-compose.yml",
-    "README.md",
-    "README.zh-CN.md",
-  ];
-
-  // 自定义 head 脚本同时影响 HTML 注入与 CSP；部署入口漏传会让文档配置变成静默无效。
-  for (const relativePath of files) {
-    const content = readFileSync(join(repoRoot, relativePath), "utf8");
-    if (!content.includes(expectedEnv)) {
-      throw new Error(`${relativePath} must document or pass through ${expectedEnv}.`);
     }
   }
 }
@@ -287,27 +360,125 @@ function checkDockerProxyEnv() {
 
 function checkCloudflareDeployMigrationScript() {
   const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  const workerPackageJson = JSON.parse(readFileSync(join(repoRoot, "apps/worker/package.json"), "utf8"));
   const deployScript = packageJson.scripts?.deploy;
   const deployCloudflareScript = packageJson.scripts?.["deploy:cloudflare"];
   const buildCloudflareScript = packageJson.scripts?.["build:cloudflare"];
   const devScript = packageJson.scripts?.["dev:cloudflare"];
+  const checkDeployScript = packageJson.scripts?.["check:deploy"];
   const migrationScript = packageJson.scripts?.["cloudflare:migrations:apply"];
+  const localMigrationScript = packageJson.scripts?.["cloudflare:migrations:apply:local"];
+  const routeParityScript = packageJson.scripts?.["check:route-parity"];
+  const buildAllScript = packageJson.scripts?.["build:all"];
+  const typecheckScript = packageJson.scripts?.typecheck;
+  const typecheckAllScript = packageJson.scripts?.["typecheck:all"];
+  const typecheckScriptsScript = packageJson.scripts?.["typecheck:scripts"];
+  const checkCloudflareScript = packageJson.scripts?.["check:cloudflare"];
+  const queuesEnsureScript = packageJson.scripts?.["cloudflare:queues:ensure"];
+  const migrationRunnerScript = readFileSync(join(repoRoot, "scripts/apply-cloudflare-d1-migrations.mjs"), "utf8");
 
-  // Deploy Button 和自管 Wrangler 部署都依赖这个顺序：先确认生产 headers，再迁移 D1，最后更新 Worker。
-  if (deployScript !== "node scripts/prepare-cloudflare-local-headers.mjs --check-production && pnpm cloudflare:migrations:apply && wrangler deploy") {
-    throw new Error("package.json deploy script must check production Cloudflare headers before remote migration and wrangler deploy.");
+  // Deploy Button、自管 workflow 和正式发布只能委托同一个状态机，迁移顺序不能在入口层复制。
+  if (deployScript !== "tsx scripts/cloudflare-deploy.ts deploy") {
+    throw new Error("package.json deploy script must use the exclusive Cloudflare deployment orchestrator.");
   }
   if (deployCloudflareScript !== "pnpm build:cloudflare && pnpm deploy") {
     throw new Error("package.json deploy:cloudflare must rebuild production Cloudflare assets before deploy.");
   }
-  if (buildCloudflareScript !== "VITE_RENEWLET_RUNTIME=cloudflare pnpm --filter @renewlet/client build") {
-    throw new Error("package.json build:cloudflare must keep the production client build without local HTTP header rewrites.");
+  if (buildCloudflareScript !== "VITE_RENEWLET_RUNTIME=cloudflare pnpm --filter @renewlet/client build && pnpm --filter @renewlet/cloudflare build") {
+    throw new Error("package.json build:cloudflare must build both production Static Assets and the Worker bundle without local HTTP header rewrites.");
   }
-  if (migrationScript !== "wrangler d1 migrations apply DB --remote") {
-    throw new Error("package.json cloudflare:migrations:apply must target the DB binding with remote D1 migrations.");
+  if (workerPackageJson.scripts?.build !== "wrangler deploy --dry-run --config ../../wrangler.jsonc --outdir dist") {
+    throw new Error("apps/worker build must produce a real Wrangler dry-run bundle from the root deployment config.");
   }
-  if (devScript !== "pnpm build:cloudflare && node scripts/prepare-cloudflare-local-headers.mjs && pnpm cloudflare:migrations:apply:local && node scripts/cloudflare-dev-hint.mjs && wrangler dev --test-scheduled") {
-    throw new Error("package.json dev:cloudflare must prepare local HTTP headers, print the local Cron hint, and enable Wrangler scheduled middleware.");
+  if (checkDeployScript !== "node scripts/check-deploy-config.mjs && pnpm test:scripts") {
+    throw new Error("package.json check:deploy must include Cloudflare deployment helper tests.");
+  }
+  if (migrationScript !== "node scripts/apply-cloudflare-d1-migrations.mjs --remote") {
+    throw new Error("package.json cloudflare:migrations:apply must use the retry-aware remote D1 migration helper.");
+  }
+  if (localMigrationScript !== "node scripts/apply-cloudflare-d1-migrations.mjs --local") {
+    throw new Error("package.json cloudflare:migrations:apply:local must run migration, derived-state backfill, and foreign-key checks against local D1.");
+  }
+  if (routeParityScript !== "tsx scripts/check-product-route-parity.ts") {
+    throw new Error("package.json check:route-parity must compare the Go and Worker runtime registries.");
+  }
+  if (!buildAllScript?.includes("pnpm build:client") || !buildAllScript.includes("pnpm --filter @renewlet/cloudflare build") || !buildAllScript.includes("pnpm build:server") || !buildAllScript.includes("pnpm build:website")) {
+    throw new Error("package.json build:all must build client, Worker bundle, Go server, and website after shared/Worker typechecks.");
+  }
+  if (typecheckScript !== "pnpm typecheck:all") {
+    throw new Error("package.json typecheck must use the complete monorepo type gate.");
+  }
+  if (typecheckScriptsScript !== "tsc --noEmit --project tsconfig.json") {
+    throw new Error("package.json typecheck:scripts must compile every root TypeScript operations script.");
+  }
+  if (!typecheckAllScript?.includes("pnpm typecheck:scripts") || !typecheckAllScript.includes("pnpm --filter @renewlet/server typecheck")) {
+    throw new Error("package.json typecheck:all must include root scripts and Go vet through the Docker server workspace.");
+  }
+  if (!checkCloudflareScript?.includes("pnpm typecheck:scripts")) {
+    throw new Error("package.json check:cloudflare must typecheck the root Cloudflare operations scripts.");
+  }
+  if (queuesEnsureScript !== "tsx scripts/ensure-cloudflare-queues.ts") {
+    throw new Error("package.json cloudflare:queues:ensure must keep the idempotent Queue creation helper.");
+  }
+  if (devScript !== "pnpm build:cloudflare && node scripts/prepare-cloudflare-local-headers.mjs && pnpm cloudflare:migrations:apply:local && node scripts/cloudflare-dev-hint.mjs && node scripts/cloudflare-dev-wrangler.mjs --test-scheduled") {
+    throw new Error("package.json dev:cloudflare must prepare local HTTP headers, print the local Cron hint, apply the explicit proxy policy, and enable Wrangler scheduled middleware.");
+  }
+  // D1 远端 migration 偶发 7429/reset 时可以重试；权限、SQL 和 binding 错误仍必须保持失败。
+  for (const snippet of [
+    "D1 DB storage operation exceeded timeout",
+    "\\[code:\\s*7429\\]",
+    "Network connection lost",
+    "A D1 target is required",
+    "options.target === \"local\"",
+    "checkCloudflareMigrationSafety(repoRoot)",
+    "protect-cloudflare-calendar-feeds.ts",
+    'calendarFeedProtectionArgs(options, "prepare")',
+    'calendarFeedProtectionArgs(options, "restore")',
+    "backfill-cloudflare-subscription-derived-state.ts",
+    "PRAGMA foreign_key_check",
+    "invalid Wrangler JSON",
+    "found violations",
+    "non-retryable error",
+    "failed after",
+  ]) {
+    if (!migrationRunnerScript.includes(snippet)) {
+      throw new Error(`apply-cloudflare-d1-migrations.mjs must keep retry boundary snippet: ${snippet}`);
+    }
+  }
+}
+
+function checkCloudflareObservabilityProfiles() {
+  const generator = readFileSync(join(repoRoot, "scripts/generate-cloudflare-wrangler-config.ts"), "utf8");
+  const configModule = readFileSync(join(repoRoot, "scripts/cloudflare-wrangler-config.ts"), "utf8");
+  const template = readFileSync(join(repoRoot, "wrangler.jsonc"), "utf8");
+  const selfHostedWorkflow = readFileSync(join(repoRoot, ".github/workflows/cloudflare-worker.yml"), "utf8");
+  const releaseWorkflow = readFileSync(join(repoRoot, ".github/workflows/release-publish.yml"), "utf8");
+
+  // profile 由部署入口显式选择；模板/开发保持全采样，稳定发布必须降低日志与 trace 采样。
+  for (const snippet of [
+    '"CLOUDFLARE_OBSERVABILITY_PROFILE"',
+    "development: { logs: 1, traces: 1 }",
+    "production: { logs: 0.1, traces: 0.05 }",
+  ]) {
+    if (!generator.includes(snippet)) {
+      throw new Error(`Cloudflare config generator must keep observability profile snippet: ${snippet}`);
+    }
+  }
+  for (const snippet of ["createMaintenanceWranglerConfig", 'RENEWLET_MAINTENANCE_MODE: "true"', "consumers: []"]) {
+    if (!configModule.includes(snippet)) {
+      throw new Error(`Cloudflare config module must keep maintenance profile snippet: ${snippet}`);
+    }
+  }
+  for (const snippet of ['"head_sampling_rate": 1', '"enabled": true']) {
+    if (!template.includes(snippet)) {
+      throw new Error(`wrangler.jsonc development observability must keep snippet: ${snippet}`);
+    }
+  }
+  if (!selfHostedWorkflow.includes("CLOUDFLARE_OBSERVABILITY_PROFILE: development")) {
+    throw new Error("Self-managed Cloudflare workflow must select the development observability profile.");
+  }
+  if (!releaseWorkflow.includes("CLOUDFLARE_OBSERVABILITY_PROFILE: production")) {
+    throw new Error("Stable Cloudflare release must select the production observability profile.");
   }
 }
 
@@ -352,6 +523,41 @@ function checkCloudflareScheduledLocalRoute() {
   // Wrangler 的 /cdn-cgi scheduled 测试入口在 Workers Static Assets 下会先打到 asset proxy；Renewlet 本地 Cron 固定走 /__scheduled。
   if (!runWorkerFirst.includes('"/__scheduled"')) {
     throw new Error('wrangler.jsonc assets.run_worker_first must include "/__scheduled" for local Cron testing.');
+  }
+}
+
+function checkCloudflareQueueConfig() {
+  const wranglerConfig = readFileSync(join(repoRoot, "wrangler.jsonc"), "utf8");
+  const queueEnsureScript = readFileSync(join(repoRoot, "scripts/ensure-cloudflare-queues.ts"), "utf8");
+  const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  const packageBindings = packageJson.cloudflare?.bindings ?? {};
+
+  // 图标索引 refresh 不能再走 HTTP 重活；Queue/DLQ 名和 consumer 串行度是 Cloudflare 稳定性的部署契约。
+  for (const snippet of [
+    '"binding": "MEDIA_ICON_INDEX_REFRESH_QUEUE"',
+    '"queue": "renewlet-media-icon-index-refresh"',
+    '"max_batch_size": 1',
+    '"max_retries": 5',
+    '"dead_letter_queue": "renewlet-media-icon-index-refresh-dlq"',
+    '"max_concurrency": 1',
+  ]) {
+    if (!wranglerConfig.includes(snippet)) {
+      throw new Error(`wrangler.jsonc must keep media icon Queue config snippet: ${snippet}`);
+    }
+  }
+  if (!Object.hasOwn(packageBindings, "MEDIA_ICON_INDEX_REFRESH_QUEUE")) {
+    throw new Error("package.json cloudflare.bindings must document MEDIA_ICON_INDEX_REFRESH_QUEUE.");
+  }
+  // Queue create 不是幂等 API；already taken 只能在二次 info 确认存在后视为 ready。
+  for (const snippet of [
+    'runWranglerQueueCommand("info", name)',
+    'runWranglerQueueCommand("create", name)',
+    "\\b11009\\b|already taken",
+    "create conflicted but the queue could not be confirmed",
+  ]) {
+    if (!queueEnsureScript.includes(snippet)) {
+      throw new Error(`ensure-cloudflare-queues.ts must keep idempotent Queue ensure snippet: ${snippet}`);
+    }
   }
 }
 
@@ -423,6 +629,7 @@ function checkCloudflareDeployButtonVersionFallback() {
 }
 
 function checkCloudflareWorkflowBuildMetadata() {
+  checkCloudflareD1DeployContract(repoRoot);
   const selfHostedWorkflow = readFileSync(join(repoRoot, ".github/workflows/cloudflare-worker.yml"), "utf8");
   const releaseWorkflow = readFileSync(join(repoRoot, ".github/workflows/release-publish.yml"), "utf8");
 
@@ -446,6 +653,9 @@ function checkCloudflareWorkflowBuildMetadata() {
     "SHORT_SHA=\"${GITHUB_SHA::7}\"",
     "RENEWLET_VERSION=${PACKAGE_VERSION}-dev+${SHORT_SHA}",
     "RENEWLET_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+    "CI_WRANGLER_MAINTENANCE_CONFIG: wrangler.maintenance.generated.jsonc",
+    "Deploy Renewlet through the exclusive migration orchestrator",
+    "pnpm deploy -- --config \"$CI_WRANGLER_CONFIG\" --maintenance-config \"$CI_WRANGLER_MAINTENANCE_CONFIG\"",
   ]) {
     if (!selfHostedWorkflow.includes(snippet)) {
       throw new Error(`cloudflare-worker.yml must keep build metadata snippet: ${snippet}`);
@@ -456,61 +666,13 @@ function checkCloudflareWorkflowBuildMetadata() {
     "RENEWLET_VERSION: ${{ needs.metadata.outputs.version }}",
     "RENEWLET_COMMIT: ${{ github.sha }}",
     "RENEWLET_BUILD_TIME: ${{ steps.build-time.outputs.value }}",
+    "CI_WRANGLER_MAINTENANCE_CONFIG: wrangler.maintenance.generated.jsonc",
+    "Deploy Renewlet through the exclusive migration orchestrator",
+    "pnpm deploy -- --config \"$CI_WRANGLER_CONFIG\" --maintenance-config \"$CI_WRANGLER_MAINTENANCE_CONFIG\"",
   ]) {
     if (!releaseWorkflow.includes(snippet)) {
       throw new Error(`release-publish.yml must keep production Cloudflare metadata snippet: ${snippet}`);
     }
-  }
-}
-
-function workflowTriggerBlock(content, trigger) {
-  const match = new RegExp(`^  ${trigger}:\\n(?<body>(?:    .*(?:\\n|$))*)`, "m").exec(content);
-  return match?.groups?.body ?? "";
-}
-
-function checkReleaseBranchWorkflowTriggers() {
-  const workflows = [
-    { path: ".github/workflows/ci.yml", name: "CI" },
-    { path: ".github/workflows/build-smoke.yml", name: "Build Smoke" },
-  ];
-
-  // main/release push 不跑分支质量门；合并前看 PR，发布看 tag，避免稳定版合入后和 Release Publish 重复。
-  for (const workflow of workflows) {
-    const content = readFileSync(join(repoRoot, workflow.path), "utf8");
-    const pullRequestBlock = workflowTriggerBlock(content, "pull_request");
-    const pushBlock = workflowTriggerBlock(content, "push");
-
-    for (const snippet of ["      - dev", "      - main", '      - "release/**"']) {
-      if (!pullRequestBlock.includes(snippet)) {
-        throw new Error(`${workflow.name} pull_request trigger must keep branch snippet: ${snippet.trim()}`);
-      }
-    }
-    for (const snippet of ["      - dev"]) {
-      if (!pushBlock.includes(snippet)) {
-        throw new Error(`${workflow.name} push trigger must keep branch snippet: ${snippet.trim()}`);
-      }
-    }
-    for (const blockedBranch of ["      - main", "release/"]) {
-      if (pushBlock.includes(blockedBranch)) {
-        throw new Error(`${workflow.name} push trigger must not include ${blockedBranch.trim()}; release checks run on PR and tag workflows.`);
-      }
-    }
-  }
-
-  const releaseWorkflow = readFileSync(join(repoRoot, ".github/workflows/release-publish.yml"), "utf8");
-  for (const snippet of [
-    "Validate stable tag source",
-    "github.repository == 'zhiyingzzhou/renewlet' && steps.version.outputs.is-stable == 'true'",
-    "git fetch origin main:refs/remotes/origin/main",
-    "git merge-base --is-ancestor \"$TAG_SHA\" \"$MAIN_SHA\"",
-  ]) {
-    if (!releaseWorkflow.includes(snippet)) {
-      throw new Error(`release-publish.yml must keep stable tag source guard: ${snippet}`);
-    }
-  }
-
-  if (!readFileSync(join(repoRoot, ".github/workflows/build-smoke.yml"), "utf8").includes("workflow_dispatch:")) {
-    throw new Error("Build Smoke must keep workflow_dispatch for manual no-secret build verification.");
   }
 }
 
@@ -549,18 +711,24 @@ function checkRuntimeReleaseSecretPathRemoved() {
 run("bash", ["-n", deployScript]);
 checkGeneratedSecrets();
 checkInvalidExistingPBKeyIsRejected();
+checkGoToolchainConsistency();
 checkDockerSelfUpdateLayout();
-checkDockerCustomHeadScriptEnv();
+checkDockerBuildContract(repoRoot);
+checkCustomHeadHTMLDeployContract(repoRoot);
 checkDockerProxyEnv();
 checkCloudflareDeployMigrationScript();
+checkCloudflareMigrationSafety(repoRoot);
+checkCloudflareDevRunner(repoRoot);
+checkCloudflareObservabilityProfiles();
 checkCloudflareStaticAssetHeadersContract();
 checkCloudflareScheduledLocalRoute();
+checkCloudflareQueueConfig();
 checkCloudflareLocalDevNetworkAccess();
 checkCloudflareFreshD1Migrations();
 checkCloudflareDeployButtonVars();
 checkCloudflareDeployButtonVersionFallback();
 checkCloudflareWorkflowBuildMetadata();
-checkReleaseBranchWorkflowTriggers();
+checkWorkflowContracts(repoRoot);
 checkRuntimeReleaseSecretPathRemoved();
 checkSyncRenewletUpstream(repoRoot);
 checkComposeConfig();

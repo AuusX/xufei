@@ -5,6 +5,9 @@ import { DEFAULT_SERVER_I18N_LOCALE, requestLocale, serverText, type AppLocale }
 
 const JSON_LIMIT_BYTES = 1 << 20;
 const EMPTY_BODY_LIMIT_BYTES = 1024;
+export const SESSION_COOKIE_NAME = "renewlet_session";
+export const CSRF_COOKIE_NAME = "renewlet_csrf";
+export const CSRF_HEADER_NAME = "X-Renewlet-CSRF";
 
 export { requestLocale, type AppLocale } from "./server-i18n";
 
@@ -69,16 +72,124 @@ export function methodNotAllowed(locale: AppLocale): Response {
 export function privateShortCache(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("cache-control", "private, max-age=300");
-  // 候选搜索结果带用户来源设置和认证语义；Vary Authorization 防止边缘缓存串用户。
-  headers.set("vary", "Authorization");
+  // 浏览器 session 只走 cookie；短私有缓存必须按 Cookie 隔离，Public API bearer 不进入这里。
+  headers.set("vary", "Cookie");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-/** 从 Authorization header 提取 Cloudflare session bearer token；Go/PocketBase token 不在这里解析。 */
+/** 从 Authorization header 提取 Public API bearer；浏览器产品 session 不再从这里读取。 */
 export function bearerToken(request: Request): string | null {
   const header = request.headers.get("authorization") ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
   return match?.[1]?.trim() || null;
+}
+
+export function sessionCookieToken(request: Request): string | null {
+  return cookieValue(request, SESSION_COOKIE_NAME);
+}
+
+export function csrfHeaderToken(request: Request): string | null {
+  const value = request.headers.get(CSRF_HEADER_NAME);
+  return value?.trim() || null;
+}
+
+export function setSessionCookies(response: Response, request: Request, sessionToken: string, csrfToken: string, expiresAt: string): Response {
+  const headers = new Headers(response.headers);
+  const secure = cookieSecure(request);
+  headers.append("set-cookie", serializeCookie(SESSION_COOKIE_NAME, sessionToken, {
+    httpOnly: true,
+    secure,
+    sameSite: "Lax",
+    path: "/",
+    expires: expiresAt,
+    maxAge: 30 * 24 * 60 * 60,
+  }));
+  headers.append("set-cookie", serializeCookie(CSRF_COOKIE_NAME, csrfToken, {
+    httpOnly: false,
+    secure,
+    sameSite: "Lax",
+    path: "/",
+    expires: expiresAt,
+    maxAge: 30 * 24 * 60 * 60,
+  }));
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+export function clearSessionCookies(response: Response, request: Request): Response {
+  const headers = new Headers(response.headers);
+  const secure = cookieSecure(request);
+  for (const [name, httpOnly] of [[SESSION_COOKIE_NAME, true], [CSRF_COOKIE_NAME, false]] as const) {
+    headers.append("set-cookie", serializeCookie(name, "", {
+      httpOnly,
+      secure,
+      sameSite: "Lax",
+      path: "/",
+      expires: "Thu, 01 Jan 1970 00:00:00 GMT",
+      maxAge: 0,
+    }));
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+export function requireSameOriginUnsafe(request: Request, locale: AppLocale): void {
+  if (!isUnsafeMethod(request.method)) return;
+  const expected = new URL(request.url).origin;
+  const origin = request.headers.get("origin")?.trim();
+  if (origin) {
+    if (sameOrigin(origin, expected)) return;
+    throw new HttpError(403, serverText(locale, "auth.sessionExpired"), "CSRF_ORIGIN_MISMATCH");
+  }
+  const referer = request.headers.get("referer")?.trim();
+  if (referer) {
+    if (sameOrigin(referer, expected)) return;
+    throw new HttpError(403, serverText(locale, "auth.sessionExpired"), "CSRF_REFERER_MISMATCH");
+  }
+  throw new HttpError(403, serverText(locale, "auth.sessionExpired"), "CSRF_ORIGIN_REQUIRED");
+}
+
+export function isUnsafeMethod(method: string): boolean {
+  return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+}
+
+function cookieValue(request: Request, name: string): string | null {
+  const header = request.headers.get("cookie") ?? "";
+  for (const part of header.split(";")) {
+    const [rawName, ...rest] = part.trim().split("=");
+    if (rawName !== name) continue;
+    const value = rest.join("=");
+    return value ? decodeURIComponent(value) : "";
+  }
+  return null;
+}
+
+function sameOrigin(value: string, expected: string): boolean {
+  try {
+    return new URL(value).origin === expected;
+  } catch {
+    return false;
+  }
+}
+
+function cookieSecure(request: Request): boolean {
+  const url = new URL(request.url);
+  return url.protocol === "https:" || request.headers.get("x-forwarded-proto")?.trim().toLowerCase() === "https";
+}
+
+function serializeCookie(
+  name: string,
+  value: string,
+  options: { httpOnly: boolean; secure: boolean; sameSite: "Lax"; path: string; expires: string; maxAge: number },
+): string {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    `Path=${options.path}`,
+    `Max-Age=${options.maxAge}`,
+    `Expires=${new Date(options.expires).toUTCString()}`,
+    `SameSite=${options.sameSite}`,
+  ];
+  if (options.httpOnly) parts.push("HttpOnly");
+  if (options.secure) parts.push("Secure");
+  return parts.join("; ");
 }
 
 export function pathSegments(url: URL, prefix = "/api/app"): string[] {
@@ -106,8 +217,17 @@ export async function readJsonWithLimit<Schema extends z.ZodType>(
   locale: AppLocale,
   limitBytes: number,
 ): Promise<z.infer<Schema>> {
-  const text = await readLimitedTextWithLimit(request, locale, false, limitBytes);
-  return parseJsonText(text, schema, locale);
+  return (await readJsonWithLimitAndSize(request, schema, locale, limitBytes)).data;
+}
+
+export async function readJsonWithLimitAndSize<Schema extends z.ZodType>(
+  request: Request,
+  schema: Schema,
+  locale: AppLocale,
+  limitBytes: number,
+): Promise<{ data: z.infer<Schema>; bodyBytes: number }> {
+  const body = await readLimitedTextBodyWithLimit(request, locale, false, limitBytes);
+  return { data: parseJsonText(body.text, schema, locale), bodyBytes: body.bytes };
 }
 
 function parseJsonText<Schema extends z.ZodType>(
@@ -153,20 +273,29 @@ async function readLimitedText(request: Request, locale: AppLocale, allowEmpty: 
 }
 
 async function readLimitedTextWithLimit(request: Request, locale: AppLocale, allowEmpty: boolean, limitBytes: number): Promise<string> {
+	return (await readLimitedTextBodyWithLimit(request, locale, allowEmpty, limitBytes)).text;
+}
+
+async function readLimitedTextBodyWithLimit(
+  request: Request,
+  locale: AppLocale,
+  allowEmpty: boolean,
+  limitBytes: number,
+): Promise<{ text: string; bytes: number }> {
   const declaredLength = Number.parseInt(request.headers.get("content-length") ?? "", 10);
   if (Number.isFinite(declaredLength) && declaredLength > limitBytes) {
     throw new HttpError(413, serverText(locale, "common.requestBodyTooLarge"), "BODY_TOO_LARGE");
   }
-  const text = await readRequestTextUpToLimit(request, locale, limitBytes);
-  if (!allowEmpty && text.trim() === "") {
+  const body = await readRequestTextUpToLimit(request, locale, limitBytes);
+  if (!allowEmpty && body.text.trim() === "") {
     throw new HttpError(400, serverText(locale, "common.emptyBody"), "EMPTY_BODY");
   }
-  return text;
+  return body;
 }
 
-async function readRequestTextUpToLimit(request: Request, locale: AppLocale, limitBytes: number): Promise<string> {
+async function readRequestTextUpToLimit(request: Request, locale: AppLocale, limitBytes: number): Promise<{ text: string; bytes: number }> {
   const reader = request.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return { text: "", bytes: 0 };
   // 不能退回 request.text()：content-length 缺失时仍要边读边截断，避免大 body 把 Worker isolate 拖垮。
   const decoder = new TextDecoder();
   let total = 0;
@@ -181,7 +310,7 @@ async function readRequestTextUpToLimit(request: Request, locale: AppLocale, lim
     }
     text += decoder.decode(value, { stream: true });
   }
-  return text + decoder.decode();
+  return { text: text + decoder.decode(), bytes: total };
 }
 
 /** 结构化 HTTP 错误；前端 ApiError 只读取 error.code/details 来定位字段或展示通用错误。 */

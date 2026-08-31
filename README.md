@@ -38,11 +38,12 @@ Sign in with `demo@renewlet.local` / `renewlet-demo`. The demo resets regularly,
 - Subscription records with billing cycles, statuses, tags, websites, notes, logos, categories, and payment methods.
 - Reminder jobs based on each user's IANA time zone, local notification time, reminder days, repeat reminders, delivery history, and failed-send retries.
 - Notifications through Telegram, Notifyx, Webhook, WeCom Bot, DingTalk Bot, SMTP email, Bark, ServerChan, Discord, and PushPlus.
-- Account security with authenticator codes, one-time recovery codes, and passkey sign-in.
+- Account security with authenticator codes, one-time recovery codes, and passkey sign-in; access security with optional Cloudflare Turnstile human verification for login.
 - Monthly and yearly cost normalization, budget usage, category charts, payment-method charts, and inactive-subscription savings.
 - AI recognition for bill screenshots, notes, CSV/TSV, and pasted table text; drafts are reviewed before import.
 - Global private ICS feed and per-subscription calendar feeds.
 - Public subscription status pages with per-subscription visibility and optional price display.
+- Read-only [Public API](docs/public-api.md) with an OpenAPI 3.1 document for CLI tools, Shortcuts, and automation.
 - Import and export Renewlet data, plus Wallos file imports.
 - Uploaded logos, image URLs, built-in icon sources, and favicon fallback suggestions.
 - Docker deployment with React, Go/PocketBase, SQLite, and static assets in one container.
@@ -70,7 +71,7 @@ The deploy script creates `docker-compose.yml`, `.env`, and `data/`, then writes
 For production, pin a stable image tag:
 
 ```bash
-sed -i.bak 's#RENEWLET_IMAGE=.*#RENEWLET_IMAGE="zhiyingzzhou/renewlet:0.2.91"#' .env
+sed -i.bak 's#RENEWLET_IMAGE=.*#RENEWLET_IMAGE="zhiyingzzhou/renewlet:0.3.23"#' .env
 docker compose pull
 docker compose up -d
 ```
@@ -78,7 +79,7 @@ docker compose up -d
 If Docker Hub is unavailable, use GHCR:
 
 ```env
-RENEWLET_IMAGE="ghcr.io/zhiyingzzhou/renewlet:0.2.91"
+RENEWLET_IMAGE="ghcr.io/zhiyingzzhou/renewlet:0.3.23"
 ```
 
 ## Cloudflare Workers
@@ -88,6 +89,14 @@ RENEWLET_IMAGE="ghcr.io/zhiyingzzhou/renewlet:0.2.91"
 Use the deploy button for a Cloudflare-managed repository, or follow [Cloudflare Workers deploy](docs/cloudflare-workers-deploy.md) to manage D1, R2, GitHub Actions, and secrets yourself.
 
 Do not click the deploy button again to upgrade. One-click deploy users run `Sync Renewlet Upstream` in the generated repository connected by Cloudflare Builds; manual deploy users update their fork to the latest Renewlet version, then run `Cloudflare Worker`.
+
+## Login human verification
+
+Admins can enable Turnstile human verification in **Settings -> Access security -> Cloudflare Turnstile**. It protects email password login before password verification, and does not change passkey sign-in, the MFA second step, or first-time setup.
+
+Turnstile is a site-level security setting. Renewlet only exposes the public Site key to the login page; the Secret key stays on the server for Cloudflare Siteverify and is not included in public status, exports, cloud backups, or logs. Docker and Cloudflare deployments already include the required CSP entries for `https://challenges.cloudflare.com`.
+
+For manual validation, use Cloudflare's official Turnstile testing Site key and Secret key instead of a real challenge.
 
 ## Upgrade
 
@@ -100,13 +109,13 @@ tar -czf renewlet-backup-$(date +%F).tgz .env docker-compose.yml data
 Upgrade with Docker Compose:
 
 ```bash
-sed -i.bak 's#RENEWLET_IMAGE=.*#RENEWLET_IMAGE="zhiyingzzhou/renewlet:0.2.91"#' .env
+sed -i.bak 's#RENEWLET_IMAGE=.*#RENEWLET_IMAGE="zhiyingzzhou/renewlet:0.3.23"#' .env
 docker compose pull
 docker compose up -d
 docker compose logs -f
 ```
 
-Docker release images with the current binary layout can also update from the version badge at the top of Renewlet. Older images must run `docker compose pull && docker compose up -d` once before in-app updates become available.
+Docker release images also support in-app updates. Administrators can open System Update from the version badge at the top of Renewlet.
 
 ## Common Commands
 
@@ -126,7 +135,7 @@ Common `.env` values:
 | `PB_ENCRYPTION_KEY` | Encryption key for sensitive PocketBase settings. Do not rotate it casually after deployment. |
 | `CRON_SECRET` | Bearer secret for external Cron calls to `/api/cron/notifications`. |
 | `RENEWLET_DEMO_MODE` | Docker Demo Mode switch, `false` by default. |
-| `RENEWLET_CUSTOM_HEAD_SCRIPT` | Optional deployer-provided external `<script>` injection. Empty by default; leave unset to inject no external script. |
+| `RENEWLET_CUSTOM_HEAD_HTML` | Optional deployer-trusted raw `<head>` HTML fragment, limited to 64 KiB of UTF-8. Empty by default. |
 | `NOTIFICATION_SCHEDULER_ENABLED` | Built-in notification scheduler switch, `true` by default. |
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Optional Docker/Go upstream HTTP proxy; lowercase variable names are also supported. |
 
@@ -150,17 +159,27 @@ docker compose up -d --force-recreate
 
 Go also supports the lowercase variable names `http_proxy`, `https_proxy`, and `no_proxy`.
 
-### Custom Head Script
+### Custom Head HTML
 
-Renewlet does not inject external scripts by default. When `RENEWLET_CUSTOM_HEAD_SCRIPT` is set, Renewlet injects exactly one deployer-provided external `<script>` tag into the SPA `<head>`:
+Renewlet does not inject custom HTML by default. `RENEWLET_CUSTOM_HEAD_HTML` accepts a deployer-trusted, raw HTML fragment for the SPA `<head>`, including multiple `script`, `style`, `link`, `meta`, `noscript`, `template`, `title`, and `base` elements, comments, and whitespace. Inline scripts, external scripts, and scripts that dynamically create resources are supported. The UTF-8 value is limited to 64 KiB.
+
+Docker Compose `.env` files support single-quoted values spanning multiple lines. For example, the official Microsoft Clarity loader can be configured with a placeholder project ID as follows:
 
 ```env
-RENEWLET_CUSTOM_HEAD_SCRIPT='<script defer src="https://cdn.example.com/widget.js" data-host-url="https://api.example.com/widget"></script>'
+RENEWLET_CUSTOM_HEAD_HTML='<script type="text/javascript">
+    (function(c,l,a,r,i,t,y){
+        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+    })(window, document, "clarity", "script", "your-project-id");
+</script>'
 ```
 
-Renewlet accepts only a single external script tag with `src` and no inline content. The script origin is automatically added to `script-src` and `connect-src`; when `data-host-url` is present, its origin is also added to `connect-src`.
+The value must be raw HTML. Do not paste a Markdown link such as `[https://www.clarity.ms/tag/](https://www.clarity.ms/tag/)`, escaped tags such as `\<script>`, or editor-generated entities such as `&#x20;`; those strings are not the vendor's HTML snippet.
 
-Docker/Go deployments inject this at runtime, so changing the environment variable only requires restarting Renewlet. Cloudflare Static Assets reads the variable at build time, so changes require rebuilding and redeploying.
+Treat this as a trusted-code deployment boundary. The fragment has the same-origin capabilities of code shipped with Renewlet: it can read page data and non-HttpOnly storage, observe user interactions, and send credentialed requests as the current browser session. When the variable is empty, Renewlet keeps its strict resource CSP. When enabled, Renewlet intentionally switches to a structural CSP that retains `object-src`, `base-uri`, `frame-ancestors`, and `form-action` restrictions without fetch directives, so inline code and dynamically loaded scripts, XHR, images, and frames are not blocked by incomplete domain guesses.
+
+The instance operator is responsible for reviewing the fragment, disclosing analytics or session-recording data collection, publishing the applicable privacy policy, and providing any required consent signal. Renewlet contains no Clarity-specific integration or consent management platform. Docker/Go validates and freezes the value when the process starts, so changes require restarting Renewlet. Cloudflare Static Assets reads the value at build time, so changes require rebuilding and redeploying.
 
 ## Screenshots
 

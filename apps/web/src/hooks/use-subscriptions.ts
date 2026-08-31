@@ -1,20 +1,7 @@
-/**
- * 订阅相关 React Query Hooks（前端数据层）。
- *
- * 说明：
- * - 通过 subscriptionService 读写当前用户订阅数据
- * - Docker 与 Cloudflare 都经 `/api/app/subscriptions`，并在 service 边界统一 normalize + Zod parse
- * - API 返回 date-only 字符串（YYYY-MM-DD），前端在这里统一转成品牌类型
- *
- * 注意： Date 转换只发生在 hook 边界。页面/组件内部应使用 `Subscription` domain 类型，
- * 不要直接消费 API row，避免日期处理散落。
- * 注意： `billingCycle=custom` 与 `customDays` 的判别关系在这里落入 domain union；
- * 修改该转换会影响统计折算、表单回填和通知提醒。
- */
-
 import { useMemo } from "react";
 import {
   infiniteQueryOptions,
+  keepPreviousData,
   queryOptions,
   useInfiniteQuery,
   useMutation,
@@ -23,67 +10,82 @@ import {
   type QueryClient,
   type QueryFunctionContext,
 } from "@tanstack/react-query";
-import { subscriptionService, type SubscriptionFieldPatch, type SubscriptionListFilters } from "@/services/subscription-service";
-import type { Subscription, SubscriptionDraft } from "@/types/subscription";
+import {
+  subscriptionService,
+  type SubscriptionFieldPatch,
+  type SubscriptionListFilters,
+} from "@/services/subscription-service";
+import type { DateOnly } from "@/lib/time/date-only";
+import type { Subscription, SubscriptionDraft, SubscriptionFormSubmission } from "@/types/subscription";
+import type { SubscriptionRenewBody } from "@renewlet/shared/schemas/subscriptions";
+import {
+  invalidateSubscriptionCollections,
+  subscriptionQueryKeys,
+} from "@/hooks/subscription-query-cache";
 
-const SUBSCRIPTIONS_QUERY_KEY = ["subscriptions"] as const;
-const SUBSCRIPTIONS_LIST_QUERY_KEY = [...SUBSCRIPTIONS_QUERY_KEY, "list"] as const;
-const SUBSCRIPTIONS_INFINITE_QUERY_KEY = [...SUBSCRIPTIONS_QUERY_KEY, "infinite"] as const;
-const SUBSCRIPTIONS_PAGE_QUERY_KEY = [...SUBSCRIPTIONS_QUERY_KEY, "page"] as const;
 const SUBSCRIPTIONS_STALE_TIME_MS = 60_000;
-
-interface UseSubscriptionsOptions {
-  filters?: SubscriptionListFilters | undefined;
-  enabled?: boolean;
-}
+const INITIAL_SUBSCRIPTION_CURSOR: string | null = null;
 
 interface UseInfiniteSubscriptionsOptions {
   enabled?: boolean;
+  filters?: SubscriptionListFilters | undefined;
 }
 
-export function subscriptionsListQueryOptions(filters?: SubscriptionListFilters) {
-  return queryOptions({
-    queryKey: [...SUBSCRIPTIONS_LIST_QUERY_KEY, filters ?? null] as const,
-    queryFn: () => subscriptionService.list(filters),
-    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
-  });
+export interface UpdateSubscriptionCommand {
+  id: string;
+  changes: SubscriptionFormSubmission;
 }
 
-export function subscriptionsInfiniteQueryOptions() {
+export function subscriptionsInfiniteQueryOptions(filters?: SubscriptionListFilters) {
+  const queryKey = subscriptionQueryKeys.page(filters);
   return infiniteQueryOptions({
-    queryKey: SUBSCRIPTIONS_INFINITE_QUERY_KEY,
-    initialPageParam: null as string | null,
-    queryFn: ({ pageParam }: QueryFunctionContext<typeof SUBSCRIPTIONS_INFINITE_QUERY_KEY, string | null>) =>
-      subscriptionService.listPage(pageParam),
-    getNextPageParam: (lastPage: Awaited<ReturnType<typeof subscriptionService.listPage>>) => lastPage.nextCursor ?? undefined,
+    queryKey,
+    initialPageParam: INITIAL_SUBSCRIPTION_CURSOR,
+    queryFn: ({ pageParam, signal }: QueryFunctionContext<typeof queryKey, string | null>) =>
+      subscriptionService.listPage(pageParam, subscriptionService.pageSize, filters, signal),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
   });
 }
 
-export function subscriptionsPageQueryOptions(cursor?: string | null, limit?: number) {
+export function subscriptionDetailQueryOptions(id: string) {
   return queryOptions({
-    queryKey: [...SUBSCRIPTIONS_PAGE_QUERY_KEY, cursor ?? null, limit ?? subscriptionService.pageSize] as const,
-    queryFn: () => subscriptionService.listPage(cursor, limit),
+    queryKey: subscriptionQueryKeys.detail(id),
+    queryFn: ({ signal }) => subscriptionService.detail(id, signal),
     staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
   });
 }
 
-/** useSubscriptions 保留全量列表入口，避免统计/导出逻辑自己拼分页结果造成口径漂移。 */
-export function useSubscriptions(options: UseSubscriptionsOptions = {}) {
-  return useQuery({
-    ...subscriptionsListQueryOptions(options.filters),
-    enabled: options.enabled ?? true,
+export function subscriptionAnalyticsQueryOptions() {
+  return queryOptions({
+    queryKey: subscriptionQueryKeys.analytics,
+    queryFn: ({ signal }) => subscriptionService.analytics(signal),
+    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
   });
 }
 
-/**
- * useInfiniteSubscriptions 读取游标分页订阅并在 hook 边界摊平成列表。
- *
- * 页面只消费 `subscriptions`，避免把 Worker/Go 的分页响应形状泄漏到筛选、虚拟列表和 CRUD 控制器。
- */
+export function subscriptionCalendarQueryOptions(from: DateOnly, to: DateOnly) {
+  return queryOptions({
+    queryKey: subscriptionQueryKeys.calendar(from, to),
+    queryFn: ({ signal }) => subscriptionService.calendar(from, to, signal),
+    // 月份范围属于缓存身份；换月沿用上一份成功结果，避免参数切换退回首次加载态。
+    placeholderData: keepPreviousData,
+    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
+  });
+}
+
+export function subscriptionFacetsQueryOptions() {
+  return queryOptions({
+    queryKey: subscriptionQueryKeys.facets,
+    queryFn: ({ signal }) => subscriptionService.facets(signal),
+    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
+  });
+}
+
+/** 列表页只显式加载下一页；统计、日历和设置不再复用这条分页数据流。 */
 export function useInfiniteSubscriptions(options: UseInfiniteSubscriptionsOptions = {}) {
   const query = useInfiniteQuery({
-    ...subscriptionsInfiniteQueryOptions(),
+    ...subscriptionsInfiniteQueryOptions(options.filters),
     enabled: options.enabled ?? true,
   });
   const subscriptions = useMemo(
@@ -93,84 +95,90 @@ export function useInfiniteSubscriptions(options: UseInfiniteSubscriptionsOption
   return {
     ...query,
     subscriptions,
-    total: query.data?.pages[0]?.total,
+    total: query.data?.pages[0]?.total ?? 0,
   };
 }
 
-/** useSubscriptionsPage 让局部视图显式绑定 cursor/limit，避免复用无限滚动缓存时读到错误页。 */
-export function useSubscriptionsPage(cursor?: string | null, limit?: number) {
+export function useSubscriptionIndex(filters?: SubscriptionListFilters, enabled = true) {
   return useQuery({
-    ...subscriptionsPageQueryOptions(cursor, limit),
+    queryKey: subscriptionQueryKeys.index(filters),
+    queryFn: ({ signal }) => subscriptionService.index(filters, signal),
+    enabled,
+    staleTime: SUBSCRIPTIONS_STALE_TIME_MS,
   });
 }
 
-/** invalidateSubscriptionsQueries 让列表、分页和无限滚动缓存共享同一个失效前缀。 */
-export function invalidateSubscriptionsQueries(queryClient: QueryClient) {
-  return queryClient.invalidateQueries({ queryKey: SUBSCRIPTIONS_QUERY_KEY });
+export function useSubscriptionAnalytics() {
+  return useQuery(subscriptionAnalyticsQueryOptions());
 }
 
-/** useCreateSubscription 写入后只失效订阅缓存，由 service 层负责 Docker/Cloudflare 运行面分流。 */
+export function useSubscriptionCalendar(from: DateOnly, to: DateOnly) {
+  return useQuery(subscriptionCalendarQueryOptions(from, to));
+}
+
+export function useSubscriptionFacets() {
+  return useQuery(subscriptionFacetsQueryOptions());
+}
+
+export function useSubscriptionDetail(id: string | null, enabled = true) {
+  return useQuery({
+    ...subscriptionDetailQueryOptions(id ?? ""),
+    enabled: enabled && Boolean(id),
+  });
+}
+
+export function prefetchSubscriptionDetail(queryClient: QueryClient, id: string) {
+  return queryClient.prefetchQuery(subscriptionDetailQueryOptions(id));
+}
+
+/** mutation 返回的完整 DTO 直接写 detail；集合派生数据统一由 collections 前缀失效。 */
+function writeSubscriptionMutationResult(queryClient: QueryClient, subscription: Subscription): void {
+  queryClient.setQueryData(subscriptionQueryKeys.detail(subscription.id), subscription);
+  void invalidateSubscriptionCollections(queryClient);
+}
+
 export function useCreateSubscription() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (sub: SubscriptionDraft) => {
-      return await subscriptionService.create(sub);
-    },
-    onSuccess: () => {
-      // 订阅数据会驱动统计、日历和通知预览；写操作后统一让订阅列表成为失效源。
-      invalidateSubscriptionsQueries(queryClient);
-    },
+    mutationFn: (sub: SubscriptionDraft) => subscriptionService.create(sub),
+    onSuccess: (subscription) => writeSubscriptionMutationResult(queryClient, subscription),
   });
 }
 
-/** useUpdateSubscription 保存完整 domain 对象，避免编辑弹窗关心 API patch 形状。 */
 export function useUpdateSubscription() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (sub: Subscription) => {
-      return await subscriptionService.update(sub);
-    },
-    onSuccess: () => {
-      invalidateSubscriptionsQueries(queryClient);
-    },
+    mutationFn: ({ id, changes }: UpdateSubscriptionCommand) =>
+      subscriptionService.update(id, changes),
+    onSuccess: (subscription) => writeSubscriptionMutationResult(queryClient, subscription),
   });
 }
 
-/** usePatchSubscription 表达卡片快捷操作的字段级意图，避免旧列表快照覆盖并发编辑。 */
 export function usePatchSubscription() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, patch }: { id: string; patch: SubscriptionFieldPatch }) => {
-      return await subscriptionService.patch(id, patch);
-    },
-    onSuccess: () => {
-      invalidateSubscriptionsQueries(queryClient);
-    },
+    mutationFn: ({ id, patch }: { id: string; patch: SubscriptionFieldPatch }) =>
+      subscriptionService.patch(id, patch),
+    onSuccess: (subscription) => writeSubscriptionMutationResult(queryClient, subscription),
   });
 }
 
-/** useRenewSubscription 只触发手动续订 API；成功后由统一订阅前缀刷新统计、列表和详情快照。 */
 export function useRenewSubscription() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      return await subscriptionService.renew(id);
-    },
-    onSuccess: () => {
-      invalidateSubscriptionsQueries(queryClient);
-    },
+    mutationFn: ({ id, payload }: { id: string; payload: SubscriptionRenewBody }) =>
+      subscriptionService.renew(id, payload),
+    onSuccess: (subscription) => writeSubscriptionMutationResult(queryClient, subscription),
   });
 }
 
-/** useDeleteSubscription 删除后统一失效订阅前缀，保证统计和日历入口不读旧列表。 */
 export function useDeleteSubscription() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
-      await subscriptionService.delete(id);
-    },
-    onSuccess: () => {
-      invalidateSubscriptionsQueries(queryClient);
+    mutationFn: (id: string) => subscriptionService.delete(id),
+    onSuccess: (_data, id) => {
+      queryClient.removeQueries({ queryKey: subscriptionQueryKeys.detail(id), exact: true });
+      void invalidateSubscriptionCollections(queryClient);
     },
   });
 }

@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { assertDateOnly } from "@/lib/time/date-only";
 import type { ConfigItem } from "@/types/config";
 import type { Subscription } from "@/types/subscription";
+import { moneyToNumber } from "@renewlet/shared/money";
 import { SubscriptionCard } from "./subscription-card";
 
 const category: ConfigItem = {
@@ -17,7 +18,7 @@ const subscription: Subscription = {
   id: "sub-1",
   name: "Shared SaaS",
   logo: undefined,
-  price: 50,
+  price: "50",
   currency: "CNY",
   billingCycle: "monthly",
   customDays: undefined,
@@ -39,14 +40,15 @@ const subscription: Subscription = {
   repeatReminderEnabled: false,
   repeatReminderInterval: "1h",
   repeatReminderWindow: "72h",
+  extra: {},
   pinned: false,
   publicHidden: false,
   costSharing: {
     enabled: true,
     splitMode: "custom",
     members: [
-      { id: "eur", name: "EUR member", currency: "EUR", customAmount: 10 },
-      { id: "usd", name: "USD member", currency: "USD", customAmount: 10 },
+      { id: "eur", name: "EUR member", currency: "EUR", customAmount: "10" },
+      { id: "usd", name: "USD member", currency: "USD", customAmount: "10" },
     ],
   },
 };
@@ -65,16 +67,20 @@ describe("SubscriptionCard cost sharing", () => {
           timeZone="Asia/Shanghai"
           categoryByValue={new Map([[category.value, category]])}
           paymentMethodByValue={new Map()}
-          costSharingCurrencyConvert={(amount, from, to) => {
-            if (to !== "CNY") return amount;
-            if (from === "EUR") return amount * 8;
-            if (from === "USD") return amount * 7;
-            return amount;
+          currencyRatesReady={true}
+          currencyConvert={(amount, from, to) => {
+            const value = moneyToNumber(amount);
+            if (to !== "CNY") return value;
+            if (from === "EUR") return value * 8;
+            if (from === "USD") return value * 7;
+            return value;
           }}
+          priceReferenceCurrency={null}
         />
       </TooltipProvider>,
     );
 
-    expect(screen.getByText(/你的份额\s*¥0/)).toBeInTheDocument();
+    expect(screen.getByText(/你的份额\s*¥0 CNY/)).toBeInTheDocument();
+    expect(screen.getByText("日均 ¥1.67")).toBeInTheDocument();
   });
 });

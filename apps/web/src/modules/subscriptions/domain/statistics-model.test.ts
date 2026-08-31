@@ -3,35 +3,24 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CUSTOM_CONFIG } from "@/types/config";
 import { DISABLED_REMINDER_DAYS, INHERIT_REMINDER_DAYS, type Subscription } from "@/types/subscription";
 import { assertDateOnly } from "@/lib/time/date-only";
+import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
 import { buildDashboardStats } from "./dashboard-stats";
 import { buildStatisticsModel } from "./statistics-model";
 import { buildUpcomingReminderItems } from "./upcoming-reminders";
+import { moneyToNumber } from "@renewlet/shared/money";
 
-type RecurringBillingCycle = Exclude<Subscription["billingCycle"], "custom" | "one-time">;
 type SubscriptionBaseFixture = Omit<Subscription, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">;
-type SubscriptionOverrides = Partial<Omit<Subscription, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">> & (
-  | {
-      billingCycle?: RecurringBillingCycle;
-      customDays?: undefined;
-      customCycleUnit?: undefined;
-      oneTimeTermCount?: undefined;
-      oneTimeTermUnit?: undefined;
-    }
-  | {
-      billingCycle: "one-time";
-      customDays?: undefined;
-      customCycleUnit?: undefined;
-      oneTimeTermCount?: number | undefined;
-      oneTimeTermUnit?: Subscription["oneTimeTermUnit"];
-    }
-  | { billingCycle: "custom"; customDays?: number; customCycleUnit?: Subscription["customCycleUnit"] }
-);
+type SubscriptionOverrides = SubscriptionFixtureOverrides<Subscription>;
 
-const convert = (amount: number, from: string, to: string) => {
-  if (from === to) return amount;
-  if (from === "USD" && to === "CNY") return amount * 7;
-  if (from === "CNY" && to === "USD") return amount / 7;
-  return amount;
+const convert = (amount: number | string, from: string, to: string) => {
+  const value = moneyToNumber(amount);
+  if (from === to) return value;
+  if (from === "USD" && to === "CNY") return value * 7;
+  if (from === "CNY" && to === "USD") return value / 7;
+  return value;
 };
 
 function subscription(overrides: SubscriptionOverrides): Subscription {
@@ -39,7 +28,7 @@ function subscription(overrides: SubscriptionOverrides): Subscription {
     id: "sub",
     name: "Service",
     logo: undefined,
-    price: 10,
+    price: "10",
     currency: "USD",
     category: "productivity",
     status: "active",
@@ -56,42 +45,15 @@ function subscription(overrides: SubscriptionOverrides): Subscription {
     repeatReminderEnabled: false,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
+    extra: {},
     pinned: false,
     publicHidden: false,
   };
 
-  if (overrides.billingCycle === "custom") {
-    return {
-      ...base,
-      ...overrides,
-      billingCycle: "custom",
-      customDays: overrides.customDays ?? 30,
-      customCycleUnit: overrides.customCycleUnit ?? "day",
-      oneTimeTermCount: undefined,
-      oneTimeTermUnit: undefined,
-    };
-  }
-
-  if (overrides.billingCycle === "one-time") {
-    return {
-      ...base,
-      ...overrides,
-      billingCycle: "one-time",
-      customDays: undefined,
-      customCycleUnit: undefined,
-      oneTimeTermCount: overrides.oneTimeTermCount,
-      oneTimeTermUnit: overrides.oneTimeTermUnit,
-    };
-  }
-
   return {
     ...base,
     ...overrides,
-    billingCycle: overrides.billingCycle ?? "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
-    oneTimeTermCount: undefined,
-    oneTimeTermUnit: undefined,
+    ...subscriptionCycleFixture(overrides),
   };
 }
 
@@ -99,19 +61,20 @@ describe("subscription statistics models", () => {
   it("excludes paused/cancelled subscriptions from active spending", () => {
     const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ id: "active", price: 10, status: "active" }),
-        subscription({ id: "trial", price: 5, status: "trial" }),
-        subscription({ id: "paused", price: 100, status: "paused" }),
-        subscription({ id: "cancelled", price: 100, status: "cancelled" }),
+        subscription({ id: "active", price: "10", status: "active" }),
+        subscription({ id: "trial", price: "5", status: "trial" }),
+        subscription({ id: "paused", price: "100", status: "paused" }),
+        subscription({ id: "cancelled", price: "100", status: "cancelled" }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
     });
 
     expect(model.totalMonthly).toBe(15);
+    expect(model.totalDaily).toBe(0.5);
     expect(model.activeCount).toBe(2);
     expect(model.inactiveCount).toBe(2);
     expect(model.monthlySavings).toBe(200);
@@ -122,7 +85,7 @@ describe("subscription statistics models", () => {
   it("keeps one-time purchases active but excludes them from recurring spend and upcoming renewals", () => {
     const oneTime = subscription({
       id: "lifetime",
-      price: 199,
+      price: "199",
       status: "active",
       billingCycle: "one-time",
       nextBillingDate: assertDateOnly("2026-01-02"),
@@ -132,7 +95,7 @@ describe("subscription statistics models", () => {
     const model = buildStatisticsModel({
       subscriptions: [oneTime],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-10T00:00:00.000Z"),
@@ -146,16 +109,18 @@ describe("subscription statistics models", () => {
 
     expect(model.activeCount).toBe(1);
     expect(model.totalMonthly).toBe(0);
+    expect(model.totalDaily).toBe(0);
     expect(model.inactiveCount).toBe(0);
     expect(dashboard.activeSubscriptions).toHaveLength(1);
     expect(dashboard.totalMonthly).toBe(0);
+    expect(dashboard.totalDaily).toBe(0);
     expect(dashboard.upcomingCount).toBe(0);
   });
 
   it("amortizes one-time fixed terms while excluding them from current-month due cashflow", () => {
     const fixedTerm = subscription({
       id: "fixed-term",
-      price: 120,
+      price: "120",
       billingCycle: "one-time",
       startDate: assertDateOnly("2025-07-05"),
       nextBillingDate: assertDateOnly("2026-01-05"),
@@ -168,7 +133,7 @@ describe("subscription statistics models", () => {
     const model = buildStatisticsModel({
       subscriptions: [fixedTerm],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 40,
+      monthlyBudget: "40",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -181,6 +146,7 @@ describe("subscription statistics models", () => {
     });
 
     expect(model.totalMonthly).toBe(20);
+    expect(model.totalDaily).toBe(2 / 3);
     expect(model.totalAnnual).toBe(240);
     expect(model.thisMonthDue).toBe(0);
     expect(model.budgetUsedPercent).toBe(50);
@@ -188,18 +154,19 @@ describe("subscription statistics models", () => {
       expect.objectContaining({ value: 20 }),
     ]);
     expect(dashboard.totalMonthly).toBe(20);
+    expect(dashboard.totalDaily).toBe(2 / 3);
     expect(dashboard.upcomingCount).toBe(1);
   });
 
   it("treats effective expired subscriptions as inactive savings", () => {
     const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ id: "active", price: 10, status: "active", nextBillingDate: assertDateOnly("2026-01-05") }),
-        subscription({ id: "legacyExpired", price: 20, status: "active", nextBillingDate: assertDateOnly("2025-12-31") }),
-        subscription({ id: "storedExpired", price: 30, status: "expired", nextBillingDate: assertDateOnly("2026-01-05") }),
+        subscription({ id: "active", price: "10", status: "active", nextBillingDate: assertDateOnly("2026-01-05") }),
+        subscription({ id: "legacyExpired", price: "20", status: "active", nextBillingDate: assertDateOnly("2025-12-31") }),
+        subscription({ id: "storedExpired", price: "30", status: "expired", nextBillingDate: assertDateOnly("2026-01-05") }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -214,12 +181,12 @@ describe("subscription statistics models", () => {
   it("normalizes inactive savings by billing cycle", () => {
     const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ id: "active", price: 20, status: "active" }),
-        subscription({ id: "pausedAnnual", price: 120, status: "paused", billingCycle: "annual" }),
-        subscription({ id: "cancelledQuarterly", price: 90, status: "cancelled", billingCycle: "quarterly" }),
+        subscription({ id: "active", price: "20", status: "active" }),
+        subscription({ id: "pausedAnnual", price: "120", status: "paused", billingCycle: "annual" }),
+        subscription({ id: "cancelledQuarterly", price: "90", status: "cancelled", billingCycle: "quarterly" }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -233,29 +200,30 @@ describe("subscription statistics models", () => {
   it("converts currency before monthly cycle normalization", () => {
     const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ price: 12, currency: "USD", billingCycle: "annual" }),
-        subscription({ price: 70, currency: "CNY", billingCycle: "monthly" }),
+        subscription({ price: "12", currency: "USD", billingCycle: "annual" }),
+        subscription({ price: "70", currency: "CNY", billingCycle: "monthly" }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 100,
+      monthlyBudget: "100",
       defaultCurrency: "CNY",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
     });
 
     expect(model.totalMonthly).toBe(77);
+    expect(model.totalDaily).toBe(77 / 30);
     expect(model.budgetRemaining).toBe(23);
   });
 
   it("builds 12-month cashflow trend from recurring billing dates", () => {
     const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ id: "monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
-        subscription({ id: "annual", price: 120, billingCycle: "annual", nextBillingDate: assertDateOnly("2026-03-01") }),
-        subscription({ id: "custom", price: 30, billingCycle: "custom", customDays: 2, customCycleUnit: "month", nextBillingDate: assertDateOnly("2026-02-10") }),
+        subscription({ id: "monthly", price: "10", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
+        subscription({ id: "annual", price: "120", billingCycle: "annual", nextBillingDate: assertDateOnly("2026-03-01") }),
+        subscription({ id: "custom", price: "30", billingCycle: "custom", customDays: 2, customCycleUnit: "month", nextBillingDate: assertDateOnly("2026-02-10") }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -316,7 +284,7 @@ describe("subscription statistics models", () => {
         subscription({
           id: "short-cycle",
           name: "Short Cycle",
-          price: 3,
+          price: "3",
           billingCycle: "custom",
           customDays: 10,
           customCycleUnit: "day",
@@ -324,7 +292,7 @@ describe("subscription statistics models", () => {
         }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -346,10 +314,10 @@ describe("subscription statistics models", () => {
   it("builds amortized trend for recurring and fixed-term subscriptions without one-time cashflow", () => {
     const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ id: "monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
+        subscription({ id: "monthly", price: "10", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-15") }),
         subscription({
           id: "fixedTerm",
-          price: 120,
+          price: "120",
           billingCycle: "one-time",
           startDate: assertDateOnly("2026-02-15"),
           nextBillingDate: assertDateOnly("2026-04-15"),
@@ -358,14 +326,14 @@ describe("subscription statistics models", () => {
         }),
         subscription({
           id: "buyout",
-          price: 500,
+          price: "500",
           billingCycle: "one-time",
           startDate: assertDateOnly("2026-01-01"),
           nextBillingDate: assertDateOnly("2026-01-01"),
         }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -392,11 +360,11 @@ describe("subscription statistics models", () => {
   it("converts currency before trend aggregation", () => {
     const model = buildStatisticsModel({
       subscriptions: [
-        subscription({ id: "usd", price: 10, currency: "USD", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-05") }),
-        subscription({ id: "cny", price: 70, currency: "CNY", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-10") }),
+        subscription({ id: "usd", price: "10", currency: "USD", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-05") }),
+        subscription({ id: "cny", price: "70", currency: "CNY", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-01-10") }),
       ],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "CNY",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -408,21 +376,21 @@ describe("subscription statistics models", () => {
   it("switches statistics from total cost to personal cost basis", () => {
     const familyPlan = subscription({
       id: "family-plan",
-      price: 100,
+      price: "100",
       billingCycle: "monthly",
       nextBillingDate: assertDateOnly("2026-01-05"),
       costSharing: {
         enabled: true,
         splitMode: "custom",
         members: [
-          { id: "partner", name: "Partner", currency: "USD", customAmount: 60 },
+          { id: "partner", name: "Partner", currency: "USD", customAmount: "60" },
         ],
       },
     });
     const totalModel = buildStatisticsModel({
       subscriptions: [familyPlan],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 100,
+      monthlyBudget: "100",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -431,7 +399,7 @@ describe("subscription statistics models", () => {
     const personalModel = buildStatisticsModel({
       subscriptions: [familyPlan],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 100,
+      monthlyBudget: "100",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-01-01T00:00:00.000Z"),
@@ -439,12 +407,14 @@ describe("subscription statistics models", () => {
     });
 
     expect(totalModel.totalMonthly).toBe(100);
+    expect(totalModel.totalDaily).toBe(100 / 30);
     expect(totalModel.thisMonthDue).toBe(100);
     expect(totalModel.trendData[0]).toEqual(expect.objectContaining({ cashflow: 100, amortized: 100 }));
     expect(totalModel.trendData[0]?.cashflowItems).toEqual([
       expect.objectContaining({ subscriptionId: "family-plan", amount: 100 }),
     ]);
     expect(personalModel.totalMonthly).toBe(40);
+    expect(personalModel.totalDaily).toBe(40 / 30);
     expect(personalModel.thisMonthDue).toBe(40);
     expect(personalModel.budgetUsedPercent).toBe(40);
     expect(personalModel.categoryData).toEqual([
@@ -461,9 +431,9 @@ describe("subscription statistics models", () => {
 
   it("uses the configured timezone to choose the trend start month", () => {
     const model = buildStatisticsModel({
-      subscriptions: [subscription({ id: "monthly", price: 10, billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-07-01") })],
+      subscriptions: [subscription({ id: "monthly", price: "10", billingCycle: "monthly", nextBillingDate: assertDateOnly("2026-07-01") })],
       config: DEFAULT_CUSTOM_CONFIG,
-      monthlyBudget: 0,
+      monthlyBudget: "0",
       defaultCurrency: "USD",
       convert,
       now: new Date("2026-06-30T16:30:00.000Z"),

@@ -9,11 +9,13 @@ import {
   WEBHOOK_PAYLOAD_PLACEHOLDER,
   type AppSettings,
 } from "@/types/subscription";
-import { normalizeSettings, SETTINGS_QUERY_KEY, useSettings, useUpdateSettings } from "./use-settings";
+import { SETTINGS_QUERY_KEY } from "./settings-query-key";
+import { normalizeSettings, useSettings, useUpdateSettings } from "./use-settings";
+import { EMPTY_SETTINGS_SECRET_STATUS, type SettingsReadModel } from "@/services/settings-service";
 
 const mocks = vi.hoisted(() => ({
-  settingsGet: vi.fn<() => Promise<AppSettings>>(),
-  settingsUpdate: vi.fn<(current: AppSettings, patch: Partial<AppSettings>) => Promise<AppSettings>>(),
+  settingsGet: vi.fn<() => Promise<SettingsReadModel>>(),
+  settingsUpdate: vi.fn<(current: AppSettings, patch: Partial<AppSettings>) => Promise<SettingsReadModel>>(),
 }));
 
 vi.mock("@/services/settings-service", async (importOriginal) => {
@@ -49,6 +51,14 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   };
 }
 
+function settingsEnvelope(overrides: Partial<AppSettings> = {}): SettingsReadModel {
+  return { settings: settings(overrides), secretStatus: EMPTY_SETTINGS_SECRET_STATUS };
+}
+
+function normalizePersistedSettings(value: Record<string, unknown>): AppSettings {
+  return normalizeSettings({ localePreference: "auto", ...value });
+}
+
 describe("useSettings query contract", () => {
   beforeEach(() => {
     mocks.settingsGet.mockReset();
@@ -57,7 +67,7 @@ describe("useSettings query contract", () => {
 
   it("keeps cached settings fresh across remounts", async () => {
     const queryClient = createQueryClient();
-    mocks.settingsGet.mockResolvedValue(settings({ defaultCurrency: "USD" }));
+    mocks.settingsGet.mockResolvedValue(settingsEnvelope({ defaultCurrency: "USD" }));
     const wrapper = createWrapper(queryClient);
 
     const first = renderHook(() => useSettings(), { wrapper });
@@ -73,8 +83,8 @@ describe("useSettings query contract", () => {
 
   it("writes updated settings into the shared cache immediately", async () => {
     const queryClient = createQueryClient();
-    queryClient.setQueryData(SETTINGS_QUERY_KEY, settings({ defaultCurrency: "CNY" }));
-    mocks.settingsUpdate.mockResolvedValue(settings({ defaultCurrency: "USD" }));
+    queryClient.setQueryData(SETTINGS_QUERY_KEY, settingsEnvelope({ defaultCurrency: "CNY" }));
+    mocks.settingsUpdate.mockResolvedValue(settingsEnvelope({ defaultCurrency: "USD" }));
 
     const { result } = renderHook(() => useUpdateSettings(), { wrapper: createWrapper(queryClient) });
 
@@ -85,15 +95,16 @@ describe("useSettings query contract", () => {
     expect(mocks.settingsUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ defaultCurrency: "CNY" }),
       { defaultCurrency: "USD" },
+      {},
     );
-    expect(queryClient.getQueryData<AppSettings>(SETTINGS_QUERY_KEY)?.defaultCurrency).toBe("USD");
+    expect(queryClient.getQueryData<SettingsReadModel>(SETTINGS_QUERY_KEY)?.settings.defaultCurrency).toBe("USD");
   });
 
   it("refetches settings after explicit invalidation", async () => {
     const queryClient = createQueryClient();
     mocks.settingsGet
-      .mockResolvedValueOnce(settings({ defaultCurrency: "CNY" }))
-      .mockResolvedValueOnce(settings({ defaultCurrency: "USD" }));
+      .mockResolvedValueOnce(settingsEnvelope({ defaultCurrency: "CNY" }))
+      .mockResolvedValueOnce(settingsEnvelope({ defaultCurrency: "USD" }));
 
     const { result } = renderHook(() => useSettings(), { wrapper: createWrapper(queryClient) });
     await waitFor(() => expect(result.current.data?.defaultCurrency).toBe("CNY"));
@@ -109,7 +120,7 @@ describe("useSettings query contract", () => {
 
 describe("normalizeSettings", () => {
   it("clears legacy Webhook example defaults so they stay placeholders only", () => {
-    const settings = normalizeSettings({
+    const settings = normalizePersistedSettings({
       webhookHeaders: WEBHOOK_HEADERS_PLACEHOLDER,
       webhookPayload: WEBHOOK_PAYLOAD_PLACEHOLDER,
     });
@@ -118,17 +129,17 @@ describe("normalizeSettings", () => {
     expect(settings.webhookPayload).toBe("");
   });
 
-  it("defaults historical settings to FloatRates as the exchange-rate provider", () => {
-    const settings = normalizeSettings({
+  it("defaults historical settings to Frankfurter as the exchange-rate provider", () => {
+    const settings = normalizePersistedSettings({
       defaultCurrency: "USD",
     });
 
     expect(settings.defaultCurrency).toBe("USD");
-    expect(settings.exchangeRateProvider).toBe("floatrates");
+    expect(settings.exchangeRateProvider).toBe("frankfurter");
   });
 
   it("fills missing global notification reminder days from defaults", () => {
-    const settings = normalizeSettings({
+    const settings = normalizePersistedSettings({
       defaultCurrency: "USD",
     });
 
@@ -136,23 +147,23 @@ describe("normalizeSettings", () => {
   });
 
   it("rejects invalid exchange-rate providers and falls back to defaults", () => {
-    const settings = normalizeSettings({
+    const settings = normalizePersistedSettings({
       exchangeRateProvider: "unknown",
     });
 
-    expect(settings.exchangeRateProvider).toBe("floatrates");
+    expect(settings.exchangeRateProvider).toBe("frankfurter");
   });
 
-  it("maps the legacy Frankfurter provider to Exchange API", () => {
-    const settings = normalizeSettings({
+  it("keeps Frankfurter as a supported exchange-rate provider", () => {
+    const settings = normalizePersistedSettings({
       exchangeRateProvider: "frankfurter",
     });
 
-    expect(settings.exchangeRateProvider).toBe("exchange-api");
+    expect(settings.exchangeRateProvider).toBe("frankfurter");
   });
 
   it("fills missing built-in icon source settings from defaults", () => {
-    const settings = normalizeSettings({
+    const settings = normalizePersistedSettings({
       defaultCurrency: "USD",
       builtInIconSources: {
         thesvg: { enabled: false, variantsEnabled: false },
@@ -163,6 +174,21 @@ describe("normalizeSettings", () => {
     expect(settings.builtInIconSources).toEqual({
       ...DEFAULT_SETTINGS.builtInIconSources,
       thesvg: { enabled: false, variantsEnabled: false },
+    });
+  });
+
+  it("fills missing online icon source settings from defaults", () => {
+    const settings = normalizePersistedSettings({
+      defaultCurrency: "USD",
+      onlineIconSources: {
+        appStore: { enabled: false },
+      },
+    });
+
+    expect(settings.defaultCurrency).toBe("USD");
+    expect(settings.onlineIconSources).toEqual({
+      ...DEFAULT_SETTINGS.onlineIconSources,
+      appStore: { enabled: false, storefronts: ["us"] },
     });
   });
 });

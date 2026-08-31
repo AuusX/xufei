@@ -1,7 +1,8 @@
 // 移动端通知历史 E2E 用大量失败 job 撑开抽屉，专门保护长错误文本、滚动区域和顶部遮罩的布局边界。
-import { expect, test, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { expect, test } from "./support/test";
 import { expectOverlayLeavesTopScrim } from "./support/layout";
-import { gotoSettingsAfterHydration } from "./support/settings";
+import { gotoSettingsSectionAfterHydration } from "./support/settings";
 
 type NotificationHistorySeed = {
   count: number;
@@ -68,7 +69,7 @@ async function createNotificationHistoryRecords(page: Page, seed: NotificationHi
                 subscriptionId: `sub-${index}`,
                 name: `Notification Drawer Seed ${index}`,
                 type: "renewal",
-                price: 19,
+                price: "19",
                 currency: "USD",
                 status: "active",
                 targetDate: "2026-05-20",
@@ -107,7 +108,7 @@ test("mobile notification history opens selected details in a bounded bottom dra
     && response.status() === 200
     && response.url().includes("/api/app/notifications/history")
   ));
-  await gotoSettingsAfterHydration(page);
+  await gotoSettingsSectionAfterHydration(page, "settings-notifications");
   await historyRead;
 
   await page.getByRole("button", { name: "查看调度与历史" }).click();

@@ -1,7 +1,9 @@
 // 移动端设置/订阅弹窗测试覆盖 visualViewport、软键盘和 Radix 动画交界；这些问题只有真实浏览器布局能暴露。
-import { expect, test, type Locator, type Page } from "@playwright/test";
-import { expectNoHorizontalOverflow } from "./support/layout";
-import { gotoSettingsAfterHydration } from "./support/settings";
+import type { Locator, Page } from "@playwright/test";
+import { expect, test } from "./support/test";
+import { expectFormFieldRowStacked, expectNoHorizontalOverflow } from "./support/layout";
+import { gotoSettingsAfterHydration, gotoSettingsSectionAfterHydration } from "./support/settings";
+import { expectSideDrawerExitLifecycle } from "./support/side-drawer";
 import {
   createSubscription,
   openAddSubscriptionDialog,
@@ -10,6 +12,40 @@ import {
 } from "./support/subscriptions";
 
 const VIEWPORT_SYNC_SETTLE_MS = 540;
+const CURRENCY_MANAGER_SELECTORS = {
+  footer: "[data-settings-manager-footer]",
+  header: "[data-settings-manager-header]",
+  scrollRegion: "[data-config-manager-scroll]",
+} as const;
+
+test("mobile passkey fields keep DOM order without horizontal overflow", async ({ page }) => {
+  await gotoSettingsAfterHydration(page);
+  await page.getByRole("button", { name: "管理通行密钥" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "管理通行密钥" });
+  const row = dialog.getByLabel("通行密钥名称").locator('xpath=ancestor::*[@data-slot="form-field-row"][1]');
+  await expect(row).toHaveAttribute("data-align-at", "md");
+  await expect(row).toHaveAttribute("data-tracks", "3");
+  await expectFormFieldRowStacked(row, "mobile passkey registration");
+  await expectNoHorizontalOverflow(page, "mobile passkey manager");
+});
+
+test("mobile settings navigation completes the left-side exit lifecycle", async ({ page }) => {
+  await gotoSettingsSectionAfterHydration(page, "settings-display");
+
+  const trigger = page.getByTestId("settings-mobile-page-header")
+    .getByRole("button", { name: "打开设置目录" });
+  await trigger.click();
+  const panel = page.getByTestId("settings-section-nav-drawer");
+  await expect(panel).toBeVisible();
+
+  await expectSideDrawerExitLifecycle(
+    page,
+    panel,
+    () => panel.getByRole("button", { name: "关闭" }).click(),
+  );
+  await expect(trigger).toBeFocused();
+});
 
 async function setVisualViewportVars(page: Page, height: number, offsetTop = 0) {
   // 先驱动 visualViewport 同步器，再固定本轮测试变量；恢复阶段不能继承上一轮键盘高度。
@@ -206,7 +242,7 @@ async function expectSubscriptionDialogAdaptsToKeyboardViewport(
 
 test("mobile currency manager keeps footer visible after keyboard viewport changes", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 640 });
-  await gotoSettingsAfterHydration(page);
+  await gotoSettingsSectionAfterHydration(page, "settings-data-config");
 
   const trigger = page.getByRole("button", { name: /货币管理/ });
   await trigger.scrollIntoViewIfNeeded();
@@ -214,14 +250,9 @@ test("mobile currency manager keeps footer visible after keyboard viewport chang
 
   const dialog = page.getByRole("dialog", { name: "货币管理" });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveClass(/h5-config-manager-dialog-panel/);
   await expectNoHorizontalOverflow(page, "mobile currency manager dialog");
 
-  const initial = await captureDialogMetrics(dialog, {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  });
+  const initial = await captureDialogMetrics(dialog, CURRENCY_MANAGER_SELECTORS);
   expect(initial.scrollHeight, "currency list should own the overflow").toBeGreaterThan(initial.scrollClientHeight);
   expect(initial.footerBottom, "currency footer starts inside the panel").toBeLessThanOrEqual(initial.panelBottom + 1);
   expect(initial.footerBottom, "currency footer starts inside the viewport").toBeLessThanOrEqual(
@@ -230,53 +261,35 @@ test("mobile currency manager keeps footer visible after keyboard viewport chang
 
   const search = dialog.getByPlaceholder("搜索货币、代码或符号...");
   await search.focus();
-  await expect.poll(async () => (await captureDialogMetrics(dialog, {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  })).rootViewportHeight).toBe("640px");
+  await expect.poll(async () => (
+    await captureDialogMetrics(dialog, CURRENCY_MANAGER_SELECTORS)
+  ).rootViewportHeight).toBe("640px");
   const focusSettledAt = await page.evaluate(() => performance.now());
   await expect.poll(async () => page.evaluate((startedAt) => performance.now() - startedAt, focusSettledAt))
     .toBeGreaterThan(VIEWPORT_SYNC_SETTLE_MS);
 
   await setVisualViewportVars(page, 360, 180);
-  await expect.poll(async () => (await captureDialogMetrics(dialog, {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  })).panelHeight).toBeLessThanOrEqual(328);
-  const compact = await captureDialogMetrics(dialog, {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  });
+  await expect.poll(async () => (
+    await captureDialogMetrics(dialog, CURRENCY_MANAGER_SELECTORS)
+  ).panelHeight).toBeLessThanOrEqual(328);
+  const compact = await captureDialogMetrics(dialog, CURRENCY_MANAGER_SELECTORS);
   expect(compact.panelTop, "currency dialog follows the visual viewport top").toBeGreaterThanOrEqual(180);
   expect(compact.headerTop, "currency header stays inside compact visual viewport").toBeGreaterThanOrEqual(180);
   expect(compact.footerHeight, "currency footer keeps its own row").toBeGreaterThan(24);
   expect(compact.footerBottom, "currency footer stays visible in compact viewport").toBeLessThanOrEqual(
     compact.visualViewportBottom + 1,
   );
-  await expectDialogChromeFixedWhileBodyScrolls(dialog, {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  }, "currency manager");
+  await expectDialogChromeFixedWhileBodyScrolls(dialog, CURRENCY_MANAGER_SELECTORS, "currency manager");
 
   await search.fill("USD");
   await expect(dialog.getByText("USD", { exact: true })).toBeVisible();
   await search.blur();
   await setVisualViewportVars(page, 640);
 
-  await expect.poll(async () => (await captureDialogMetrics(dialog, {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  })).rootViewportHeight).toBe("640px");
-  const restored = await captureDialogMetrics(dialog, {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  });
+  await expect.poll(async () => (
+    await captureDialogMetrics(dialog, CURRENCY_MANAGER_SELECTORS)
+  ).rootViewportHeight).toBe("640px");
+  const restored = await captureDialogMetrics(dialog, CURRENCY_MANAGER_SELECTORS);
   expect(restored.footerBottom, "currency footer remains visible after keyboard close").toBeLessThanOrEqual(
     restored.panelBottom + 1,
   );
@@ -287,7 +300,7 @@ test("mobile currency manager keeps footer visible after keyboard viewport chang
 
 test("compact wide currency manager keeps header and footer fixed with only the list scrolling", async ({ page }) => {
   await page.setViewportSize({ width: 796, height: 1448 });
-  await gotoSettingsAfterHydration(page);
+  await gotoSettingsSectionAfterHydration(page, "settings-data-config");
 
   const trigger = page.getByRole("button", { name: /货币管理/ });
   await trigger.scrollIntoViewIfNeeded();
@@ -295,20 +308,13 @@ test("compact wide currency manager keeps header and footer fixed with only the 
 
   const dialog = page.getByRole("dialog", { name: "货币管理" });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toHaveClass(/h5-config-manager-dialog-panel/);
-
-  const selectors = {
-    footer: "[data-config-manager-footer]",
-    header: "[data-config-manager-header]",
-    scrollRegion: "[data-config-manager-scroll]",
-  };
-  const metrics = await captureDialogMetrics(dialog, selectors);
+  const metrics = await captureDialogMetrics(dialog, CURRENCY_MANAGER_SELECTORS);
   expect(metrics.footerBottom, "wide compact currency footer stays inside the panel").toBeLessThanOrEqual(
     metrics.panelBottom + 1,
   );
   expect(metrics.scrollHeight, "wide compact currency list owns overflow").toBeGreaterThan(metrics.scrollClientHeight);
 
-  await expectDialogChromeFixedWhileBodyScrolls(dialog, selectors, "wide compact currency manager");
+  await expectDialogChromeFixedWhileBodyScrolls(dialog, CURRENCY_MANAGER_SELECTORS, "wide compact currency manager");
 });
 
 test("mobile subscription create and edit dialogs keep footer inside the visual viewport", async ({ page }, testInfo) => {

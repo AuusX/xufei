@@ -57,9 +57,10 @@ type healthResponse struct {
 // appStatusResponse 是认证前 capability 真相源。
 // 登录页、setup 页和设置页 demo 限制都从这里读取；真正写入仍由各 route/hook 再次校验。
 type appStatusResponse struct {
-	SetupRequired bool `json:"setupRequired"`
-	SetupEnabled  bool `json:"setupEnabled"`
-	DemoMode      bool `json:"demoMode"`
+	SetupRequired bool                  `json:"setupRequired"`
+	SetupEnabled  bool                  `json:"setupEnabled"`
+	DemoMode      bool                  `json:"demoMode"`
+	Turnstile     turnstilePublicConfig `json:"turnstile"`
 }
 
 // setupStatusResponse 描述旧 setup 入口是否可用。
@@ -86,14 +87,15 @@ type authUserResponse struct {
 }
 
 type appSessionTokenResponse struct {
-	ID        string `json:"id"`
 	ExpiresAt string `json:"expiresAt"`
 }
 
 type sessionResponse struct {
-	Type    string                  `json:"type"`
-	Session appSessionTokenResponse `json:"session"`
-	User    authUserResponse        `json:"user"`
+	Type      string                  `json:"type"`
+	Session   appSessionTokenResponse `json:"session"`
+	User      authUserResponse        `json:"user"`
+	token     string
+	csrfToken string
 }
 
 type mfaRequiredResponse struct {
@@ -122,6 +124,8 @@ type mfaRecoveryCodesResponse struct {
 	Session       appSessionTokenResponse `json:"session"`
 	User          authUserResponse        `json:"user"`
 	RecoveryCodes []string                `json:"recoveryCodes"`
+	token         string
+	csrfToken     string
 }
 
 type passkeyResponse struct {
@@ -143,11 +147,14 @@ type passkeyWebAuthnOptionsResponse struct {
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	// turnstileToken 只保护邮箱密码登录提交；Passkey、MFA 二阶段和首次 setup 不能复用这个字段。
+	TurnstileToken string `json:"turnstileToken,omitempty"`
 }
 
 func (r *loginRequest) Validate(locale appLocale) error {
 	r.Email = strings.TrimSpace(r.Email)
-	if !isValidEmailAddress(r.Email) || r.Password == "" || len(r.Password) > 72 {
+	r.TurnstileToken = strings.TrimSpace(r.TurnstileToken)
+	if !isValidEmailAddress(r.Email) || r.Password == "" || len(r.Password) > 72 || len(r.TurnstileToken) > 2048 {
 		return errors.New(serverText(locale, "auth.invalidEmailOrPassword"))
 	}
 	return nil
@@ -362,57 +369,50 @@ type systemRestartRequest struct{}
 // calendarFeedCreateRequest 只允许空对象，用于显式拒绝前端/客户端误传 token 等敏感字段。
 type calendarFeedCreateRequest struct{}
 
-// subscriptionRenewRequest 只允许空对象；手动续订的对象由 URL id 和当前登录用户共同确定。
-type subscriptionRenewRequest struct{}
-
-// systemBuildInfo 是前端版本弹窗展示的构建元数据；发布构建由 CI ldflags 注入。
-type systemBuildInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	BuildTime string `json:"buildTime"`
-	BuildType string `json:"buildType"`
+// subscriptionRenewRequest 是手动续订的显式 payload；URL id 和当前登录用户仍是 owner 写入边界。
+type subscriptionRenewRequest struct {
+	Mode                         string                    `json:"mode"`
+	Price                        string                    `json:"price"`
+	Currency                     string                    `json:"currency"`
+	StartDate                    optionalJSONField[string] `json:"startDate"`
+	NextBillingDate              string                    `json:"nextBillingDate"`
+	AutoCalculateNextBillingDate bool                      `json:"autoCalculateNextBillingDate"`
 }
 
-// systemReleaseAssetDTO 只暴露资产名称和大小；真实下载 URL 只留在后端校验链路内，避免浏览器绕过校验直连。
-type systemReleaseAssetDTO struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
-}
-
-// systemReleaseInfoDTO 是 GitHub Release 的前端展示视图。
-type systemReleaseInfoDTO struct {
-	TagName     string                  `json:"tagName"`
-	Version     string                  `json:"version"`
-	Name        string                  `json:"name"`
-	Body        string                  `json:"body"`
-	PublishedAt string                  `json:"publishedAt"`
-	HTMLURL     string                  `json:"htmlUrl"`
-	Assets      []systemReleaseAssetDTO `json:"assets"`
-}
-
-// systemVersionResponse 描述当前部署形态、版本检查结果，以及是否能页面内执行二进制更新。
-type systemVersionResponse struct {
-	CurrentVersion    string                `json:"currentVersion"`
-	LatestVersion     string                `json:"latestVersion"`
-	HasUpdate         bool                  `json:"hasUpdate"`
-	CheckSucceeded    bool                  `json:"checkSucceeded"`
-	Deployment        string                `json:"deployment"`
-	UpdateMode        string                `json:"updateMode"`
-	UpdateSupported   bool                  `json:"updateSupported"`
-	UnsupportedReason string                `json:"unsupportedReason,omitempty"`
-	ReleaseInfo       *systemReleaseInfoDTO `json:"releaseInfo"`
-	Cached            bool                  `json:"cached"`
-	Warning           string                `json:"warning,omitempty"`
-	ErrorDetails      *upstreamErrorDetails `json:"errorDetails,omitempty"`
-	Build             systemBuildInfo       `json:"build"`
-}
-
-// systemUpdateResponse 表示二进制已经替换完成，等待管理员在前端确认重启。
-type systemUpdateResponse struct {
-	CurrentVersion string `json:"currentVersion"`
-	TargetVersion  string `json:"targetVersion"`
-	NeedsRestart   bool   `json:"needsRestart"`
-	Message        string `json:"message"`
+func (r *subscriptionRenewRequest) Validate(locale appLocale) error {
+	r.Mode = strings.TrimSpace(r.Mode)
+	if r.Mode != "continue" && r.Mode != "restart" {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	price, err := canonicalMoneyString(r.Price)
+	if err != nil {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	r.Price = price
+	// shared/Worker 都把货币当作大写 ISO 边界；Docker 不能在这里自动 upper，否则两端会接受不同请求。
+	r.Currency = strings.TrimSpace(r.Currency)
+	if !currencyCodeRe.MatchString(r.Currency) {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	if r.StartDate.Set && !r.StartDate.Null {
+		r.StartDate.Value = strings.TrimSpace(r.StartDate.Value)
+	}
+	r.NextBillingDate = strings.TrimSpace(r.NextBillingDate)
+	if r.Mode == "restart" && (!r.StartDate.Set || r.StartDate.Null || r.StartDate.Value == "") {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	if r.StartDate.Set && !r.StartDate.Null && r.StartDate.Value != "" {
+		if err := requireDateOnly(r.StartDate.Value, "START_DATE"); err != nil {
+			return errors.New(serverText(locale, "common.invalidRequestParameters"))
+		}
+	}
+	if err := requireDateOnly(r.NextBillingDate, "NEXT_BILLING_DATE"); err != nil {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	if r.StartDate.Set && !r.StartDate.Null && r.StartDate.Value != "" && r.NextBillingDate < r.StartDate.Value {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	return nil
 }
 
 type builtInIconProviderCountsResponse struct {
@@ -441,6 +441,7 @@ type builtInIconIndexProviderStatusResponse struct {
 	LastError       *string                             `json:"lastError"`
 	Refreshing      bool                                `json:"refreshing"`
 	UpdateAvailable bool                                `json:"updateAvailable"`
+	Job             *builtInIconRefreshJobResponse      `json:"job,omitempty"`
 }
 
 type builtInIconIndexStatusResponse struct {
@@ -460,10 +461,22 @@ type builtInIconIndexProviderCheckResponse struct {
 	ErrorDetails *upstreamErrorDetails                  `json:"errorDetails,omitempty"`
 }
 
+type builtInIconRefreshJobResponse struct {
+	ID         string  `json:"id"`
+	Provider   string  `json:"provider"`
+	Status     string  `json:"status"`
+	QueuedAt   string  `json:"queuedAt"`
+	StartedAt  *string `json:"startedAt"`
+	FinishedAt *string `json:"finishedAt"`
+	Attempts   int     `json:"attempts"`
+	Error      *string `json:"error"`
+	IndexHash  *string `json:"indexHash"`
+}
+
 type builtInIconIndexProviderRefreshResponse struct {
-	Status       builtInIconIndexStatusResponse         `json:"status"`
-	Provider     builtInIconIndexProviderStatusResponse `json:"provider"`
-	ErrorDetails *upstreamErrorDetails                  `json:"errorDetails,omitempty"`
+	Status   builtInIconIndexStatusResponse         `json:"status"`
+	Provider builtInIconIndexProviderStatusResponse `json:"provider"`
+	Job      builtInIconRefreshJobResponse          `json:"job"`
 }
 
 // mediaCandidateResolveRequest 是 Logo/Icon 候选解析的统一入口。
@@ -527,9 +540,10 @@ type mediaCandidate struct {
 
 // mediaCandidateGroup 按来源分组；best 只指向分组中的首选候选，不额外生成第三类结果。
 type mediaCandidateGroup struct {
-	Best    *mediaCandidate  `json:"best"`
-	BuiltIn []mediaCandidate `json:"builtIn"`
-	Favicon []mediaCandidate `json:"favicon"`
+	Best     *mediaCandidate  `json:"best"`
+	BuiltIn  []mediaCandidate `json:"builtIn"`
+	AppStore []mediaCandidate `json:"appStore"`
+	Favicon  []mediaCandidate `json:"favicon"`
 }
 
 // mediaCandidateResolveItemResponse 是单条解析响应。
@@ -576,12 +590,6 @@ func requireEmptyRequestBody(request *http.Request) error {
 		return errNonEmptyRequestBody
 	}
 	return nil
-}
-
-// decodeStrictJSONFromReader 限制请求体大小后再进入 JSON decoder。
-// 这样能在 DisallowUnknownFields 前先阻断异常大 body，避免内存被恶意请求放大。
-func decodeStrictJSONFromReader[T interface{}](reader io.Reader, locale appLocale, allowEmpty bool) (T, error) {
-	return decodeStrictJSONFromReaderWithLimit[T](reader, locale, allowEmpty, maxJSONBodyBytes)
 }
 
 func decodeStrictJSONFromReaderWithLimit[T interface{}](reader io.Reader, locale appLocale, allowEmpty bool, maxBytes int64) (T, error) {
@@ -685,11 +693,6 @@ func newReadyResponse(app core.App) (healthResponse, error) {
 		return healthResponse{}, err
 	}
 	return newHealthResponse(), nil
-}
-
-// invalidRequestBodyMessage 返回本地化请求体错误文案。
-func invalidRequestBodyMessage(locale appLocale) string {
-	return serverText(locale, "common.invalidRequestBody")
 }
 
 // validationErrorMessage 优先透出 Validate 返回的具体错误。

@@ -1,24 +1,40 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { assertDateOnly } from "@/lib/time/date-only";
+import type { CustomConfig } from "@/types/config";
 import { DEFAULT_SETTINGS, type Subscription } from "@/types/subscription";
+import { appSettingsSecretStatus } from "@renewlet/shared/schemas/settings";
+import type { SubscriptionListFilters } from "@/services/subscription-service";
+import type { SettingsReadModel } from "@/services/settings-service";
+import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
+import {
+  subscriptionFacetsQueryFixture,
+  subscriptionIndexQueryFixture,
+} from "./subscriptions.test-fixtures";
 import Subscriptions from "./subscriptions";
 
-type RecurringBillingCycle = Exclude<Subscription["billingCycle"], "custom" | "one-time">;
 type SubscriptionBaseFixture = Omit<Subscription, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">;
-type SubscriptionOverrides = Partial<SubscriptionBaseFixture> & { billingCycle?: RecurringBillingCycle };
+type SubscriptionOverrides = SubscriptionFixtureOverrides<Subscription>;
 interface MockInfiniteSubscriptionsResult {
   subscriptions?: Subscription[];
   isPending: boolean;
 }
+type MockSettingsEnvelopeResult = { data?: SettingsReadModel };
+type MockSubscriptionIndexResult = ReturnType<typeof subscriptionIndexQueryFixture>;
+type MockSubscriptionFacetsResult = ReturnType<typeof subscriptionFacetsQueryFixture>;
 
 const mocks = vi.hoisted(() => ({
   useInfiniteSubscriptions: vi.fn<() => MockInfiniteSubscriptionsResult>(),
-  useSubscriptions: vi.fn(),
-  useSettings: vi.fn(),
+  useSubscriptionIndex: vi.fn<(filters?: SubscriptionListFilters) => MockSubscriptionIndexResult>(),
+  useSubscriptionFacets: vi.fn<() => MockSubscriptionFacetsResult>(),
+  useSettingsEnvelope: vi.fn<() => MockSettingsEnvelopeResult>(),
   handleAddSubscription: vi.fn(),
   handleDeleteSubscription: vi.fn(),
   handleEditSubscription: vi.fn(),
@@ -63,33 +79,36 @@ const mocks = vi.hoisted(() => ({
     })),
     statuses: [],
     paymentMethods: [],
-    currencies: [],
+    currencies: [] as CustomConfig["currencies"],
   },
 }));
 
 vi.mock("@/hooks/use-subscriptions", () => ({
+  prefetchSubscriptionDetail: vi.fn(),
   useInfiniteSubscriptions: mocks.useInfiniteSubscriptions,
-  useSubscriptions: mocks.useSubscriptions,
+  useSubscriptionIndex: mocks.useSubscriptionIndex,
+  useSubscriptionFacets: mocks.useSubscriptionFacets,
+  useSubscriptionDetail: () => ({ data: undefined, error: null, isPending: false }),
 }));
 
 vi.mock("@/hooks/use-settings", () => ({
-  useSettings: mocks.useSettings,
+  useSettingsEnvelope: mocks.useSettingsEnvelope,
+  useSettings: () => {
+    const envelope = mocks.useSettingsEnvelope();
+    return { ...envelope, data: envelope.data?.settings };
+  },
 }));
 
 vi.mock("@/hooks/use-exchange-rates", () => ({
   useExchangeRates: () => ({
     convert: (amount: number) => amount,
+    loading: false,
+    sourceDate: "2026-08-01",
   }),
 }));
 
 vi.mock("@/contexts/CustomConfigContext", () => ({
-  useCustomConfig: () => ({
-    config: mocks.customConfig,
-    updateCategories: vi.fn(),
-    updateStatuses: vi.fn(),
-    updatePaymentMethods: vi.fn(),
-    updateCurrencies: vi.fn(),
-  }),
+  useCustomConfigState: () => ({ config: mocks.customConfig }),
 }));
 
 vi.mock("@/modules/subscriptions/application/use-subscription-crud", () => ({
@@ -137,11 +156,11 @@ vi.mock("@/components/edit-subscription-dialog", () => ({
 }));
 
 vi.mock("@/components/import-data-dialog", () => ({
-  ImportDataDialog: () => null,
+  ImportDataDialogContent: () => null,
 }));
 
 vi.mock("@/components/ai-recognize-subscription-dialog", () => ({
-  AIRecognizeSubscriptionDialog: () => null,
+  AIRecognizeSubscriptionDialogContent: () => null,
 }));
 
 function subscription(overrides: SubscriptionOverrides = {}): Subscription {
@@ -149,7 +168,7 @@ function subscription(overrides: SubscriptionOverrides = {}): Subscription {
     id: "sub",
     name: "Service",
     logo: undefined,
-    price: 10,
+    price: "10",
     currency: "USD",
     category: "productivity",
     status: "active",
@@ -166,6 +185,7 @@ function subscription(overrides: SubscriptionOverrides = {}): Subscription {
     repeatReminderEnabled: false,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
+    extra: {},
     pinned: false,
     publicHidden: false,
   };
@@ -173,26 +193,37 @@ function subscription(overrides: SubscriptionOverrides = {}): Subscription {
   return {
     ...base,
     ...overrides,
-    billingCycle: overrides.billingCycle ?? "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
-    oneTimeTermCount: undefined,
-    oneTimeTermUnit: undefined,
+    ...subscriptionCycleFixture(overrides),
   };
 }
 
 function renderSubscriptionsPage() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
     <div id="root" style={{ height: 800, overflowY: "auto" }}>
-      <TooltipProvider delayDuration={0}>
-        <Subscriptions />
-      </TooltipProvider>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <Subscriptions />
+        </TooltipProvider>
+      </QueryClientProvider>
     </div>,
   );
 }
 
 function visibleSubscriptionNames() {
   return screen.getAllByTestId("subscription-card").map((card) => card.textContent ?? "");
+}
+
+function expectAdvancedOptionRowsContainCodes(container: HTMLElement, codes: string[]) {
+  const rows = Array.from(container.querySelectorAll<HTMLElement>("[data-advanced-option-row]"));
+  expect(rows).toHaveLength(codes.length);
+  codes.forEach((code, index) => {
+    const row = rows[index];
+    expect(row).toBeDefined();
+    expect(row!).toHaveTextContent(code);
+  });
 }
 
 // 这里锁的是“外框限高 + 中间唯一滚动区”的结构契约，不是装饰性 Tailwind 快照。
@@ -244,16 +275,21 @@ describe("Subscriptions page category filters", () => {
   });
 
   beforeEach(() => {
-    mocks.useSubscriptions.mockImplementation(() => {
-      const infinite = mocks.useInfiniteSubscriptions();
-      return { data: infinite.subscriptions ?? [], isPending: false };
-    });
-    mocks.useSettings.mockReturnValue({
+    mocks.customConfig.currencies = [];
+    mocks.useSubscriptionIndex.mockImplementation((filters) =>
+      subscriptionIndexQueryFixture(mocks.useInfiniteSubscriptions().subscriptions ?? [], filters));
+    mocks.useSubscriptionFacets.mockImplementation(() =>
+      subscriptionFacetsQueryFixture(mocks.useInfiniteSubscriptions().subscriptions ?? []));
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      timezone: "Asia/Shanghai",
+      defaultCurrency: "CNY",
+      notificationReminderDays: 5,
+    };
+    mocks.useSettingsEnvelope.mockReturnValue({
       data: {
-        ...DEFAULT_SETTINGS,
-        timezone: "Asia/Shanghai",
-        defaultCurrency: "CNY",
-        notificationReminderDays: 5,
+        settings,
+        secretStatus: appSettingsSecretStatus(settings),
       },
     });
     mocks.useInfiniteSubscriptions.mockReturnValue({
@@ -391,5 +427,33 @@ describe("Subscriptions page category filters", () => {
     expect(within(desktopCategoryFilter).getByRole("button", { name: "分类" })).toBeInTheDocument();
     expect(within(desktopTagFilter).getByRole("button", { name: "标签" })).toBeInTheDocument();
     expect(screen.queryByTestId("desktop-selected-tags")).not.toBeInTheDocument();
+  });
+
+  it("keeps desktop advanced currency options in persisted manager order", async () => {
+    const user = userEvent.setup();
+    mocks.customConfig.currencies = [
+      { id: "AUD", value: "AUD", labels: { "zh-CN": "AUD", "en-US": "AUD" }, enabled: true },
+      { id: "CAD", value: "CAD", labels: { "zh-CN": "CAD", "en-US": "CAD" }, enabled: true },
+      { id: "USD", value: "USD", labels: { "zh-CN": "USD", "en-US": "USD" }, enabled: true },
+      { id: "EUR", value: "EUR", labels: { "zh-CN": "EUR", "en-US": "EUR" }, enabled: true },
+    ];
+    mockMobileTagFilterMatch(false);
+    renderSubscriptionsPage();
+
+    await user.click(within(screen.getByTestId("desktop-advanced-filter")).getByRole("button"));
+    await user.click(within(screen.getByTestId("desktop-advanced-filter-panel")).getByTestId("advanced-currency-entry"));
+
+    const currencyList = within(screen.getByTestId("advanced-currency-dialog")).getByTestId("advanced-currency-picker");
+    expectAdvancedOptionRowsContainCodes(
+      within(currencyList).getByTestId("advanced-currency-picker-all-options"),
+      ["AUD", "CAD", "USD", "EUR"],
+    );
+
+    await user.type(within(currencyList).getByPlaceholderText(/Filter currencies|筛选货币/), "$");
+
+    expectAdvancedOptionRowsContainCodes(
+      within(currencyList).getByTestId("advanced-currency-picker-search-results"),
+      ["AUD", "CAD", "USD"],
+    );
   });
 });

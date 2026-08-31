@@ -2,19 +2,21 @@
 import { describe, expect, it } from "vitest";
 import { adminResetUserMfaResponseSchema, adminResetUserPasskeysResponseSchema } from "./admin";
 import {
+  loginBodySchema,
   loginResponseSchema,
   mfaRecoveryCodesResponseSchema,
   mfaStatusResponseSchema,
   mfaTotpEnableBodySchema,
   mfaTotpSetupResponseSchema,
   mfaVerifyBodySchema,
+  passkeyAuthenticationOptionsResponseSchema,
   passkeyAuthenticateOptionsBodySchema,
   passkeyAuthenticateVerifyBodySchema,
   passkeyDeleteBodySchema,
+  passkeyRegistrationOptionsResponseSchema,
   passkeyRegisterOptionsBodySchema,
   passkeyRegisterVerifyBodySchema,
   passkeysResponseSchema,
-  passkeyWebAuthnOptionsResponseSchema,
 } from "./auth";
 
 const success = <T>(data: T) => ({ ok: true, data });
@@ -23,11 +25,19 @@ describe("auth schemas", () => {
   it("accepts direct session login responses", () => {
     const parsed = loginResponseSchema.parse(success({
       type: "session",
-      session: { id: "session-token", expiresAt: "2026-07-01T00:00:00.000Z" },
+      session: { expiresAt: "2026-07-01T00:00:00.000Z" },
       user: { id: "usr_1", email: "admin@example.com", name: "Admin", role: "admin", banned: false },
     })).data;
 
     expect(parsed.type).toBe("session");
+  });
+
+  it("rejects leaking session identifiers in session responses", () => {
+    expect(loginResponseSchema.safeParse(success({
+      type: "session",
+      session: { id: "ses_1", expiresAt: "2026-07-01T00:00:00.000Z" },
+      user: { id: "usr_1", email: "admin@example.com", name: "Admin", role: "admin", banned: false },
+    })).success).toBe(false);
   });
 
   it("accepts MFA-required login responses with authenticator methods only", () => {
@@ -82,7 +92,7 @@ describe("auth schemas", () => {
     }).code).toBe("123456");
     expect(mfaRecoveryCodesResponseSchema.parse(success({
       type: "session",
-      session: { id: "renewed-session", expiresAt: "2026-07-01T00:00:00.000Z" },
+      session: { expiresAt: "2026-07-01T00:00:00.000Z" },
       user: { id: "usr_1", email: "admin@example.com", name: "Admin", role: "admin", banned: false },
       recoveryCodes: ["ABCD-EFGH-IJKL"],
     })).data.recoveryCodes).toHaveLength(1);
@@ -92,11 +102,38 @@ describe("auth schemas", () => {
     expect(passkeysResponseSchema.parse(success({
       passkeys: [{ id: "pkey_1", name: "MacBook Touch ID", createdAt: "2026-07-01T00:00:00.000Z" }],
     })).data.passkeys).toHaveLength(1);
-    expect(passkeyWebAuthnOptionsResponseSchema.parse(success({
+    expect(passkeyRegistrationOptionsResponseSchema.parse(success({
+      challengeId: "challenge-token",
+      expiresAt: "2026-07-01T00:00:00.000Z",
+      options: registrationOptions(),
+    })).data.options.extensions).toEqual({ credProps: true });
+    const { extensions, ...optionsWithoutExtensions } = registrationOptions();
+    expect(extensions).toEqual({ credProps: true });
+    expect(passkeyRegistrationOptionsResponseSchema.parse(success({
+      challengeId: "challenge-token",
+      expiresAt: "2026-07-01T00:00:00.000Z",
+      options: optionsWithoutExtensions,
+    })).data.options.extensions).toEqual({ credProps: false });
+    expect(passkeyRegistrationOptionsResponseSchema.parse(success({
+      challengeId: "challenge-token",
+      expiresAt: "2026-07-01T00:00:00.000Z",
+      options: { ...optionsWithoutExtensions, extensions: {} },
+    })).data.options.extensions).toEqual({ credProps: false });
+    expect(passkeyRegistrationOptionsResponseSchema.safeParse(success({
+      challengeId: "challenge-token",
+      expiresAt: "2026-07-01T00:00:00.000Z",
+      options: { ...optionsWithoutExtensions, extensions: { unsupported: true } },
+    })).success).toBe(false);
+    expect(passkeyAuthenticationOptionsResponseSchema.parse(success({
+      challengeId: "challenge-token",
+      expiresAt: "2026-07-01T00:00:00.000Z",
+      options: authenticationOptions(),
+    })).data.options.rpId).toBe("renewlet.example");
+    expect(passkeyAuthenticationOptionsResponseSchema.safeParse(success({
       challengeId: "challenge-token",
       expiresAt: "2026-07-01T00:00:00.000Z",
       options: { challenge: "abc" },
-    })).data.challengeId).toBe("challenge-token");
+    })).success).toBe(false);
   });
 
   it("parses MFA verify and passkey lifecycle requests", () => {
@@ -109,9 +146,9 @@ describe("auth schemas", () => {
       response: { id: "credential" },
     }).success).toBe(false);
     expect(passkeyRegisterOptionsBodySchema.parse({ name: "Security Key", currentPassword: "password123" }).name).toBe("Security Key");
-    expect(passkeyRegisterVerifyBodySchema.parse({ challengeId: "challenge", name: "Security Key", response: { id: "credential" } }).challengeId).toBe("challenge");
+    expect(passkeyRegisterVerifyBodySchema.parse({ challengeId: "challenge", name: "Security Key", response: registrationResponse() }).challengeId).toBe("challenge");
     expect(passkeyAuthenticateOptionsBodySchema.parse({})).toEqual({});
-    expect(passkeyAuthenticateVerifyBodySchema.parse({ challengeId: "challenge", response: { id: "credential" } }).challengeId).toBe("challenge");
+    expect(passkeyAuthenticateVerifyBodySchema.parse({ challengeId: "challenge", response: authenticationResponse() }).challengeId).toBe("challenge");
     expect(passkeyDeleteBodySchema.parse({ currentPassword: "password123" }).currentPassword).toBe("password123");
   });
 
@@ -120,4 +157,80 @@ describe("auth schemas", () => {
     expect(adminResetUserPasskeysResponseSchema.parse(success({}))).toEqual(success({}));
     expect(adminResetUserMfaResponseSchema.safeParse({ ok: true }).success).toBe(false);
   });
+
+  it("accepts optional Turnstile token on password login without widening the request body", () => {
+    expect(loginBodySchema.parse({
+      email: "admin@example.com",
+      password: "password123",
+      turnstileToken: " token-value ",
+    }).turnstileToken).toBe("token-value");
+    expect(loginBodySchema.safeParse({
+      email: "admin@example.com",
+      password: "password123",
+      turnstileToken: "",
+    }).success).toBe(false);
+    expect(loginBodySchema.safeParse({
+      email: "admin@example.com",
+      password: "password123",
+      token: "old-field",
+    }).success).toBe(false);
+  });
 });
+
+function registrationOptions() {
+  return {
+    rp: { id: "renewlet.example", name: "Renewlet" },
+    user: { id: "dXNlci0x", name: "admin@example.com", displayName: "Admin" },
+    challenge: "registration-challenge",
+    pubKeyCredParams: [{ alg: -7, type: "public-key" }],
+    timeout: 60_000,
+    excludeCredentials: [],
+    authenticatorSelection: {
+      requireResidentKey: true,
+      residentKey: "required",
+      userVerification: "required",
+    },
+    hints: [],
+    attestation: "none",
+    extensions: { credProps: true },
+  };
+}
+
+function authenticationOptions() {
+  return {
+    challenge: "authentication-challenge",
+    timeout: 60_000,
+    rpId: "renewlet.example",
+    allowCredentials: [],
+    userVerification: "required",
+    hints: [],
+  };
+}
+
+function registrationResponse() {
+  return {
+    id: "credential-id",
+    rawId: "credential-id",
+    response: {
+      clientDataJSON: "client-data",
+      attestationObject: "attestation-object",
+    },
+    clientExtensionResults: {},
+    type: "public-key",
+  };
+}
+
+function authenticationResponse() {
+  return {
+    id: "credential-id",
+    rawId: "credential-id",
+    response: {
+      clientDataJSON: "client-data",
+      authenticatorData: "authenticator-data",
+      signature: "signature",
+      userHandle: "user-handle",
+    },
+    clientExtensionResults: {},
+    type: "public-key",
+  };
+}

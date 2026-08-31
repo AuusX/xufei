@@ -14,13 +14,27 @@ import (
 )
 
 type subscriptionResponse struct {
-	Subscription map[string]interface{} `json:"subscription"`
+	Subscription subscriptionDetailResponse `json:"subscription"`
 }
 
-// handleSubscriptionRenew 推进当前用户的一条手动续订订阅。
+type subscriptionDetailResponse struct {
+	subscriptionCollectionItemResponse
+	Website                *string                `json:"website,omitempty"`
+	Notes                  *string                `json:"notes,omitempty"`
+	Tags                   []string               `json:"tags"`
+	RepeatReminderEnabled  bool                   `json:"repeatReminderEnabled"`
+	RepeatReminderInterval string                 `json:"repeatReminderInterval"`
+	RepeatReminderWindow   string                 `json:"repeatReminderWindow"`
+	Extra                  map[string]interface{} `json:"extra"`
+	CreatedAt              string                 `json:"createdAt,omitempty"`
+	UpdatedAt              string                 `json:"updatedAt,omitempty"`
+}
+
+// handleSubscriptionRenew 按用户选择延续或重开当前订阅；Renewlet 只更新账本状态，不生成付款流水。
 func handleSubscriptionRenew(app core.App, e *core.RequestEvent) error {
 	locale := requestLocale(e.Request)
-	if _, err := decodeOptionalStrictJSON[subscriptionRenewRequest](e.Request, locale); err != nil {
+	body, err := decodeStrictJSON[subscriptionRenewRequest](e.Request, locale)
+	if err != nil {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
 	subscriptionID := strings.TrimSpace(e.Request.PathValue("id"))
@@ -34,100 +48,72 @@ func handleSubscriptionRenew(app core.App, e *core.RequestEvent) error {
 		return e.NotFoundError("SUBSCRIPTION_NOT_FOUND", err)
 	}
 	today := todayDateOnly(time.Now(), currentUserSettingsTimezone(app, e.Auth))
-	result, ok, err := advanceSubscriptionRenewal(subscriptionRenewalInputFromRecord(record), today, renewalModeManual)
-	if err != nil {
-		return e.BadRequestError(err.Error(), err)
-	}
-	if !ok {
+	input := subscriptionRenewalInputFromRecord(record)
+	if !isManualRenewEligible(input) {
 		return e.BadRequestError("SUBSCRIPTION_RENEW_NOT_ALLOWED", nil)
 	}
-	record.Set("nextBillingDate", result.NextBillingDate)
-	record.Set("status", result.Status)
+	record.Set("price", body.Price)
+	record.Set("currency", body.Currency)
+	if body.Mode == "continue" {
+		// continue 的日期字段只服务显式契约和前端预览；真正推进必须沿原订阅锚点，避免把续订误写成重开。
+		result, ok, err := advanceSubscriptionRenewal(input, today, renewalModeManual)
+		if err != nil {
+			return e.BadRequestError(err.Error(), err)
+		}
+		if !ok {
+			return e.BadRequestError("SUBSCRIPTION_RENEW_NOT_ALLOWED", nil)
+		}
+		record.Set("nextBillingDate", result.NextBillingDate)
+		record.Set("status", result.Status)
+	} else {
+		// restart 改变开始日和收款周期边界；Save 会进入 PocketBase hook，重新校验日期、家庭共享镜像和派生状态。
+		record.Set("startDate", body.StartDate.Value)
+		record.Set("nextBillingDate", body.NextBillingDate)
+		record.Set("autoCalculateNextBillingDate", body.AutoCalculateNextBillingDate)
+		if record.GetString("status") == "expired" {
+			record.Set("status", "active")
+		}
+	}
 	if err := app.Save(record); err != nil {
 		return e.BadRequestError("SUBSCRIPTION_RENEW_FAILED", err)
 	}
 	return apiSuccessJSON(e, http.StatusOK, subscriptionResponse{Subscription: subscriptionAPIFromRecord(record)})
 }
 
-func subscriptionAPIFromRecord(record *core.Record) map[string]interface{} {
-	billingCycle := record.GetString("billingCycle")
-	// API 形状与前端 Zod/shared 契约对齐；PocketBase 原始字段名和 nil JSON 不直接透出。
-	out := map[string]interface{}{
-		"id":                           record.Id,
-		"name":                         record.GetString("name"),
-		"price":                        record.GetFloat("price"),
-		"currency":                     record.GetString("currency"),
-		"billingCycle":                 billingCycle,
-		"category":                     record.GetString("category"),
-			"status":                       record.GetString("status"),
-			"pinned":                       record.GetBool("pinned"),
-			"publicHidden":                 record.GetBool("publicHidden"),
-			"startDate":                    nullableStringForResponse(record.GetString("startDate")),
-			"nextBillingDate":              record.GetString("nextBillingDate"),
-		"autoRenew":                    billingCycle != "one-time" && record.GetBool("autoRenew"),
-		"autoCalculateNextBillingDate": record.GetBool("autoCalculateNextBillingDate"),
-		"tags":                         jsonValueForResponse(record.Get("tags"), []string{}),
-		"reminderDays":                 record.GetInt("reminderDays"),
-		"repeatReminderEnabled":        record.GetBool("repeatReminderEnabled"),
-		"repeatReminderInterval":       normalizeRepeatReminderInterval(record.GetString("repeatReminderInterval")),
-		"repeatReminderWindow":         normalizeRepeatReminderWindow(record.GetString("repeatReminderWindow")),
-		"extra":                        jsonValueForResponse(record.Get("extra"), map[string]interface{}{}),
-	}
-	if costSharing := jsonValueForResponse(record.Get("costSharing"), map[string]interface{}{}); nonEmptyJSONMap(costSharing) {
-		out["costSharing"] = costSharing
-	}
-	if value := strings.TrimSpace(record.GetString("logo")); value != "" {
-		out["logo"] = value
-	}
-	if billingCycle == "custom" {
-		out["customDays"] = maxInt(1, record.GetInt("customDays"))
-		out["customCycleUnit"] = normalizeCustomCycleUnit(record.GetString("customCycleUnit"))
-	}
-	if billingCycle == "one-time" && record.GetInt("oneTimeTermCount") > 0 {
-		out["oneTimeTermCount"] = record.GetInt("oneTimeTermCount")
-		out["oneTimeTermUnit"] = normalizeCustomCycleUnit(record.GetString("oneTimeTermUnit"))
-	}
-	for _, field := range []string{"paymentMethod", "trialEndDate", "website", "notes"} {
-		if value := strings.TrimSpace(record.GetString(field)); value != "" {
-			out[field] = value
-		}
+func subscriptionAPIFromRecord(record *core.Record) subscriptionDetailResponse {
+	out := subscriptionDetailResponse{
+		subscriptionCollectionItemResponse: subscriptionCollectionAPIFromRecord(record),
+		Website:                            trimmedSubscriptionString(record.GetString("website")),
+		Notes:                              trimmedSubscriptionString(record.GetString("notes")),
+		Tags:                               subscriptionRecordStringSlice(record, "tags"),
+		RepeatReminderEnabled:              record.GetBool("repeatReminderEnabled"),
+		RepeatReminderInterval:             normalizeRepeatReminderInterval(record.GetString("repeatReminderInterval")),
+		RepeatReminderWindow:               normalizeRepeatReminderWindow(record.GetString("repeatReminderWindow")),
+		Extra:                              subscriptionRecordJSONMap(record, "extra"),
 	}
 	if !record.GetDateTime("created").IsZero() {
-		out["createdAt"] = record.GetDateTime("created").Time().UTC().Format(time.RFC3339Nano)
+		out.CreatedAt = record.GetDateTime("created").Time().UTC().Format(time.RFC3339Nano)
 	}
 	if !record.GetDateTime("updated").IsZero() {
-		out["updatedAt"] = record.GetDateTime("updated").Time().UTC().Format(time.RFC3339Nano)
+		out.UpdatedAt = record.GetDateTime("updated").Time().UTC().Format(time.RFC3339Nano)
 	}
 	return out
 }
 
-func nullableStringForResponse(value string) interface{} {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	return strings.TrimSpace(value)
-}
-
-func nonEmptyJSONMap(value interface{}) bool {
-	object, ok := value.(map[string]interface{})
-	return ok && len(object) > 0
-}
-
-func jsonValueForResponse(value interface{}, fallback interface{}) interface{} {
-	// PocketBase JSON 字段可能以字符串、[]byte 或 nil 形态出现；响应边界统一兜底成前端可解析结构。
-	data, err := jsonBytesFromValue(value)
+func subscriptionRecordJSONMap(record *core.Record, name string) map[string]interface{} {
+	data, err := jsonBytesFromValue(record.Get(name))
 	if err != nil || len(data) == 0 {
-		return fallback
+		return map[string]interface{}{}
 	}
-	var decoded interface{}
+	var decoded map[string]interface{}
 	if err := json.Unmarshal(data, &decoded); err != nil || decoded == nil {
-		return fallback
+		return map[string]interface{}{}
 	}
 	return decoded
 }
 
 func currentUserSettingsTimezone(app core.App, user *core.Record) string {
-	settings, err := currentUserSettings(app, user, nil)
+	settings, err := currentUserSettings(app, user)
 	if err != nil {
 		return defaultAppSettings().Timezone
 	}

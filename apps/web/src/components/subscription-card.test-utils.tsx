@@ -5,29 +5,17 @@ import { expect, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { assertDateOnly } from "@/lib/time/date-only";
 import type { Subscription } from "@/types/subscription";
+import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
+import { moneyToNumber } from "@renewlet/shared/money";
 import { SubscriptionCard } from "./subscription-card";
 
 export const originalWindowOpen = window.open;
 export const mediaUtilitiesCss = readFileSync(join(process.cwd(), "src/styles/media-utilities.css"), "utf8");
 
-type RecurringBillingCycle = Exclude<Subscription["billingCycle"], "custom" | "one-time">;
-type SubscriptionOverrides = Partial<Omit<Subscription, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">> & (
-  | {
-      billingCycle?: RecurringBillingCycle;
-      customDays?: undefined;
-      customCycleUnit?: undefined;
-      oneTimeTermCount?: undefined;
-      oneTimeTermUnit?: undefined;
-    }
-  | {
-      billingCycle: "one-time";
-      customDays?: undefined;
-      customCycleUnit?: undefined;
-      oneTimeTermCount?: number | undefined;
-      oneTimeTermUnit?: Subscription["oneTimeTermUnit"];
-    }
-  | { billingCycle: "custom"; customDays?: number; customCycleUnit?: Subscription["customCycleUnit"] }
-);
+type SubscriptionOverrides = SubscriptionFixtureOverrides<Subscription>;
 type SubscriptionCardHandlers = {
   onEdit?: (id: string) => void;
   onDelete?: (id: string) => void;
@@ -35,9 +23,14 @@ type SubscriptionCardHandlers = {
   onTogglePinned?: (id: string) => void;
   onTogglePublicHidden?: (id: string) => void;
   onViewDetails?: (id: string) => void;
+  onAddToCalendar?: (id: string) => void;
+  onPrefetchDetails?: (id: string) => void;
 };
 type SubscriptionCardRenderOptions = {
   viewMode?: "grid" | "list";
+  currencyRatesReady?: boolean;
+  priceReferenceCurrency?: string | null;
+  currencyConvert?: (amount: number | string, fromCurrency: string, toCurrency: string) => number;
 };
 type SubscriptionCardTestMocks = {
   categories: Array<{
@@ -71,7 +64,7 @@ export const baseSubscription: Subscription = {
   id: "sub-1",
   name: "dmit",
   logo: undefined,
-  price: 159,
+  price: "159",
   currency: "USD",
   billingCycle: "monthly",
   customDays: undefined,
@@ -93,43 +86,16 @@ export const baseSubscription: Subscription = {
   repeatReminderEnabled: false,
   repeatReminderInterval: "1h",
   repeatReminderWindow: "72h",
+  extra: {},
   pinned: false,
   publicHidden: false,
 };
 
 export function createSubscription(overrides: SubscriptionOverrides = {}): Subscription {
-  if (overrides.billingCycle === "custom") {
-    return {
-      ...baseSubscription,
-      ...overrides,
-      billingCycle: "custom",
-      customDays: overrides.customDays ?? 30,
-      customCycleUnit: overrides.customCycleUnit ?? "day",
-      oneTimeTermCount: undefined,
-      oneTimeTermUnit: undefined,
-    };
-  }
-
-  if (overrides.billingCycle === "one-time") {
-    return {
-      ...baseSubscription,
-      ...overrides,
-      billingCycle: "one-time",
-      customDays: undefined,
-      customCycleUnit: undefined,
-      oneTimeTermCount: overrides.oneTimeTermCount,
-      oneTimeTermUnit: overrides.oneTimeTermUnit,
-    };
-  }
-
   return {
     ...baseSubscription,
     ...overrides,
-    billingCycle: overrides.billingCycle ?? "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
-    oneTimeTermCount: undefined,
-    oneTimeTermUnit: undefined,
+    ...subscriptionCycleFixture(overrides),
   };
 }
 
@@ -146,6 +112,15 @@ export function renderSubscriptionCard(
         {...(options.viewMode ? { viewMode: options.viewMode } : {})}
         timeZone="Asia/Shanghai"
         inheritedReminderDays={5}
+        currencyConvert={options.currencyConvert ?? ((amount, from, to) => {
+          const value = moneyToNumber(amount);
+          if (from === to) return value;
+          if (from === "USD" && to === "CNY") return value * 7;
+          if (from === "CNY" && to === "USD") return value / 7;
+          return value;
+        })}
+        currencyRatesReady={options.currencyRatesReady ?? true}
+        priceReferenceCurrency={options.priceReferenceCurrency ?? null}
         categoryByValue={new Map(mocks.categories.map((category) => [category.value, category]))}
         paymentMethodByValue={new Map(mocks.paymentMethods.map((method) => [method.value, method]))}
         onEdit={handlers.onEdit ?? vi.fn()}
@@ -154,6 +129,8 @@ export function renderSubscriptionCard(
         {...(handlers.onTogglePinned ? { onTogglePinned: handlers.onTogglePinned } : {})}
         {...(handlers.onTogglePublicHidden ? { onTogglePublicHidden: handlers.onTogglePublicHidden } : {})}
         {...(handlers.onViewDetails ? { onViewDetails: handlers.onViewDetails } : {})}
+        onAddToCalendar={handlers.onAddToCalendar ?? vi.fn()}
+        onPrefetchDetails={handlers.onPrefetchDetails ?? vi.fn()}
       />
     </TooltipProvider>,
   );

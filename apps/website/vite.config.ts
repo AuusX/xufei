@@ -10,8 +10,8 @@ import {
   renderSitemapXml,
   replaceWebsiteMetadataPlaceholders,
   resolveWebsiteDeployment,
-} from './src/lib/website-metadata'
-import { latestStableReleaseVersion } from './scripts/release-version'
+} from './src/lib/website-metadata.ts'
+import { latestStableReleaseVersion } from './scripts/release-version.ts'
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url))
 const deployment = resolveWebsiteDeployment(process.env)
@@ -33,6 +33,9 @@ function websiteMetadataPlugin(): Plugin {
 
 export default defineConfig({
   base: deployment.viteBase,
+  define: {
+    __RENEWLET_WEBSITE_REPOSITORY_LINKS__: JSON.stringify(deployment.repositoryLinks),
+  },
   build: {
     rollupOptions: {
       // 中文根路径与英文 /en/ 都是可索引 HTML 入口；不要退回只靠前端按钮切语言。
@@ -48,5 +51,7 @@ export default defineConfig({
     globals: true,
     setupFiles: './src/test/setup.ts',
     exclude: ['tests/**', 'node_modules/**'],
+    clearMocks: true,
+    restoreMocks: true,
   },
 })

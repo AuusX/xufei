@@ -5,8 +5,10 @@ import {
   SUBSCRIPTION_STATUSES,
   isValidDateOnly,
 } from "../runtime";
+import { moneyStringSchema } from "../money";
 import { apiSuccessResponseSchema } from "./api";
 import { okResponseSchema } from "./common";
+import { exchangeRateSnapshotPublicBasisSchema } from "./exchange-rates";
 
 const publicStatusTokenSchema = z.string().trim().regex(/^[A-Za-z0-9_-]{43}$/);
 
@@ -73,7 +75,7 @@ const publicStatusSubscriptionSchema = z.object({
   startDate: z.string().refine(isValidDateOnly).nullable(),
   nextBillingDate: z.string().refine(isValidDateOnly),
   updatedAt: z.string().trim().min(1),
-  price: z.number().finite().nonnegative().max(1_000_000_000).optional(),
+  price: moneyStringSchema.optional(),
   currency: z.string().trim().regex(/^[A-Z]{3}$/).optional(),
   billingCycle: z.enum(BILLING_CYCLES).optional(),
   customDays: z.number().int().positive().optional(),
@@ -86,6 +88,31 @@ const publicStatusSubscriptionSchema = z.object({
 }).refine((value) => value.price === undefined || value.billingCycle !== undefined, {
   path: ["billingCycle"],
   message: "Billing cycle is required when price is exposed",
+}).refine((value) => {
+  if (value.billingCycle === undefined) {
+    return value.customDays === undefined
+      && value.customCycleUnit === undefined
+      && value.oneTimeTermCount === undefined
+      && value.oneTimeTermUnit === undefined;
+  }
+  if (value.billingCycle === "custom") {
+    return value.customDays !== undefined
+      && value.customCycleUnit !== undefined
+      && value.oneTimeTermCount === undefined
+      && value.oneTimeTermUnit === undefined;
+  }
+  if (value.billingCycle === "one-time") {
+    return value.customDays === undefined
+      && value.customCycleUnit === undefined
+      && (value.oneTimeTermCount === undefined) === (value.oneTimeTermUnit === undefined);
+  }
+  return value.customDays === undefined
+    && value.customCycleUnit === undefined
+    && value.oneTimeTermCount === undefined
+    && value.oneTimeTermUnit === undefined;
+}, {
+  path: ["billingCycle"],
+  message: "Billing cycle fields are inconsistent",
 });
 
 export const publicStatusPayloadSchema = z.object({
@@ -93,6 +120,7 @@ export const publicStatusPayloadSchema = z.object({
     title: z.literal("Renewlet"),
     showPrices: z.boolean(),
     currency: z.string().trim().regex(/^[A-Z]{3}$/).optional(),
+    exchangeRateBasis: exchangeRateSnapshotPublicBasisSchema.optional(),
     generatedAt: z.string().trim().min(1),
     truncated: z.boolean(),
   }).strict(),
@@ -111,6 +139,13 @@ export const publicStatusPayloadSchema = z.object({
       code: "custom",
       path: ["page", "currency"],
       message: "Currency must be hidden when prices are not exposed",
+    });
+  }
+  if (!value.page.showPrices && value.page.exchangeRateBasis !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["page", "exchangeRateBasis"],
+      message: "Exchange-rate basis must be hidden when prices are not exposed",
     });
   }
   value.subscriptions.forEach((subscription, index) => {

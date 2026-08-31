@@ -1,7 +1,8 @@
 import zhCatalog from "../data/server-i18n/active.zh-CN.json";
 import enCatalog from "../data/server-i18n/active.en-US.json";
-import type { Locale, RepeatReminderInterval, RepeatReminderWindow } from "./runtime";
+import { FALLBACK_LOCALE, type Locale, type RepeatReminderInterval, type RepeatReminderWindow } from "./runtime";
 import { renderEmailTemplate } from "./email-template-render";
+import { moneyToNumber, type MoneyString } from "./money";
 
 export const EMAIL_MAX_HTML_BYTES = 100 * 1024;
 const EMAIL_COMPACT_TEXT_RUNES = 12_000;
@@ -14,7 +15,6 @@ const SERVER_CATALOGS: Record<Locale, ServerCatalog> = {
 };
 
 export interface NotificationEmailSettings {
-  locale: string;
   themeVariant: string;
   themeCustomColor: {
     h: number;
@@ -29,7 +29,7 @@ export interface NotificationEmailItem {
   subscriptionId?: string;
   name: string;
   logoUrl?: string;
-  price: number;
+  price: MoneyString;
   currency: string;
   status: string;
   targetDate: string;
@@ -38,6 +38,11 @@ export interface NotificationEmailItem {
   repeatReminder?: {
     interval: RepeatReminderInterval | string;
     window: RepeatReminderWindow | string;
+  };
+  costSharing?: {
+    memberName: string;
+    amount: MoneyString;
+    currency: string;
   };
 }
 
@@ -51,6 +56,7 @@ export interface NotificationEmailMessage {
 }
 
 export interface BuildNotificationEmailOptions {
+  locale: Locale;
   appUrl?: string;
 }
 
@@ -113,11 +119,14 @@ export interface EmailCopy {
   upcomingExpiries: string;
   trialEnding: string;
   expired: string;
+  collectionReminders: string;
   billingDate: string;
   expiryDate: string;
   trialEnds: string;
   expiredSince: string;
+  collectionDate: string;
   updateNextBillingDate: string;
+  collectFrom: string;
   dayBefore: string;
   daysBefore: string;
   repeatEvery: string;
@@ -191,7 +200,7 @@ export interface EmailCta {
 export function buildNotificationEmail(
   settings: NotificationEmailSettings,
   message: NotificationEmailMessage,
-  options: BuildNotificationEmailOptions = {},
+  options: BuildNotificationEmailOptions,
 ): NotificationEmail {
   const data = buildEmailTemplateData(settings, message, options, false);
   let html = renderEmailTemplate(data);
@@ -211,7 +220,7 @@ function buildEmailTemplateData(
   options: BuildNotificationEmailOptions,
   compact: boolean,
 ): EmailTemplateData {
-  const locale = normalizeEmailLocale(settings.locale);
+  const locale = options.locale;
   const copy = loadEmailCopy(locale);
   const itemCount = input.items.length;
   const hasReminderItems = itemCount > 0;
@@ -267,11 +276,14 @@ function loadEmailCopy(locale: Locale): EmailCopy {
     upcomingExpiries: text("email.upcomingExpiries"),
     trialEnding: text("email.trialEnding"),
     expired: text("email.expired"),
+    collectionReminders: text("email.collectionReminders"),
     billingDate: text("email.billingDate"),
     expiryDate: text("email.expiryDate"),
     trialEnds: text("email.trialEnds"),
     expiredSince: text("email.expiredSince"),
+    collectionDate: text("email.collectionDate"),
     updateNextBillingDate: text("email.updateNextBillingDate"),
+    collectFrom: text("email.collectFrom"),
     dayBefore: text("email.dayBefore"),
     daysBefore: text("email.daysBefore"),
     repeatEvery: text("email.repeatEvery"),
@@ -282,13 +294,13 @@ function loadEmailCopy(locale: Locale): EmailCopy {
 }
 
 function buildEmailTemplateGroups(items: NotificationEmailItem[], copy: EmailCopy): EmailTemplateGroup[] {
-  const grouped: Record<string, NotificationEmailItem[]> = { renewal: [], expiry: [], trial: [], expired: [] };
+  const grouped: Record<string, NotificationEmailItem[]> = { renewal: [], expiry: [], trial: [], expired: [], costSharing: [] };
   for (const item of items) {
     // 邮件不会渲染 logo URL；外链图片会让邮件客户端暴露私有资产或第三方请求痕迹。
     const itemType = grouped[item.type] ? item.type : "renewal";
     grouped[itemType]?.push(item);
   }
-  return (["renewal", "expiry", "trial", "expired"] as const)
+  return (["renewal", "expiry", "trial", "expired", "costSharing"] as const)
     .map((itemType) => {
       const rawItems = grouped[itemType] ?? [];
       return {
@@ -298,8 +310,8 @@ function buildEmailTemplateGroups(items: NotificationEmailItem[], copy: EmailCop
           name: item.name,
           dateLabel: emailItemDateLabel(item.type, copy),
           targetDate: item.targetDate,
-          amount: formatAmount(item.price),
-          currency: item.currency,
+          amount: formatAmount(emailItemAmount(item)),
+          currency: emailItemCurrency(item),
           detail: emailItemDetail(item, copy),
         })),
       };
@@ -436,6 +448,7 @@ function firstNonEmptyLine(input: string): string {
 }
 
 function emailGroupLabel(itemType: string, copy: EmailCopy): string {
+  if (itemType === "costSharing") return copy.collectionReminders;
   if (itemType === "expiry") return copy.upcomingExpiries;
   if (itemType === "trial") return copy.trialEnding;
   if (itemType === "expired") return copy.expired;
@@ -443,6 +456,7 @@ function emailGroupLabel(itemType: string, copy: EmailCopy): string {
 }
 
 function emailItemDateLabel(itemType: string, copy: EmailCopy): string {
+  if (itemType === "costSharing") return copy.collectionDate;
   if (itemType === "expiry") return copy.expiryDate;
   if (itemType === "trial") return copy.trialEnds;
   if (itemType === "expired") return copy.expiredSince;
@@ -450,6 +464,9 @@ function emailItemDateLabel(itemType: string, copy: EmailCopy): string {
 }
 
 function emailItemDetail(item: NotificationEmailItem, copy: EmailCopy): string {
+  if (item.type === "costSharing" && item.costSharing) {
+    return formatCatalogCopy(copy.collectFrom, { member: item.costSharing.memberName, days: item.reminderDays });
+  }
   if (item.type === "expired") return copy.updateNextBillingDate;
   if (item.repeatReminder && copy.repeatEvery) {
     return formatCatalogCopy(copy.repeatEvery, { hours: repeatReminderIntervalHours(item.repeatReminder.interval) });
@@ -458,6 +475,14 @@ function emailItemDetail(item: NotificationEmailItem, copy: EmailCopy): string {
     return formatCatalogCopy(copy.dayBefore, { days: item.reminderDays });
   }
   return formatCatalogCopy(copy.daysBefore, { days: item.reminderDays });
+}
+
+function emailItemAmount(item: NotificationEmailItem): MoneyString {
+  return item.type === "costSharing" && item.costSharing ? item.costSharing.amount : item.price;
+}
+
+function emailItemCurrency(item: NotificationEmailItem): string {
+  return item.type === "costSharing" && item.costSharing ? item.costSharing.currency : item.currency;
 }
 
 function splitEmailContentLines(input: string, copy: EmailCopy): string[] {
@@ -483,20 +508,14 @@ function formatCatalogCopy(message: string, params: Record<string, string | numb
   });
 }
 
-function formatAmount(amount: number): string {
-  if (!Number.isFinite(amount)) return String(amount);
-  return amount.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
-}
-
-function normalizeEmailLocale(value: string): Locale {
-  const normalized = value.trim().replaceAll("_", "-").toLowerCase();
-  if (normalized === "zh" || normalized === "zh-cn") return "zh-CN";
-  if (normalized === "en" || normalized === "en-us") return "en-US";
-  return "en-US";
+function formatAmount(amount: MoneyString | number): string {
+  const numericAmount = moneyToNumber(amount);
+  if (!Number.isFinite(numericAmount)) return String(amount);
+  return numericAmount.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
 }
 
 function serverText(locale: Locale, key: string): string {
-  return SERVER_CATALOGS[locale]?.[key] ?? SERVER_CATALOGS["en-US"][key] ?? key;
+  return SERVER_CATALOGS[locale]?.[key] ?? SERVER_CATALOGS[FALLBACK_LOCALE][key] ?? key;
 }
 
 function utf8ByteLength(value: string): number {

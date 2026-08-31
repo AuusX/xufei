@@ -2,7 +2,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import Login from "./login";
 
 const mocks = vi.hoisted(() => ({
@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   reportClientError: vi.fn(),
   usePasswordResetAvailability: vi.fn(),
   useSetupStatus: vi.fn(),
+  setTheme: vi.fn(),
+  resolvedTheme: "dark" as const,
 }));
 
 vi.mock("@/lib/auth-client", () => ({
@@ -36,6 +38,14 @@ vi.mock("@/lib/report-client-error", () => ({
 
 vi.mock("@/hooks/use-setup-status", () => ({
   useSetupStatus: mocks.useSetupStatus,
+}));
+
+vi.mock("@/lib/theme-provider", () => ({
+  useTheme: () => ({
+    theme: mocks.resolvedTheme,
+    resolvedTheme: mocks.resolvedTheme,
+    setTheme: mocks.setTheme,
+  }),
 }));
 
 const rememberedLoginEmailStorageKey = "renewlet_login_email";
@@ -85,6 +95,8 @@ function getShouldPersistSession(options: unknown): (session: unknown) => boolea
 
 describe("Login page", () => {
   beforeEach(() => {
+    Object.defineProperty(globalThis.navigator, "languages", { configurable: true, value: ["en-US"] });
+    Object.defineProperty(globalThis.navigator, "language", { configurable: true, value: "en-US" });
     // 登录页的条件式 Passkey UI 是浏览器级异步能力；这里固定为不可用，避免它抢跑密码/MFA 路径断言。
     Object.defineProperty(window, "PublicKeyCredential", {
       configurable: true,
@@ -98,7 +110,7 @@ describe("Login page", () => {
     mocks.signInPasskey.mockResolvedValue({
       data: {
         type: "session",
-        session: { id: "passkey-session", expiresAt: "2026-07-01T00:00:00.000Z" },
+        session: { expiresAt: "2026-07-01T00:00:00.000Z" },
         user: { id: "user-1", email: "passkey@example.com", name: "Passkey", role: "user", banned: false },
       },
       error: null,
@@ -108,12 +120,15 @@ describe("Login page", () => {
     mocks.verifyMfa.mockResolvedValue({ error: null });
     mocks.cancelPasskeyCeremony.mockReset();
     mocks.reportClientError.mockReset();
+    mocks.setTheme.mockReset();
+    mocks.resolvedTheme = "dark";
     localStorage.clear();
     mocks.usePasswordResetAvailability.mockReturnValue(false);
     mocks.useSetupStatus.mockReturnValue({
       setupRequired: false,
       setupEnabled: true,
       demoMode: false,
+      turnstile: { enabled: false, siteKey: "" },
       isLoading: false,
     });
   });
@@ -130,6 +145,7 @@ describe("Login page", () => {
       setupRequired: true,
       setupEnabled: true,
       demoMode: false,
+      turnstile: { enabled: false, siteKey: "" },
       isLoading: false,
     });
 
@@ -268,7 +284,7 @@ describe("Login page", () => {
     passkey.resolve({
       data: {
         type: "session",
-        session: { id: "passkey-session", expiresAt: "2026-07-01T00:00:00.000Z" },
+        session: { expiresAt: "2026-07-01T00:00:00.000Z" },
         user: { id: "user-1", email: "passkey@example.com", name: "Passkey", role: "user", banned: false },
       },
       error: null,

@@ -1,18 +1,16 @@
-/**
- * 订阅表单转换工具。
- *
- * 架构位置：
- * - 表单组件只维护输入态。
- * - 这里把输入态转换成 domain draft，供新增/编辑弹窗复用。
- *
- * 注意： 上传中的 logo/icon 状态不在这里判断，调用方需要在提交按钮层面禁用保存。
- */
 import {
   MAX_SUBSCRIPTION_TAG_LENGTH,
   MAX_SUBSCRIPTION_TAGS,
-  type SubscriptionDraft,
+  type SubscriptionFormSubmission,
 } from "@/types/subscription";
-import { costSharingCustomAmountsAreValid } from "@renewlet/shared/cost-sharing";
+import {
+  costSharingCollectionAnchorsAreSatisfied,
+  costSharingCustomAmountsAreValid,
+  isValidCostSharingCollectionReminderDays,
+  costSharingMemberJoinedDatesWithinRange,
+  resolveCostSharingMemberJoinedDateRange,
+  type CostSharingMemberJoinedDateRange,
+} from "@renewlet/shared/cost-sharing";
 import type { SubscriptionFormState } from "@/types/subscription-form";
 import {
   DEFAULT_NOTIFICATION_REMINDER_DAYS,
@@ -22,25 +20,62 @@ import {
 } from "@renewlet/shared/runtime";
 import { getApiLocale } from "@/i18n/api-locale";
 import { translate } from "@/i18n/messages";
-import type { MessageKey } from "@/i18n/messages";
+import type { MessageKey, MessageParams } from "@/i18n/messages";
 import { compareDateOnly } from "@/lib/time/date-only";
 import { calculateOneTimeTermEndDate } from "@/lib/subscription-billing";
+import { canonicalizeMoneyString } from "@renewlet/shared/money";
 
 const MAX_PRICE = 1_000_000_000;
 const MAX_DAYS = MAX_REMINDER_DAYS;
 const TAG_SEPARATOR_PATTERN = /[、，,;；\n]+/g;
-type SubscriptionDraftBase = Omit<
-  SubscriptionDraft,
+type SubscriptionFormSubmissionBase = Omit<
+  SubscriptionFormSubmission,
   "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit"
 >;
 
-/** 严格解析非负有限数，拒绝 `1e3` 等浏览器/后端口径可能不一致的写法。 */
-export function parseNonNegativeFiniteNumberInput(input: string, max = MAX_PRICE): number | null {
+export type SubscriptionFormErrorField =
+  | "name"
+  | "price"
+  | "currency"
+  | "billingCycle"
+  | "dates"
+  | "customDays"
+  | "oneTimeTerm"
+  | "reminderDays"
+  | "costSharing"
+  | "website"
+  | "tags";
+
+export type SubscriptionFormValidationIssueCode =
+  | "nameRequired"
+  | "amountInvalid"
+  | SubscriptionDateValidationKind
+  | "reminderInvalid"
+  | "customCycleInvalid"
+  | "oneTimeTermInvalid"
+  | "costSharingCollectionReminderOneTimeBuyoutInvalid"
+  | "costSharingCollectionReminderInvalid"
+  | "costSharingCollectionReminderAnchorRequired"
+  | "costSharingMemberJoinedDateRangeInvalid"
+  | "costSharingInvalid"
+  | "websiteInvalid"
+  | "tagsTooMany"
+  | "tagTooLong";
+
+export interface SubscriptionFormValidationIssue {
+  code: SubscriptionFormValidationIssueCode;
+  field: SubscriptionFormErrorField;
+  messageKey: MessageKey;
+  params?: MessageParams | undefined;
+}
+
+export type SubscriptionFormErrors = Partial<Record<SubscriptionFormErrorField, string>>;
+
+/** 严格解析金额输入，拒绝 `1e3` 和超过 6 位小数，返回跨 API/storage 的 canonical decimal string。 */
+export function parseMoneyInput(input: string, _max = MAX_PRICE): string | null {
   const value = input.trim();
-  if (!/^(?:\d+|\d+\.\d+|\.\d+)$/.test(value)) return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > max) return null;
-  return parsed;
+  if (value.startsWith(".")) return canonicalizeMoneyString(`0${value}`);
+  return canonicalizeMoneyString(value);
 }
 
 /** 严格解析非负整数，避免 `01`、小数和单位后缀被隐式接受。 */
@@ -103,12 +138,27 @@ export function parseTagsInput(tags: string): string[] {
 
 export function getTagsValidationError(formDataTags: readonly string[]): string | null {
   const locale = getApiLocale();
+  const issue = getTagsValidationIssue(formDataTags);
+  return issue ? translate(locale, issue.messageKey, issue.params) : null;
+}
+
+function getTagsValidationIssue(formDataTags: readonly string[]): SubscriptionFormValidationIssue | null {
   const tags = normalizeTagsArray(formDataTags);
   if (tags.length > MAX_SUBSCRIPTION_TAGS) {
-    return translate(locale, "subscription.validation.tagsTooMany", { count: MAX_SUBSCRIPTION_TAGS });
+    return {
+      code: "tagsTooMany",
+      field: "tags",
+      messageKey: "subscription.validation.tagsTooMany",
+      params: { count: MAX_SUBSCRIPTION_TAGS },
+    };
   }
   if (tags.some((tag) => Array.from(tag).length > MAX_SUBSCRIPTION_TAG_LENGTH)) {
-    return translate(locale, "subscription.validation.tagTooLong", { count: MAX_SUBSCRIPTION_TAG_LENGTH });
+    return {
+      code: "tagTooLong",
+      field: "tags",
+      messageKey: "subscription.validation.tagTooLong",
+      params: { count: MAX_SUBSCRIPTION_TAG_LENGTH },
+    };
   }
   return null;
 }
@@ -172,6 +222,46 @@ export function getSubscriptionDateValidationKind(formData: Pick<
   return null;
 }
 
+export function costSharingCollectionReminderIsAllowedForBillingCycle(formData: Pick<
+  SubscriptionFormState,
+  "billingCycle" | "oneTimeMode"
+>): boolean {
+  return !(formData.billingCycle === "one-time" && formData.oneTimeMode === "buyout");
+}
+
+export function resolveCostSharingJoinedDateRangeForForm(formData: Pick<
+  SubscriptionFormState,
+  "billingCycle" | "oneTimeMode" | "oneTimeTermCount" | "oneTimeTermUnit" | "startDate" | "nextBillingDate"
+>): CostSharingMemberJoinedDateRange {
+  return resolveCostSharingMemberJoinedDateRange(costSharingJoinedDateRangeInputForForm(formData));
+}
+
+export function costSharingJoinedDatesWithinFormRange(formData: Pick<
+  SubscriptionFormState,
+  "billingCycle" | "oneTimeMode" | "oneTimeTermCount" | "oneTimeTermUnit" | "startDate" | "nextBillingDate" | "costSharing"
+>): boolean {
+  return costSharingMemberJoinedDatesWithinRange(formData.costSharing, costSharingJoinedDateRangeInputForForm(formData));
+}
+
+function costSharingJoinedDateRangeInputForForm(formData: Pick<
+  SubscriptionFormState,
+  "billingCycle" | "oneTimeMode" | "oneTimeTermCount" | "oneTimeTermUnit" | "startDate" | "nextBillingDate"
+>) {
+  const oneTimeTermCount = formData.billingCycle === "one-time" && formData.oneTimeMode === "term"
+    ? parsePositiveIntegerInput(formData.oneTimeTermCount)
+    : null;
+  const nextBillingDate = formData.billingCycle === "one-time" && formData.oneTimeMode === "term" && formData.startDate && oneTimeTermCount
+    ? calculateOneTimeTermEndDate(formData.startDate, oneTimeTermCount, formData.oneTimeTermUnit)
+    : formData.nextBillingDate;
+  return {
+    subscriptionStartDate: formData.startDate ?? null,
+    nextBillingDate: nextBillingDate ?? null,
+    billingCycle: formData.billingCycle,
+    oneTimeTermCount,
+    oneTimeTermUnit: formData.billingCycle === "one-time" && formData.oneTimeMode === "term" ? formData.oneTimeTermUnit : null,
+  };
+}
+
 export function subscriptionDateValidationMessageKey(kind: SubscriptionDateValidationKind): MessageKey {
   switch (kind) {
     case "purchaseDateRequired":
@@ -185,15 +275,23 @@ export function subscriptionDateValidationMessageKey(kind: SubscriptionDateValid
   }
 }
 
-/** 返回订阅草稿的首个阻塞性校验错误；用于提交前给用户明确反馈。 */
-export function getSubscriptionDraftValidationError(formData: SubscriptionFormState): string | null {
-  const locale = getApiLocale();
-  if (!formData.name.trim()) return translate(locale, "subscription.validation.nameRequired");
+export function getSubscriptionFormValidationIssues(formData: SubscriptionFormState): SubscriptionFormValidationIssue[] {
+  // 顺序化 issue 列表是普通提交、draft 转换和 AI preflight 的共同事实源；新增规则时必须保持“首错可直接操作”的顺序。
+  const issues: SubscriptionFormValidationIssue[] = [];
+  if (!formData.name.trim()) {
+    issues.push({ code: "nameRequired", field: "name", messageKey: "subscription.validation.nameRequired" });
+  }
+  if (parseMoneyInput(formData.price) === null) {
+    issues.push({ code: "amountInvalid", field: "price", messageKey: "subscription.validation.amountInvalid" });
+  }
   const dateValidationKind = getSubscriptionDateValidationKind(formData);
   if (dateValidationKind) {
-    return translate(locale, subscriptionDateValidationMessageKey(dateValidationKind));
+    issues.push({
+      code: dateValidationKind,
+      field: "dates",
+      messageKey: subscriptionDateValidationMessageKey(dateValidationKind),
+    });
   }
-  if (parseNonNegativeFiniteNumberInput(formData.price) === null) return translate(locale, "subscription.validation.amountInvalid");
   const reminderInput = formData.reminderType === "custom" ? formData.customReminderDays : formData.reminderDays;
   const reminderValue = formData.billingCycle === "one-time" && formData.oneTimeMode === "buyout"
     ? DISABLED_REMINDER_DAYS
@@ -205,41 +303,87 @@ export function getSubscriptionDraftValidationError(formData: SubscriptionFormSt
           ? parseNonNegativeIntegerInput(reminderInput)
           : parseReminderDaysInput(reminderInput);
   if (reminderValue === null) {
-    return translate(locale, "subscription.validation.reminderInvalid");
+    issues.push({ code: "reminderInvalid", field: "reminderDays", messageKey: "subscription.validation.reminderInvalid" });
   }
   if (formData.billingCycle === "custom" && parsePositiveIntegerInput(formData.customDays) === null) {
-    return translate(locale, "subscription.validation.customCycleInvalid");
+    issues.push({ code: "customCycleInvalid", field: "customDays", messageKey: "subscription.validation.customCycleInvalid" });
   }
   if (formData.billingCycle === "one-time" && formData.oneTimeMode === "term" && parsePositiveIntegerInput(formData.oneTimeTermCount) === null) {
-    return translate(locale, "subscription.validation.oneTimeTermInvalid");
+    issues.push({ code: "oneTimeTermInvalid", field: "oneTimeTerm", messageKey: "subscription.validation.oneTimeTermInvalid" });
   }
   if (formData.costSharing?.enabled) {
-    const price = parseNonNegativeFiniteNumberInput(formData.price);
+    const price = parseMoneyInput(formData.price);
+    const collectionReminder = formData.costSharing.collectionReminder;
+    if (collectionReminder?.enabled) {
+      if (!costSharingCollectionReminderIsAllowedForBillingCycle(formData)) {
+        issues.push({
+          code: "costSharingCollectionReminderOneTimeBuyoutInvalid",
+          field: "costSharing",
+          messageKey: "subscription.validation.costSharingCollectionReminderOneTimeBuyoutInvalid",
+        });
+      } else if (!isValidCostSharingCollectionReminderDays(collectionReminder.reminderDays)) {
+        issues.push({
+          code: "costSharingCollectionReminderInvalid",
+          field: "costSharing",
+          messageKey: "subscription.validation.costSharingCollectionReminderInvalid",
+        });
+      } else if (!costSharingCollectionAnchorsAreSatisfied(formData.costSharing, formData.startDate ?? null)) {
+        issues.push({
+          code: "costSharingCollectionReminderAnchorRequired",
+          field: "costSharing",
+          messageKey: "subscription.validation.costSharingCollectionReminderAnchorRequired",
+        });
+      }
+    }
+    // 家庭共享按“提醒语义 -> 成员日期范围 -> 金额/成员结构”逐层校验，同一字段只暴露首个可操作问题。
+    if (!issues.some((issue) => issue.field === "costSharing") && !costSharingJoinedDatesWithinFormRange(formData)) {
+      issues.push({
+        code: "costSharingMemberJoinedDateRangeInvalid",
+        field: "costSharing",
+        messageKey: "subscription.validation.costSharingMemberJoinedDateRangeInvalid",
+      });
+    }
     if (
-      price === null ||
-      formData.costSharing.members.length === 0 ||
-      !costSharingCustomAmountsAreValid(formData.costSharing)
+      !issues.some((issue) => issue.field === "costSharing") &&
+      (
+        price === null ||
+        formData.costSharing.members.length === 0 ||
+        !costSharingCustomAmountsAreValid(formData.costSharing)
+      )
     ) {
-      return translate(locale, "subscription.validation.costSharingInvalid");
+      issues.push({ code: "costSharingInvalid", field: "costSharing", messageKey: "subscription.validation.costSharingInvalid" });
     }
   }
-  if (!isOptionalHttpUrl(formData.website)) return translate(locale, "subscription.validation.websiteInvalid");
-  const tagsError = getTagsValidationError(formData.tags);
-  if (tagsError) return tagsError;
-  return null;
+  if (!isOptionalHttpUrl(formData.website)) {
+    issues.push({ code: "websiteInvalid", field: "website", messageKey: "subscription.validation.websiteInvalid" });
+  }
+  const tagsIssue = getTagsValidationIssue(formData.tags);
+  if (tagsIssue) issues.push(tagsIssue);
+  return issues;
 }
 
-/**
- * 将 UI 表单状态转换为可保存的订阅对象（不含 id）。
- *
- * 说明：
- * - 周期订阅可提交未知 startDate；nextBillingDate 仍是通知和日历的事实源
- * - 该函数不关心“是否允许提交”（例如上传中、必填校验），只负责数据形态转换
- */
-export function toSubscriptionDraft(formData: SubscriptionFormState): SubscriptionDraft | null {
-  if (getSubscriptionDraftValidationError(formData)) return null;
+export function subscriptionFormValidationIssuesToErrors(
+  issues: readonly SubscriptionFormValidationIssue[],
+  t: (key: MessageKey, params?: MessageParams) => string,
+): SubscriptionFormErrors {
+  // 字段 UI 只显示首个 issue，完整有序列表仍保留给 preflight、首错跳转和 draft 转换使用。
+  const errors: SubscriptionFormErrors = {};
+  for (const issue of issues) {
+    if (!errors[issue.field]) errors[issue.field] = t(issue.messageKey, issue.params);
+  }
+  return errors;
+}
 
-  const price = parseNonNegativeFiniteNumberInput(formData.price);
+/** 返回订阅草稿的首个阻塞性校验错误；用于提交前给用户明确反馈。 */
+export function getSubscriptionFormValidationError(formData: SubscriptionFormState): string | null {
+  const issue = getSubscriptionFormValidationIssues(formData)[0];
+  return issue ? translate(getApiLocale(), issue.messageKey, issue.params) : null;
+}
+
+export function toSubscriptionFormSubmission(formData: SubscriptionFormState): SubscriptionFormSubmission | null {
+  if (getSubscriptionFormValidationError(formData)) return null;
+
+  const price = parseMoneyInput(formData.price);
   const reminderDays = formData.billingCycle === "one-time" && formData.oneTimeMode === "buyout"
     ? DISABLED_REMINDER_DAYS
     : toReminderDays(formData);
@@ -273,14 +417,12 @@ export function toSubscriptionDraft(formData: SubscriptionFormState): Subscripti
     currency: formData.currency,
     category: formData.category,
     status: formData.status,
-    pinned: false,
     publicHidden: formData.publicHidden,
     paymentMethod: formData.paymentMethod || undefined,
     startDate,
     nextBillingDate,
     autoRenew: formData.billingCycle === "one-time" ? false : formData.autoRenew,
     autoCalculateNextBillingDate: formData.billingCycle === "one-time" ? false : formData.autoCalculate,
-    trialEndDate: undefined,
     reminderDays,
     repeatReminderEnabled,
     repeatReminderInterval: formData.repeatReminderInterval,
@@ -289,25 +431,31 @@ export function toSubscriptionDraft(formData: SubscriptionFormState): Subscripti
     website: formData.website || undefined,
     notes: formData.notes || undefined,
     tags: normalizeTagsArray(formData.tags),
-  } satisfies SubscriptionDraftBase;
+  } satisfies SubscriptionFormSubmissionBase;
   if (formData.billingCycle === "custom") {
+    if (typeof customDays !== "number") return null;
     return {
       ...base,
       billingCycle: "custom",
-      customDays: customDays ?? 1,
+      customDays,
       customCycleUnit: formData.customCycleUnit,
-      oneTimeTermCount: undefined,
-      oneTimeTermUnit: undefined,
     };
   }
   if (formData.billingCycle === "one-time") {
+    if (formData.oneTimeMode === "term") {
+      if (typeof oneTimeTermCount !== "number") return null;
+      return {
+        ...base,
+        billingCycle: "one-time",
+        oneTimeTermCount,
+        oneTimeTermUnit: formData.oneTimeTermUnit,
+        autoRenew: false,
+        autoCalculateNextBillingDate: false,
+      };
+    }
     return {
       ...base,
       billingCycle: "one-time",
-      customDays: undefined,
-      customCycleUnit: undefined,
-      oneTimeTermCount: formData.oneTimeMode === "term" ? oneTimeTermCount ?? 1 : undefined,
-      oneTimeTermUnit: formData.oneTimeMode === "term" ? formData.oneTimeTermUnit : undefined,
       autoRenew: false,
       autoCalculateNextBillingDate: false,
     };
@@ -315,9 +463,5 @@ export function toSubscriptionDraft(formData: SubscriptionFormState): Subscripti
   return {
     ...base,
     billingCycle: formData.billingCycle,
-    customDays: undefined,
-    customCycleUnit: undefined,
-    oneTimeTermCount: undefined,
-    oneTimeTermUnit: undefined,
   };
 }

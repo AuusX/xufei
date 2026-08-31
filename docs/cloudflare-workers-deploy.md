@@ -13,7 +13,7 @@
 https://<worker-name>.<workers-dev-subdomain>.workers.dev/setup
 ```
 
-Keep the generated deploy command as `pnpm deploy`. Renewlet's deploy script applies D1 migrations before publishing the Worker, so new tables are created before the updated API starts serving traffic.
+Keep the generated deploy command as `pnpm deploy`. Renewlet prepares the required deployment resources and publishes the Worker automatically, so you do not need to replace it with hand-written Wrangler steps.
 
 ### Failed To Get Repository Contents
 
@@ -34,7 +34,7 @@ Open the generated repository, then:
 3. Click `Run workflow`.
 4. Wait for the workflow to finish.
 
-This workflow runs only when you click it; it does not update on a schedule. It updates the generated repository to the latest Renewlet files while preserving the Worker name, D1 database ID/name, R2 bucket, and vars in `wrangler.jsonc`. After the workflow commits the update, Cloudflare Builds redeploys automatically.
+This workflow runs only when you click it; it does not update on a schedule. It updates the generated repository to the latest Renewlet files while preserving the existing Cloudflare resource configuration and vars in `wrangler.jsonc`. After the workflow commits the update, Cloudflare Builds redeploys automatically.
 
 If GitHub says Actions are disabled, open the generated repository's `Settings` -> `Actions` -> `General`, enable Actions, and allow `Read and write permissions` under `Workflow permissions`.
 
@@ -56,14 +56,14 @@ If you prefer to create D1/R2, the Cloudflare API Token, and GitHub Secrets your
 
 ## Manual Deploy (GitHub Actions)
 
-Manual deploy is for users who want to manage Cloudflare resources and GitHub Actions themselves. After preparing the 5 values below, run `Cloudflare Worker` in your fork to apply D1 migrations and deploy the Worker.
+Manual deploy is for users who want to manage Cloudflare resources and GitHub Actions themselves. After preparing the 5 values below, run `Cloudflare Worker` in your fork to complete checks and deploy the Worker.
 
 Workflow:
 
 - Checks Cloudflare Worker and frontend types
 - Builds the Cloudflare frontend
 - If all 5 GitHub Secrets are configured, generates `wrangler.generated.jsonc` from Secrets
-- If all 5 GitHub Secrets are configured, applies remote D1 migrations and deploys the Worker
+- If all 5 GitHub Secrets are configured, prepares Cloudflare resources and deploys the Worker
 
 If any required secret is missing, the workflow still runs the Cloudflare checks and build, then skips the remote D1 migration and Worker deployment with a GitHub Actions notice.
 
@@ -116,6 +116,8 @@ Renewlet's Worker binding names are fixed:
 | `ASSETS` | Workers Static Assets | React app and built-in icon seed indexes |
 | `ASSETS_BUCKET` | R2 | Private uploaded logos/icons |
 
+Background built-in icon index refresh uses Cloudflare Queues. `pnpm deploy`, the GitHub Actions workflow, and the optional Wrangler CLI flow below create the required Queues automatically, so you usually do not need to manage them in the dashboard.
+
 ### 3. Get CLOUDFLARE_ACCOUNT_ID
 
 Direct link: <a href="https://dash.cloudflare.com/?to=/:account/home" target="_blank" rel="noopener noreferrer">https://dash.cloudflare.com/?to=/:account/home</a>
@@ -139,7 +141,7 @@ Direct link: <a href="https://dash.cloudflare.com/?to=/:account/workers-and-page
 
 Direct link: <a href="https://dash.cloudflare.com/?to=/:account/api-tokens" target="_blank" rel="noopener noreferrer">https://dash.cloudflare.com/?to=/:account/api-tokens</a>
 
-Permissions: `Edit Cloudflare Workers` + `Account` -> `D1` -> `Edit`. Scope resources to the account that deploys Renewlet; if you bind a custom domain, scope the zone to that domain.
+Permissions: `Edit Cloudflare Workers` + `Account` -> `D1` -> `Edit` + `Queues Edit`. Scope resources to the account that deploys Renewlet; if you bind a custom domain, scope the zone to that domain.
 
 1. Open the Cloudflare Dashboard.
 2. Go to the `Account API tokens` page.
@@ -152,7 +154,7 @@ Permissions: `Edit Cloudflare Workers` + `Account` -> `D1` -> `Edit`. Scope reso
 
    <img src="./screenshots/cloudflare/en/cloudflare-api-token-template.jpg" alt="Edit Cloudflare Workers" width="720">
 
-6. Add one permission row: `Account` -> `D1` -> `Edit`.
+6. Add permission rows for `Account` -> `D1` -> `Edit` and `Queues Edit`.
 
    <img src="./screenshots/cloudflare/en/cloudflare-api-token-permissions-add-d1.jpg" alt="Add D1 Edit" width="720">
 
@@ -233,7 +235,33 @@ One-click deploy users: follow the Upgrade steps above and run `Sync Renewlet Up
 
 Manual deploy users: update your fork to the latest Renewlet version with `Sync fork` / `Update branch`. If deployment does not start automatically, open `Actions` and run `Cloudflare Worker`.
 
-Every Cloudflare update must apply D1 migrations before publishing the Worker. `pnpm deploy` and GitHub Actions both keep this order.
+## D1 Upgrade and Recovery
+
+Before a schema upgrade, create a portable SQL export. `pnpm deploy` captures the current Time Travel bookmark and active Worker version before its first D1 write and records both in the GitHub job summary or local output.
+
+```bash
+pnpm exec wrangler d1 export DB --remote --config wrangler.generated.jsonc --output renewlet-before-upgrade.sql
+```
+
+Normal upgrades stay online. When an unapplied `_exclusive_` migration exists, the deployment orchestrator first deploys the same Worker bundle in maintenance mode, removes Cron and the Queue consumer, and waits Cloudflare's 15-minute maximum background invocation duration. API, ICS, and webhook requests return `503` with `Retry-After: 900` and `Cache-Control: no-store`; Static Assets continue serving the SPA.
+
+```bash
+pnpm deploy -- --config wrangler.generated.jsonc --maintenance-config wrangler.maintenance.generated.jsonc
+```
+
+The orchestrator then protects calendar Feeds, applies migrations, rebuilds derived state, checks foreign keys plus the complete settings data/trigger definitions, deploys the normal configuration, and verifies the active Worker version. If a failure happens before the first D1 write, it restores the previous Worker, Cron, and Queue consumer automatically. After the first D1 write, any failure keeps or redeploys maintenance mode. Rerun the same deploy command after fixing the cause; a completed migration marker is verified and not executed again.
+
+If you decide to roll back the data contract, review all writes since the recorded checkpoint first. Recovery is destructive and must use the single command below. It redeploys maintenance mode, drains background work, restores D1, and only then rolls back the Worker and restores its triggers. Never run Worker rollback by itself after an exclusive migration.
+
+```bash
+pnpm cloudflare:deploy:recover -- --config wrangler.generated.jsonc --maintenance-config wrangler.maintenance.generated.jsonc --bookmark "<bookmark>" --worker-version "<version-id>"
+```
+
+Alternatively, create a replacement D1 database from `renewlet-before-upgrade.sql`, review the binding, and use the same maintenance-first recovery procedure. A bookmark captured after a failed migration does not replace the pre-upgrade checkpoint.
+
+Cloud backup snapshots are limited to 16 MiB in both Docker and Cloudflare runtimes. Before upgrading from a version with a larger limit, download or restore every remote snapshot over 16 MiB with the old version.
+
+Imports, browser exports, and cloud backup contents use the stable `renewlet-export` schema v1. The `renewlet-cloud-backup-snapshot` transport wrapper also remains schema v1 and declares `exportSchemaVersion=1` for its inner payload.
 
 ## Optional: Wrangler CLI
 
@@ -256,12 +284,14 @@ export CLOUDFLARE_ACCOUNT_ID="..."
 export WORKER_NAME="renewlet"
 export D1_DATABASE_ID="..."
 export R2_BUCKET_NAME="renewlet-assets"
+export CI_WRANGLER_CONFIG="wrangler.generated.jsonc"
+export CI_WRANGLER_MAINTENANCE_CONFIG="wrangler.maintenance.generated.jsonc"
+export CLOUDFLARE_OBSERVABILITY_PROFILE="development"
 
 pnpm cloudflare:config:ci
 pnpm check:cloudflare
 pnpm build:cloudflare
-pnpm exec wrangler d1 migrations apply DB --remote --config wrangler.generated.jsonc
-pnpm exec wrangler deploy --config wrangler.generated.jsonc
+pnpm deploy -- --config wrangler.generated.jsonc --maintenance-config wrangler.maintenance.generated.jsonc
 ```
 
 ## Other Configuration
@@ -280,11 +310,12 @@ Change `WORKER_NAME` in GitHub Secrets, then rerun the workflow.
 
 **Calendar feed says `no such table: calendar_feeds`?**
 
-This means the Worker was updated before the remote D1 migrations finished or ran. Re-run the `Cloudflare Worker` workflow, or run:
+This means an older deployment did not complete its remote D1 sequence. Re-run the `Cloudflare Worker` workflow, or run the same deployment orchestrator locally:
 
 ```bash
 pnpm cloudflare:config:ci
-pnpm exec wrangler d1 migrations apply DB --remote --config wrangler.generated.jsonc
+pnpm build:cloudflare
+pnpm deploy -- --config wrangler.generated.jsonc --maintenance-config wrangler.maintenance.generated.jsonc
 ```
 
 **ServerChan test notifications return HTTP 429?**

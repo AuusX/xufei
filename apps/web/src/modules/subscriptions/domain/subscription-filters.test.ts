@@ -3,10 +3,16 @@ import { describe, expect, it } from "vitest";
 import { assertDateOnly } from "@/lib/time/date-only";
 import type { Subscription } from "@/types/subscription";
 import {
+  subscriptionCycleFixture,
+  type SubscriptionFixtureOverrides,
+} from "@/test/subscription-fixtures";
+import { moneyToNumber } from "@renewlet/shared/money";
+import {
   DEFAULT_SUBSCRIPTION_ADVANCED_FILTERS,
   SUBSCRIPTION_PAYMENT_METHOD_NONE_VALUE,
   buildSubscriptionListFilters,
   filterSubscriptions,
+  filterSubscriptionsByListFilters,
   hasActiveSubscriptionAdvancedFilters,
   hasActiveSubscriptionControls,
   hasActiveSubscriptionFilters,
@@ -15,19 +21,15 @@ import {
   type SubscriptionSortOption,
 } from "./subscription-filters";
 
-type RecurringBillingCycle = Exclude<Subscription["billingCycle"], "custom" | "one-time">;
 type SubscriptionBaseFixture = Omit<Subscription, "billingCycle" | "customDays" | "customCycleUnit" | "oneTimeTermCount" | "oneTimeTermUnit">;
-type SubscriptionOverrides = Partial<SubscriptionBaseFixture> & (
-  | { billingCycle?: RecurringBillingCycle; customDays?: undefined; customCycleUnit?: undefined; oneTimeTermCount?: undefined; oneTimeTermUnit?: undefined }
-  | { billingCycle: "one-time"; customDays?: undefined; customCycleUnit?: undefined; oneTimeTermCount?: number; oneTimeTermUnit?: Subscription["oneTimeTermUnit"] }
-  | { billingCycle: "custom"; customDays?: number; customCycleUnit?: Subscription["customCycleUnit"]; oneTimeTermCount?: undefined; oneTimeTermUnit?: undefined }
-);
+type SubscriptionOverrides = SubscriptionFixtureOverrides<Subscription>;
 
-const convert = (amount: number, from: string, to: string) => {
-  if (from === to) return amount;
-  if (from === "USD" && to === "CNY") return amount * 7;
-  if (from === "CNY" && to === "USD") return amount / 7;
-  return amount;
+const convert = (amount: number | string, from: string, to: string) => {
+  const value = moneyToNumber(amount);
+  if (from === to) return value;
+  if (from === "USD" && to === "CNY") return value * 7;
+  if (from === "CNY" && to === "USD") return value / 7;
+  return value;
 };
 
 function subscription(overrides: SubscriptionOverrides = {}): Subscription {
@@ -35,7 +37,7 @@ function subscription(overrides: SubscriptionOverrides = {}): Subscription {
     id: "sub",
     name: "Service",
     logo: undefined,
-    price: 10,
+    price: "10",
     currency: "USD",
     category: "productivity",
     status: "active",
@@ -52,42 +54,15 @@ function subscription(overrides: SubscriptionOverrides = {}): Subscription {
     repeatReminderEnabled: false,
     repeatReminderInterval: "1h",
     repeatReminderWindow: "72h",
+    extra: {},
     pinned: false,
     publicHidden: false,
   };
 
-  if (overrides.billingCycle === "custom") {
-    return {
-      ...base,
-      ...overrides,
-      billingCycle: "custom",
-      customDays: overrides.customDays ?? 30,
-      customCycleUnit: overrides.customCycleUnit ?? "day",
-      oneTimeTermCount: undefined,
-      oneTimeTermUnit: undefined,
-    };
-  }
-
-  if (overrides.billingCycle === "one-time") {
-    return {
-      ...base,
-      ...overrides,
-      billingCycle: "one-time",
-      customDays: undefined,
-      customCycleUnit: undefined,
-      oneTimeTermCount: overrides.oneTimeTermCount,
-      oneTimeTermUnit: overrides.oneTimeTermUnit,
-    };
-  }
-
   return {
     ...base,
     ...overrides,
-    billingCycle: overrides.billingCycle ?? "monthly",
-    customDays: undefined,
-    customCycleUnit: undefined,
-    oneTimeTermCount: undefined,
-    oneTimeTermUnit: undefined,
+    ...subscriptionCycleFixture(overrides),
   };
 }
 
@@ -112,10 +87,10 @@ describe("subscription sorting", () => {
 
   it("keeps pinned subscriptions ahead for default and field sorting", () => {
     const subscriptions = [
-      subscription({ id: "regular-expensive", price: 100 }),
-      subscription({ id: "pinned-cheap", price: 10, pinned: true }),
-      subscription({ id: "regular-cheap", price: 1 }),
-      subscription({ id: "pinned-expensive", price: 80, pinned: true }),
+      subscription({ id: "regular-expensive", price: "100" }),
+      subscription({ id: "pinned-cheap", price: "10", pinned: true }),
+      subscription({ id: "regular-cheap", price: "1" }),
+      subscription({ id: "pinned-expensive", price: "80", pinned: true }),
     ];
 
     expect(sortIds(subscriptions, "default")).toEqual([
@@ -145,9 +120,9 @@ describe("subscription sorting", () => {
 
   it("sorts by monthly cost after currency conversion and cycle normalization", () => {
     const subscriptions = [
-      subscription({ id: "annual-usd", price: 120, currency: "USD", billingCycle: "annual" }),
-      subscription({ id: "monthly-cny", price: 80, currency: "CNY", billingCycle: "monthly" }),
-      subscription({ id: "quarterly-cny", price: 180, currency: "CNY", billingCycle: "quarterly" }),
+      subscription({ id: "annual-usd", price: "120", currency: "USD", billingCycle: "annual" }),
+      subscription({ id: "monthly-cny", price: "80", currency: "CNY", billingCycle: "monthly" }),
+      subscription({ id: "quarterly-cny", price: "180", currency: "CNY", billingCycle: "quarterly" }),
     ];
 
     expect(sortIds(subscriptions, "monthly_cost_desc")).toEqual([
@@ -164,9 +139,9 @@ describe("subscription sorting", () => {
 
   it("sorts by raw single-payment price without currency or cycle normalization", () => {
     const subscriptions = [
-      subscription({ id: "annual-usd", price: 120, currency: "USD", billingCycle: "annual" }),
-      subscription({ id: "monthly-cny", price: 80, currency: "CNY", billingCycle: "monthly" }),
-      subscription({ id: "quarterly-cny", price: 180, currency: "CNY", billingCycle: "quarterly" }),
+      subscription({ id: "annual-usd", price: "120", currency: "USD", billingCycle: "annual" }),
+      subscription({ id: "monthly-cny", price: "80", currency: "CNY", billingCycle: "monthly" }),
+      subscription({ id: "quarterly-cny", price: "180", currency: "CNY", billingCycle: "quarterly" }),
     ];
 
     expect(sortIds(subscriptions, "price_desc")).toEqual([
@@ -253,6 +228,37 @@ describe("subscription filter state", () => {
       reminderMode: "custom",
       repeatReminder: true,
     });
+  });
+
+  it("replays the complete collection query when selecting full DTOs for CSV export", () => {
+    const matching = subscription({
+      id: "matching",
+      name: "Team Mail",
+      paymentMethod: undefined,
+      reminderDays: -2,
+      repeatReminderEnabled: false,
+    });
+    const unrelated = subscription({
+      id: "unrelated",
+      name: "Team Mail Archive",
+      paymentMethod: "paypal",
+      publicHidden: true,
+      reminderDays: 7,
+      repeatReminderEnabled: true,
+    });
+
+    expect(filterSubscriptionsByListFilters([matching, unrelated], {
+      q: "team mail",
+      billingCycle: ["monthly"],
+      paymentMethod: [SUBSCRIPTION_PAYMENT_METHOD_NONE_VALUE],
+      currency: ["USD"],
+      nextBillingFrom: assertDateOnly("2026-01-01"),
+      nextBillingTo: assertDateOnly("2026-12-31"),
+      pinned: false,
+      publicHidden: false,
+      reminderMode: "disabled",
+      repeatReminder: false,
+    }, { today: assertDateOnly("2026-01-01") }).map((item) => item.id)).toEqual(["matching"]);
   });
 
   it("filters multiple categories with OR semantics", () => {

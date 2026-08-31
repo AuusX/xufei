@@ -12,6 +12,7 @@ import { translate, type MessageKey } from "@/i18n/messages";
 export const genericLoginErrorMessage = translate(getApiLocale(), "error.loginGeneric");
 
 const ERROR_CODE_MESSAGES: Record<string, MessageKey> = {
+  SUBSCRIPTION_COLLECTION_LIMIT_EXCEEDED: "error.code.SUBSCRIPTION_COLLECTION_LIMIT_EXCEEDED",
   SUBSCRIPTION_NAME_REQUIRED: "error.code.SUBSCRIPTION_NAME_REQUIRED",
   SUBSCRIPTION_NAME_TOO_LONG: "error.code.SUBSCRIPTION_NAME_TOO_LONG",
   CURRENCY_CODE_INVALID: "error.code.CURRENCY_CODE_INVALID",
@@ -33,6 +34,9 @@ const ERROR_CODE_MESSAGES: Record<string, MessageKey> = {
   TAGS_TOO_MANY: "error.code.TAGS_TOO_MANY",
   TAG_TOO_LONG: "error.code.TAG_TOO_LONG",
   REMINDER_DAYS_OUT_OF_RANGE: "error.code.REMINDER_DAYS_OUT_OF_RANGE",
+  COST_SHARING_COLLECTION_ANCHOR_REQUIRED: "error.code.COST_SHARING_COLLECTION_ANCHOR_REQUIRED",
+  COST_SHARING_MEMBER_JOINED_DATE_OUT_OF_RANGE: "error.code.COST_SHARING_MEMBER_JOINED_DATE_OUT_OF_RANGE",
+  COST_SHARING_COLLECTION_REMINDER_ONE_TIME_BUYOUT_INVALID: "error.code.COST_SHARING_COLLECTION_REMINDER_ONE_TIME_BUYOUT_INVALID",
   SETTINGS_JSON_INVALID: "error.code.SETTINGS_JSON_INVALID",
   CUSTOM_CONFIG_JSON_INVALID: "error.code.CUSTOM_CONFIG_JSON_INVALID",
   CUSTOM_CONFIG_GROUP_NOT_ARRAY: "error.code.CUSTOM_CONFIG_GROUP_NOT_ARRAY",
@@ -76,6 +80,9 @@ const ERROR_CODE_MESSAGES: Record<string, MessageKey> = {
   IMPORT_CONFIDENCE_INVALID: "error.code.IMPORT_CONFIDENCE_INVALID",
   IMPORT_SOURCE_MISMATCH: "error.code.IMPORT_SOURCE_MISMATCH",
   IMPORT_SOURCE_ID_DUPLICATE: "error.code.IMPORT_SOURCE_ID_DUPLICATE",
+  TURNSTILE_CONFIG_INCOMPLETE: "error.code.TURNSTILE_CONFIG_INCOMPLETE",
+  TURNSTILE_REQUIRED: "error.code.TURNSTILE_REQUIRED",
+  TURNSTILE_TEST_FAILED: "error.code.TURNSTILE_TEST_FAILED",
   AI_MODEL_REQUIRED: "error.code.AI_MODEL_REQUIRED",
   AI_BASE_URL_REQUIRED: "error.code.AI_BASE_URL_REQUIRED",
   AI_API_KEY_REQUIRED: "error.code.AI_API_KEY_REQUIRED",
@@ -157,6 +164,8 @@ export function getDisplayErrorMessage(error: unknown, fallback = translate(getA
  * 这里只根据非敏感状态给出可行动文案，其余一律使用泛化登录失败原因。
  */
 export function getAuthDisplayMessage(error: unknown, fallback = translate(getApiLocale(), "error.loginGeneric")): string {
+  if (error instanceof ApiError && error.code === "TURNSTILE_REQUIRED") return translate(getApiLocale(), "error.turnstileRequired");
+  if (error instanceof ApiError && error.code === "TURNSTILE_FAILED") return translate(getApiLocale(), "error.turnstileFailed");
   if (!isRecord(error)) return fallback;
 
   const status = typeof error["status"] === "number"

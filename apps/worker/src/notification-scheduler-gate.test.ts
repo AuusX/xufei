@@ -2,6 +2,7 @@ import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import type { ApiAppSettings } from "@renewlet/shared/schemas/settings";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runScheduledNotifications } from "./notifications";
+import { listNotificationDueUsers } from "./subscription-scheduler-state";
 import type { Env } from "./types";
 
 vi.mock("./smtp", () => ({
@@ -77,6 +78,23 @@ afterEach(() => {
 });
 
 describe("Cloudflare notification scheduler gate", () => {
+  it("pages past retained due users by excluding users already handled in the same tick", async () => {
+    const queries: FakeD1Query[] = [];
+    const env = fakeEnv((query) => {
+      queries.push(query);
+      if (query.method === "all" && query.sql.includes("FROM subscription_scheduler_state AS scheduler")) {
+        return d1All([{ user_id: "usr_later" }]);
+      }
+      throw new Error(`unexpected ${query.method} query: ${query.sql}`);
+    });
+
+    const users = await listNotificationDueUsers(env, new Date("2026-01-09T08:00:00.000Z"), 1, ["usr_retained"]);
+
+    expect(users).toEqual([{ user_id: "usr_later" }]);
+    expect(queries[0]?.sql).toContain("scheduler.user_id NOT IN (?)");
+    expect(queries[0]?.params).toEqual(["2026-01-09T08:00:00Z", "2026-01-09T08:00:00Z", "usr_retained", 1]);
+  });
+
   it("skips non-due scheduled ticks without subscription candidate scans when repeat gate is empty", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-09T07:00:00.000Z"));
@@ -124,5 +142,51 @@ describe("Cloudflare notification scheduler gate", () => {
     expect(subscriptionQueries[0]).toContain("repeat_reminder_enabled = 1");
     expect(subscriptionQueries[0]).not.toContain("auto_renew = 1");
     expect(subscriptionQueries[0]).not.toMatch(/WHERE user_id = \?\s+ORDER BY created_at DESC, id DESC\s+LIMIT \?/s);
+  });
+
+  it("settles max-retried failed jobs by refreshing mirrors and scheduler state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-09T08:00:00.000Z"));
+    let mirrorRefreshCount = 0;
+    let schedulerRefreshCount = 0;
+    const env = fakeEnv(({ sql, method }) => {
+      if (method === "all" && sql.includes("FROM subscription_scheduler_state AS scheduler")) return d1All([{ user_id: "usr_due" }]);
+      if (method === "first" && sql.includes("SELECT settings_json FROM settings")) {
+        return { settings_json: JSON.stringify(settings({ enabledChannels: ["webhook"] })) };
+      }
+      if (method === "first" && sql.includes("FROM subscription_scheduler_state")) return schedulerState(0);
+      if (method === "all" && sql.includes("UNION") && sql.includes("cost_sharing_next_collection_reminder_date")) return d1All([]);
+      if (method === "first" && sql.includes("FROM notification_jobs")) {
+        return {
+          id: "job_due",
+          user_id: "usr_due",
+          scheduled_local_date: "2026-01-09",
+          scheduled_local_time: "08:00",
+          time_zone: "UTC",
+          scheduled_instant_utc: "2026-01-09T08:00:00Z",
+          status: "failed",
+          attempts: 3,
+          last_error: "webhook: failed",
+          result_json: JSON.stringify({ source: "cron", channels: { attempted: ["webhook"], succeeded: [], failed: [{ channel: "webhook", error: "failed" }] } }),
+          created_at: "2026-01-09T08:00:00Z",
+          updated_at: "2026-01-09T08:00:00Z",
+        };
+      }
+      if (method === "all" && sql.includes("SELECT id, user_id") && sql.includes("FROM subscriptions WHERE user_id = ?")) {
+        mirrorRefreshCount += 1;
+        return d1All([]);
+      }
+      if (method === "first" && sql.includes("SUM(CASE WHEN auto_renew")) return { auto_renew_count: 0, repeat_reminder_count: 0 };
+      if (method === "run" && sql.includes("subscription_scheduler_state")) {
+        schedulerRefreshCount += 1;
+        return d1Run(1);
+      }
+      throw new Error(`unexpected ${method} query: ${sql}`);
+    });
+
+    await expect(runScheduledNotifications(env)).resolves.toBeUndefined();
+
+    expect(mirrorRefreshCount).toBe(1);
+    expect(schedulerRefreshCount).toBe(1);
   });
 });

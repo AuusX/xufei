@@ -12,13 +12,12 @@
 import Link, { NavLink } from '@/components/router-link';
 import { useRouter } from '@/lib/router';
 import { LayoutDashboard, List, CalendarDays, BarChart3, Settings, Sun, Moon, LogOut, CarFront } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import type { ReactNode } from 'react';
-import type { SubscriptionDraft } from '@/types/subscription';
+import type { SubscriptionFormSubmission } from '@/types/subscription';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/lib/theme-provider';
-import { useToast } from '@/hooks/use-toast';
+import { toast } from '@/components/ui/sonner';
 import { RenewletBrandMark } from '@/components/brand/renewlet-brand-mark';
 import { getHeaderDesktopNavLinkClass, getHeaderMobileNavLinkClass, headerLayout } from '@/components/header-layout';
 import { authClient } from '@/lib/auth-client';
@@ -26,12 +25,12 @@ import { AddSubscriptionDialog } from '@/components/add-subscription-dialog';
 import { SystemUpdateDialog } from '@/components/system-update-dialog';
 import { useI18n } from '@/i18n/I18nProvider';
 import type { MessageKey } from '@/i18n/messages';
-import { scheduleAuthenticatedRoutePreloads, useRoutePreloadPending } from '@/lib/route-resources';
+import { useRoutePreloadPending } from '@/lib/route-resources';
 import { cn } from '@/lib/utils';
 
 interface HeaderProps {
   /** 新增订阅回调（传入订阅主体数据，不包含 id）。不传则隐藏“新增订阅”按钮。 */
-  onAddSubscription?: (subscription: SubscriptionDraft) => void;
+  onAddSubscription?: (submission: SubscriptionFormSubmission) => void;
   /** 当前用户已有标签建议，用于新增订阅弹窗复用。 */
   availableTags?: readonly string[] | undefined;
   /** 订阅页专属快捷动作，渲染在“新增订阅”旁边。 */
@@ -44,10 +43,10 @@ type NavIconKey = "dashboard" | "subscriptions" | "calendar" | "statistics" | "s
 const navItems: Array<{ path: string; labelKey?: MessageKey; label?: string; icon: NavIconKey }> = [
   { path: '/', labelKey: 'nav.dashboard', icon: "dashboard" },
   { path: '/subscriptions', labelKey: 'nav.subscriptions', icon: "subscriptions" },
-  { path: '/carpool', label: '拼车', icon: "carpool" },
   { path: '/calendar', labelKey: 'nav.calendar', icon: "calendar" },
   { path: '/statistics', labelKey: 'nav.statistics', icon: "statistics" },
   { path: '/settings', labelKey: 'nav.settings', icon: "settings" },
+  { path: '/carpool', label: '拼车', icon: "carpool" },
 ];
 
 function renderNavIcon(icon: NavIconKey, className: string) {
@@ -70,21 +69,14 @@ function renderNavIcon(icon: NavIconKey, className: string) {
 /** Header 组件：全局导航 + 主题切换 + 新增订阅入口。 */
 export function Header({ onAddSubscription, availableTags, subscriptionActions }: HeaderProps) {
   const router = useRouter();
-  const queryClient = useQueryClient();
   const { theme, setTheme } = useTheme();
-  const { toast } = useToast();
   const { t } = useI18n();
   // 二次开发栏目用字面 label，不进 i18n catalog；上游项仍走 t(labelKey)。
-  const navLabel = (item: { labelKey?: MessageKey; label?: string }) => item.label ?? (item.labelKey ? t(item.labelKey) : "");
+  const navLabel = (navItem: { labelKey?: MessageKey; label?: string }) => navItem.label ?? (navItem.labelKey ? t(navItem.labelKey) : "");
   const { data: sessionData } = authClient.useSession();
   const [systemDialogOpen, setSystemDialogOpen] = useState(false);
   const isAuthenticated = Boolean(sessionData?.user);
   const isRoutePreloadPending = useRoutePreloadPending();
-
-  useEffect(() => {
-    if (!isAuthenticated) return undefined;
-    return scheduleAuthenticatedRoutePreloads(queryClient);
-  }, [isAuthenticated, queryClient]);
 
   /**
    * Header 是全局快捷开关，只写本机偏好；账户级外观草稿必须从 Settings 页外观控件产生。
@@ -98,17 +90,10 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
   const handleLogout = async () => {
     try {
       await authClient.signOut();
-      toast({
-        title: t("header.logoutSuccessTitle"),
-        description: t("header.logoutSuccessDescription"),
-      });
+      toast.success(t("header.logoutSuccessTitle"));
       router.replace('/login');
     } catch {
-      toast({
-        title: t("header.logoutFailedTitle"),
-        description: t("error.generic"),
-        variant: "destructive",
-      });
+      toast.error(t("header.logoutFailedTitle"), { description: t("error.generic") });
     }
   };
 
@@ -137,9 +122,10 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
                 <SystemUpdateDialog
                   open={systemDialogOpen}
                   onOpenChange={setSystemDialogOpen}
+                  canManageUpdates={sessionData?.user.role === "admin"}
                   contentAlign="start"
                   triggerClassName="w-fit"
-                  badgeClassName="h-6 max-w-[5.75rem] px-2 min-[380px]:max-w-32 sm:h-7 sm:max-w-none sm:px-2.5"
+                  badgeClassName="h-6 max-w-23 px-2 min-[380px]:max-w-32 sm:h-7 sm:max-w-none sm:px-2.5"
                 />
               ) : null}
             </div>

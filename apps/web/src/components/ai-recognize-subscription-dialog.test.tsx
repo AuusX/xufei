@@ -3,19 +3,19 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VirtualItem } from "@tanstack/react-virtual";
-import type { AiRecognitionStreamEvent, AiRecognizeResponse } from "@/lib/api/schemas/ai-recognition";
+import type { AiRecognizeResponse } from "@/lib/api/schemas/ai-recognition";
 import type { PreparedImport } from "@/modules/import-export/domain/import-export-model";
 import {
   clipboardDataWithFiles,
   clipboardDataWithItems,
   configuredSettings,
+  expectRecognizeStreamCalledWith,
   makeDraft,
   makePreview,
   makeResponse,
   mockMobile,
   renderDialog,
 } from "./ai-recognize-subscription-dialog.test-utils";
-
 const mocks = vi.hoisted(() => ({
   recognizeSubscriptionsStream: vi.fn(),
   previewPrepared: vi.fn(),
@@ -111,21 +111,6 @@ vi.mock("@/components/ui/virtualized-list", () => ({
   ),
 }));
 
-function expectRecognizeStreamCalledWith(input: {
-  text: string;
-  images: File[];
-  thinkingControl: unknown;
-}) {
-  const streamHandlerMatcher = expect.any(Function) as unknown as (event: AiRecognitionStreamEvent) => void;
-  const abortSignalMatcher = expect.any(Object) as unknown as AbortSignal;
-
-  expect(mocks.recognizeSubscriptionsStream).toHaveBeenCalledWith(
-    input,
-    { onEvent: streamHandlerMatcher },
-    { signal: abortSignalMatcher },
-  );
-}
-
 describe("AIRecognizeSubscriptionDialog", () => {
   beforeEach(() => {
     mocks.recognizeSubscriptionsStream.mockReset();
@@ -196,8 +181,10 @@ describe("AIRecognizeSubscriptionDialog", () => {
 
     expect(screen.getByRole("tab", { name: "文本" })).toBeInTheDocument();
     const dialogDescription = screen.getByText("使用已配置的 AI 模型生成可编辑订阅草稿，确认后再导入。");
+    expect(dialogDescription).toHaveClass("sr-only");
     expect(dialogDescription).not.toHaveTextContent("粘贴备忘录");
     expect(dialogDescription).not.toHaveTextContent("上传图片");
+    expect(screen.queryByRole("heading", { name: "文本内容" })).not.toBeInTheDocument();
     expect(screen.getByText("支持纯文本、CSV/TSV 和表格复制文本；.xlsx 文件请先复制内容。")).toBeInTheDocument();
     expect(dialog).toHaveClass("h5-ai-recognition-input-dialog-frame");
     expect(dialog).not.toHaveClass("h-fit");
@@ -252,7 +239,7 @@ describe("AIRecognizeSubscriptionDialog", () => {
 
     await user.click(screen.getByRole("tab", { name: "图片" }));
     const uploadButton = screen.getByTestId("ai-recognition-image-upload-button");
-    expect(uploadButton).toHaveClass("min-h-[12rem]", "w-full");
+    expect(uploadButton).toHaveClass("min-h-48", "w-full");
     expect(screen.getByTestId("ai-recognition-image-scrollport")).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
 
     await user.upload(screen.getByLabelText("添加订阅图片"), image);
@@ -260,14 +247,14 @@ describe("AIRecognizeSubscriptionDialog", () => {
     expect(screen.getByTestId("ai-recognition-image-upload-button")).toHaveClass("h-12", "w-full");
   });
 
-  it("图片输入区只展示一次标题和说明", async () => {
+  it("输入 Tabs 是唯一模式标题并保留图片约束", async () => {
     const user = userEvent.setup();
     renderDialog();
 
     await user.click(screen.getByRole("tab", { name: "图片" }));
 
     const imagePanel = screen.getByTestId("ai-recognition-image-panel");
-    expect(screen.getAllByText("上传订阅图片")).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "上传订阅图片" })).not.toBeInTheDocument();
     expect(screen.getAllByText("点击、拖拽或粘贴添加 PNG、JPG、WebP 图片，最多 5 张。")).toHaveLength(1);
     expect(screen.getByRole("button", { name: /添加图片/ })).toBeInTheDocument();
     expect(within(imagePanel).getByText("0/5 张图片")).toBeInTheDocument();
@@ -466,7 +453,8 @@ describe("AIRecognizeSubscriptionDialog", () => {
     expect(startDateButton).toHaveAttribute("aria-invalid", "false");
     expect(nextBillingDateButton).toHaveAttribute("aria-invalid", "true");
     expect(nextBillingDateButton).toHaveAttribute("aria-describedby", "ai-draft-1-nextBillingDate-error");
-    expect(nextBillingDateButton.closest('[data-slot="form-field"]')).toHaveTextContent("请选择到期日期");
+    expect(nextBillingDateButton.closest('[data-slot="form-field-row"]')).toHaveTextContent("请选择到期日期");
+    expect(nextBillingDateButton.closest('[data-slot="form-field"]')).not.toHaveTextContent("请选择到期日期");
     expect(startDateButton.closest('[data-slot="form-field"]')).not.toHaveTextContent("请选择到期日期");
     expect(startDateButton.closest('[data-slot="form-field"]')).not.toHaveTextContent("请选择购买日期");
     expect(screen.getByRole("button", { name: "生成导入预览" })).toBeDisabled();
@@ -499,7 +487,8 @@ describe("AIRecognizeSubscriptionDialog", () => {
     }
     expect(purchaseDateButton).toHaveAttribute("aria-invalid", "true");
     expect(purchaseDateButton).toHaveAttribute("aria-describedby", "ai-draft-1-startDate-error");
-    expect(purchaseDateButton.closest('[data-slot="form-field"]')).toHaveTextContent("请选择购买日期");
+    expect(purchaseDateButton.closest('[data-slot="form-field-row"]')).toHaveTextContent("请选择购买日期");
+    expect(purchaseDateButton.closest('[data-slot="form-field"]')).not.toHaveTextContent("请选择购买日期");
     expect(expiryDateButton).toHaveAttribute("aria-invalid", "false");
     expect(expiryDateButton.closest('[data-slot="form-field"]')).not.toHaveTextContent("请选择到期日期");
     expect(screen.getByRole("button", { name: "生成导入预览" })).toBeDisabled();
@@ -528,6 +517,10 @@ describe("AIRecognizeSubscriptionDialog", () => {
 
     await user.click(screen.getAllByRole("button", { name: "使用当前值" })[0]!);
     await waitFor(() => expect(screen.queryByText("请确认货币。")).not.toBeInTheDocument());
+    expect(screen.getAllByText("请确认扣费周期。").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "生成导入预览" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "使用当前值" }));
+    await waitFor(() => expect(screen.queryByText("请确认扣费周期。")).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "生成导入预览" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "生成导入预览" }));
 
@@ -551,7 +544,7 @@ describe("AIRecognizeSubscriptionDialog", () => {
     await user.click(screen.getByRole("button", { name: "生成订阅草稿" }));
 
     await waitFor(() => expect(mocks.recognizeSubscriptionsStream).toHaveBeenCalledTimes(1));
-    expectRecognizeStreamCalledWith({
+    expectRecognizeStreamCalledWith(mocks.recognizeSubscriptionsStream.mock.calls, {
       text: "apple 50刀 1年",
       images: [],
       thinkingControl: null,
@@ -576,7 +569,7 @@ describe("AIRecognizeSubscriptionDialog", () => {
     await user.click(screen.getByRole("button", { name: "生成订阅草稿" }));
 
     await waitFor(() => expect(mocks.recognizeSubscriptionsStream).toHaveBeenCalledTimes(1));
-    expectRecognizeStreamCalledWith({
+    expectRecognizeStreamCalledWith(mocks.recognizeSubscriptionsStream.mock.calls, {
       text: "",
       images: [image],
       thinkingControl: null,
@@ -608,7 +601,7 @@ describe("AIRecognizeSubscriptionDialog", () => {
     await user.click(screen.getByRole("button", { name: "生成订阅草稿" }));
 
     await waitFor(() => expect(mocks.recognizeSubscriptionsStream).toHaveBeenCalledTimes(1));
-    expectRecognizeStreamCalledWith({
+    expectRecognizeStreamCalledWith(mocks.recognizeSubscriptionsStream.mock.calls, {
       text: "",
       images: [optimized],
       thinkingControl: null,
@@ -671,7 +664,7 @@ describe("AIRecognizeSubscriptionDialog", () => {
     await user.click(screen.getByRole("button", { name: "生成订阅草稿" }));
 
     await waitFor(() => expect(mocks.recognizeSubscriptionsStream).toHaveBeenCalledTimes(1));
-    expectRecognizeStreamCalledWith({
+    expectRecognizeStreamCalledWith(mocks.recognizeSubscriptionsStream.mock.calls, {
       text: "apple 50刀 1年",
       images: [],
       thinkingControl: { provider: "openai", effort: "high" },
@@ -775,7 +768,7 @@ describe("AIRecognizeSubscriptionDialog", () => {
 
     await waitFor(() => expect(mocks.previewPrepared).toHaveBeenCalledTimes(1));
     const prepared = mocks.previewPrepared.mock.calls[0]?.[0] as PreparedImport;
-    expect(prepared.payload.subscriptions[0]?.price).toBe(66);
+    expect(prepared.payload.subscriptions[0]?.price).toBe("66");
     expect(prepared.payload.customConfig?.categories.some((item) => item.labels["zh-CN"] === "Cloud lab")).toBe(true);
     expect(prepared.payload.customConfig?.paymentMethods.some((item) => item.labels["zh-CN"] === "Personal card")).toBe(true);
   });
@@ -791,7 +784,9 @@ describe("AIRecognizeSubscriptionDialog", () => {
     await user.click(screen.getByRole("button", { name: "生成导入预览" }));
 
     expect(await screen.findByTestId("import-preview-panel")).toBeInTheDocument();
-    expect(mocks.previewPrepared).toHaveBeenCalledWith(expect.anything(), "skip");
+    const previewCall = mocks.previewPrepared.mock.calls[0];
+    expect(previewCall?.[1]).toBe("skip");
+    expect(previewCall?.[2]).toBeInstanceOf(AbortSignal);
     expect(mocks.importPreviewPanel).toHaveBeenLastCalledWith(expect.objectContaining({ showImportOptions: false }));
   });
 });

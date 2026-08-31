@@ -1,5 +1,6 @@
 // H5 基线 E2E 覆盖登录、设置、订阅弹窗、Logo sheet 和 Select sheet，是移动端布局回归的总闸。
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
+import { expect, test } from "./support/test";
 import {
   createSubscription,
   openAddSubscriptionDialog,
@@ -13,6 +14,7 @@ import {
   expectOverlayLeavesTopScrim,
   expectScrollContentNearFooter,
   expectTouchTarget,
+  expectTouchTargetsDoNotOverlap,
   getRequiredLocatorBoundingBox,
 } from "./support/layout";
 import { installLogoCandidateRoute } from "./support/media-candidates";
@@ -20,7 +22,7 @@ import {
   fillChangedTestPhone,
   getSettingsDiscardButton,
   getSettingsSaveButton,
-  gotoSettingsAfterHydration,
+  gotoSettingsSectionAfterHydration,
 } from "./support/settings";
 
 async function expectPanelInsideViewport(page: Page, locatorLabel: string) {
@@ -257,25 +259,31 @@ const H5_CORE_VIEWPORT_MATRIX = [
   { width: 900, height: 700, label: "tablet" },
 ] as const;
 
-test("core authenticated H5 pages do not create horizontal overflow", async ({ page }) => {
-  const routes = [
-    { path: "/", label: "dashboard" },
-    { path: "/subscriptions", label: "subscriptions" },
-    { path: "/calendar", label: "calendar" },
-    { path: "/statistics", label: "statistics" },
-    { path: "/settings", label: "settings" },
-  ] as const;
+const H5_CORE_ROUTES = [
+  { path: "/", label: "dashboard" },
+  { path: "/subscriptions", label: "subscriptions" },
+  { path: "/calendar", label: "calendar" },
+  { path: "/statistics", label: "statistics" },
+  { path: "/settings", label: "settings" },
+] as const;
 
-  for (const viewport of H5_CORE_VIEWPORT_MATRIX) {
-    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+// 每个 viewport 独立占用测试预算，避免跨路由导航的累计耗时把 runner 波动误判成布局回归。
+for (const viewport of H5_CORE_VIEWPORT_MATRIX) {
+  test(
+    `core authenticated H5 pages do not overflow at ${viewport.label} ${viewport.width}x${viewport.height}`,
+    async ({ page }) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
 
-    for (const route of routes) {
-      await page.goto(route.path);
-      await expect(page.getByTestId("app-header")).toBeVisible();
-      await expectNoHorizontalOverflow(page, `${viewport.label} ${route.label}`);
-    }
-  }
-});
+      for (const route of H5_CORE_ROUTES) {
+        await test.step(`${route.label} ${route.path}`, async () => {
+          await page.goto(route.path);
+          await expect(page.getByTestId("app-header")).toBeVisible();
+          await expectNoHorizontalOverflow(page, `${viewport.label} ${route.label}`);
+        });
+      }
+    },
+  );
+}
 
 test("short H5 viewport keeps dialogs and bottom actions operable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 560 });
@@ -284,8 +292,15 @@ test("short H5 viewport keeps dialogs and bottom actions operable", async ({ pag
   const subscriptionDialog = await openAddSubscriptionDialog(page);
   await expectPanelInsideViewport(page, "subscription dialog");
   await expectNoHorizontalOverflow(page, "mobile subscription dialog");
-  await expectTouchTarget(subscriptionDialog.getByRole("button", { name: "取消" }), "subscription dialog cancel");
-  await expectTouchTarget(subscriptionDialog.getByRole("button", { name: "添加订阅" }), "subscription dialog submit");
+  const cancelSubscriptionButton = subscriptionDialog.getByRole("button", { name: "取消" });
+  const submitSubscriptionButton = subscriptionDialog.getByRole("button", { name: "添加订阅" });
+  await expectTouchTarget(cancelSubscriptionButton, "subscription dialog cancel");
+  await expectTouchTarget(submitSubscriptionButton, "subscription dialog submit");
+  await expectTouchTargetsDoNotOverlap(
+    cancelSubscriptionButton,
+    submitSubscriptionButton,
+    "subscription dialog actions",
+  );
   await expectActionNearContainerBottom(
     subscriptionDialog,
     subscriptionDialog.getByRole("button", { name: "添加订阅" }),
@@ -298,7 +313,7 @@ test("short H5 viewport keeps dialogs and bottom actions operable", async ({ pag
   await subscriptionDialog.getByRole("button", { name: "取消" }).click();
   await expect(subscriptionDialog).toBeHidden();
 
-  await gotoSettingsAfterHydration(page);
+  await gotoSettingsSectionAfterHydration(page, "settings-notifications");
   const testPhoneInput = page.getByLabel("第三方 API 测试号码", { exact: true });
   await fillChangedTestPhone(testPhoneInput);
   const saveButton = getSettingsSaveButton(page);
@@ -307,6 +322,7 @@ test("short H5 viewport keeps dialogs and bottom actions operable", async ({ pag
   await expect(discardButton).toBeVisible();
   await expectTouchTarget(saveButton, "settings save button");
   await expectTouchTarget(discardButton, "settings discard button");
+  await expectTouchTargetsDoNotOverlap(saveButton, discardButton, "settings bottom actions");
   await expectNoHorizontalOverflow(page, "mobile settings bottom bar");
 });
 
@@ -364,14 +380,14 @@ test("mobile sheets keep Logo and currency search stable while typing", async ({
   await expect(emptyLogoSheet).toHaveClass(/h5-mobile-sheet-large/);
   await waitForSheetAnimation(emptyLogoSheet);
   await expectLocatorInsideViewport(page, emptyLogoSheet, "mobile empty logo search sheet");
-  await expect(emptyLogoSheet.getByText("输入服务名称后点击搜索")).toBeVisible();
+  await expect(emptyLogoSheet.getByText("输入服务名称、品牌或网址后点击搜索")).toBeVisible();
   const logoSheetBeforeSearch = await captureLogoSheetViewportMetrics(emptyLogoSheet, "logo-search-results");
 
-  const emptyLogoSearchInput = emptyLogoSheet.getByPlaceholder("输入服务名称或品牌...");
+  const emptyLogoSearchInput = emptyLogoSheet.getByPlaceholder("输入服务名称、品牌或网址...");
   await emptyLogoSearchInput.focus();
   const focusState = await emptyLogoSheet.evaluate((element) => {
     const panel = element.querySelector<HTMLElement>(".media-candidate-search-panel");
-    const input = element.querySelector<HTMLInputElement>('input[placeholder="输入服务名称或品牌..."]');
+    const input = element.querySelector<HTMLInputElement>('input[placeholder="输入服务名称、品牌或网址..."]');
     if (!panel || !input) {
       throw new Error("Missing Logo search panel or input");
     }
@@ -427,7 +443,7 @@ test("mobile sheets keep Logo and currency search stable while typing", async ({
   await expectLocatorInsideViewport(page, logoSheet, "mobile logo search sheet");
   await expectNoHorizontalOverflow(page, "mobile logo search sheet");
 
-  const logoSearchInput = logoSheet.getByPlaceholder("输入服务名称或品牌...");
+  const logoSearchInput = logoSheet.getByPlaceholder("输入服务名称、品牌或网址...");
   await logoSearchInput.fill("Linear");
   await logoSearchInput.press("Enter");
   await expect(logoSearchInput).toHaveValue("Linear");
@@ -531,7 +547,7 @@ test("mobile import Logo editor keeps search candidates scrollable", async ({ pa
 test("mobile option sheets use consistent detents and do not leak backdrop events", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 640 });
 
-  await gotoSettingsAfterHydration(page);
+  await gotoSettingsSectionAfterHydration(page, "settings-display");
   await page.getByRole("combobox", { name: "语言" }).click();
   const languageSheet = page.locator(".h5-mobile-sheet-content").filter({ hasText: "English" }).last();
   await expect(languageSheet).toBeVisible();
@@ -568,7 +584,7 @@ test("mobile option sheets use consistent detents and do not leak backdrop event
   await expect(subscriptionsRenewalSheet).toHaveAttribute("data-mobile-detent", "compact");
   await dragMobileSheetHandleToClose(page, subscriptionsRenewalSheet, "subscriptions renewal filter sheet");
 
-  await page.getByTestId("mobile-sort-tag-row").getByRole("combobox", { name: "排序" }).click();
+  await page.getByTestId("mobile-renewal-sort-row").getByRole("combobox", { name: "排序" }).click();
   const subscriptionsSortSheet = page.locator(".h5-mobile-sheet-content").filter({ hasText: "到期最近" }).last();
   await expect(subscriptionsSortSheet).toBeVisible();
   await expect(subscriptionsSortSheet).toHaveAttribute("data-mobile-detent", "compact");
