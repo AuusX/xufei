@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "@/components/ui/sonner";
 import {
   fetchCarpoolNotification,
   fetchCarpoolNotificationLog,
@@ -27,7 +27,6 @@ const EMPTY_NOTIFICATION: CarpoolNotification = { enabled: false, webhookUrl: ""
 
 export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
   const query = useQuery({ queryKey: NOTIFICATION_KEY, queryFn: fetchCarpoolNotification, enabled: open });
   const logQuery = useQuery({ queryKey: NOTIFICATION_LOG_KEY, queryFn: fetchCarpoolNotificationLog, enabled: open });
   const [form, setForm] = useState<CarpoolNotification>(EMPTY_NOTIFICATION);
@@ -51,13 +50,13 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
   const refreshLog = () => void queryClient.invalidateQueries({ queryKey: NOTIFICATION_LOG_KEY });
   const saveMutation = useMutation({
     mutationFn: (config: CarpoolNotification) => saveCarpoolNotification(config),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: NOTIFICATION_KEY }); toast({ title: "已保存拼车通知设置" }); onOpenChange(false); },
-    onError: (error: unknown) => toast({ title: "保存失败", description: error instanceof Error ? error.message : "请重试", variant: "destructive" }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: NOTIFICATION_KEY }); toast.success("已保存拼车通知设置"); onOpenChange(false); },
+    onError: (error: unknown) => toast.error("保存失败", { description: error instanceof Error ? error.message : "请重试" }),
   });
   const testMutation = useMutation({
     mutationFn: (config: CarpoolNotification) => testCarpoolNotification(config),
-    onSuccess: () => { toast({ title: "测试通知已发送", description: "去 webhook 目标看看有没有收到。" }); refreshLog(); },
-    onError: (error: unknown) => { toast({ title: "测试失败", description: error instanceof Error ? error.message : "请检查配置", variant: "destructive" }); refreshLog(); },
+    onSuccess: () => { toast.success("测试通知已发送", { description: "去 webhook 目标看看有没有收到。" }); refreshLog(); },
+    onError: (error: unknown) => { toast.error("测试失败", { description: error instanceof Error ? error.message : "请检查配置" }); refreshLog(); },
   });
 
   const update = (patch: Partial<CarpoolNotification>) => setForm((f) => ({ ...f, ...patch }));

@@ -20,7 +20,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "@/components/ui/sonner";
 import { useExchangeRates } from "@/hooks/use-exchange-rates";
 import { NotificationDialog } from "@/custom/carpool/notification-dialog";
 import { CopyButton } from "@/custom/carpool/copy-button";
@@ -137,7 +137,6 @@ function StatRow({ stats }: { stats: CarpoolPlanStats }) {
 
 function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
   const query = useQuery({ queryKey: PLANS_KEY, queryFn: fetchCarpoolPlans });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -152,14 +151,14 @@ function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) 
       if (plan) onOpenPlan(plan.id);
     },
     onError: (error: unknown) =>
-      toast({ title: "创建失败", description: error instanceof Error ? error.message : "请重试", variant: "destructive" }),
+      toast.error("创建失败", { description: error instanceof Error ? error.message : "请重试" }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (planId: string) => deleteCarpoolPlan(planId),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: PLANS_KEY }),
     onError: (error: unknown) =>
-      toast({ title: "删除失败", description: error instanceof Error ? error.message : "请重试", variant: "destructive" }),
+      toast.error("删除失败", { description: error instanceof Error ? error.message : "请重试" }),
   });
 
   const plans = query.data ?? [];
@@ -250,7 +249,6 @@ function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) 
 
 function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void }) {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
   const { convert } = useExchangeRates();
   const planQuery = useQuery({ queryKey: planKey(planId), queryFn: () => fetchCarpoolPlanDetail(planId) });
   const activeSubsQuery = useQuery({ queryKey: ACTIVE_SUBS_KEY, queryFn: fetchCarpoolSubscriptions });
@@ -264,7 +262,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
     void queryClient.invalidateQueries({ queryKey: ACTIVE_SUBS_KEY });
   };
   const onMutationError = (title: string) => (error: unknown) =>
-    toast({ title, description: error instanceof Error ? error.message : "请重试", variant: "destructive" });
+    toast.error(title, { description: error instanceof Error ? error.message : "请重试" });
 
   const addMutation = useMutation({
     mutationFn: (subscriptionId: string) => addSubscriptionToPlan(planId, subscriptionId),
@@ -284,7 +282,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
   const saveMembersMutation = useMutation({
     mutationFn: (variables: { id: string; input: Parameters<typeof saveCarpoolMembers>[1] }) =>
       saveCarpoolMembers(variables.id, variables.input),
-    onSuccess: () => { invalidate(); setEditingSubId(null); setDraft(null); toast({ title: "已保存拼车信息" }); },
+    onSuccess: () => { invalidate(); setEditingSubId(null); setDraft(null); toast.success("已保存拼车信息"); },
     onError: onMutationError("保存失败"),
   });
   const renewMemberMutation = useMutation({
@@ -293,7 +291,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
       invalidate();
       // 同步更新打开中的草稿，避免丢失其他未保存改动。
       setDraft((c) => (c ? { ...c, members: c.members.map((m) => (m.id === variables.memberId ? { ...m, expiryDate: result.newExpiry ?? m.expiryDate, autoCalcExpiry: false, status: "active" } : m)) } : c));
-      toast({ title: "已续费", description: result.newExpiry ? `新到期日 ${result.newExpiry}` : undefined });
+      toast.success("已续费", result.newExpiry ? { description: `新到期日 ${result.newExpiry}` } : undefined);
     },
     onError: onMutationError("续费失败"),
   });
@@ -314,7 +312,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
     // 删掉，还提示「已保存」。
     const built = buildMembersPayload(draft, (cny) => convert(cny, CNY, subscription.currency));
     if (!built.ok) {
-      toast({ title: "还不能保存", description: built.message, variant: "destructive" });
+      toast.error("还不能保存", { description: built.message });
       return;
     }
     saveMembersMutation.mutate({ id: subscription.id, input: built.payload });
