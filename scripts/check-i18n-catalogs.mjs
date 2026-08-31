@@ -290,7 +290,11 @@ const sourceFiles = walkFiles(sourceRoot);
 const staticLabelPattern = /\blabels\(\s*(["'])([^"']*)\1\s*,\s*(["'])([^"']*)\3\s*\)/g;
 const localeBranchPattern = /\b(?:locale|localeState\.locale|getApiLocale\(\))\s*={2,3}\s*["'](?:zh-CN|en-US)["']\s*\?\s*(`(?:[^`\\]|\\[\s\S])*`|"[^"\n]*"|'[^'\n]*')\s*:\s*(`(?:[^`\\]|\\[\s\S])*`|"[^"\n]*"|'[^'\n]*')/g;
 const linguiMacroImportPattern = /from\s+["']@lingui\/(?:core|react)\/macro["']/;
+const customSourceRoot = path.join(sourceRoot, "custom");
 for (const filePath of sourceFiles) {
+  // 二次开发目录（src/custom）不进 Lingui catalog：catalog 属于上游文件，每次同步都会被镜像覆盖，
+  // fork 专属文案放进去必然丢失。这些页面只服务仓库主人，按中文字面量维护（见 docs/CUSTOMIZATION.md）。
+  if (filePath.startsWith(`${customSourceRoot}${path.sep}`)) continue;
   const source = fs.readFileSync(filePath, "utf8");
   const isDescriptor = filePath.startsWith(`${descriptorDir}${path.sep}`);
   if (linguiMacroImportPattern.test(source) && !isDescriptor) {

@@ -55,7 +55,7 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
   });
   const testMutation = useMutation({
     mutationFn: (config: CarpoolNotification) => testCarpoolNotification(config),
-    onSuccess: () => { toast.success("测试通知已发送", { description: "去 webhook 目标看看有没有收到。" }); refreshLog(); },
+    onSuccess: () => { toast.success("测试通知已发送，请到 webhook 目标查收"); refreshLog(); },
     onError: (error: unknown) => { toast.error("测试失败", { description: error instanceof Error ? error.message : "请检查配置" }); refreshLog(); },
   });
 

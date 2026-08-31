@@ -291,7 +291,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
       invalidate();
       // 同步更新打开中的草稿，避免丢失其他未保存改动。
       setDraft((c) => (c ? { ...c, members: c.members.map((m) => (m.id === variables.memberId ? { ...m, expiryDate: result.newExpiry ?? m.expiryDate, autoCalcExpiry: false, status: "active" } : m)) } : c));
-      toast.success("已续费", result.newExpiry ? { description: `新到期日 ${result.newExpiry}` } : undefined);
+      toast.success(result.newExpiry ? `已续费，新到期日 ${result.newExpiry}` : "已续费");
     },
     onError: onMutationError("续费失败"),
   });
