@@ -254,6 +254,8 @@ jobs:
                 echo "::error title=Local patch failed::${patch_file} did not apply cleanly after the upstream sync. No commit was created and nothing was pushed. Resolve the conflict manually (see patches/README.md)."
                 exit 1
               fi
+            done
+          fi
 
           git add -A
           if git diff --cached --quiet; then

@@ -1,9 +1,9 @@
 diff --git a/apps/worker/src/index.ts b/apps/worker/src/index.ts
-index fce7354..cd81225 100644
+index 7f67c1e2..a81122f3 100644
 --- a/apps/worker/src/index.ts
 +++ b/apps/worker/src/index.ts
-@@ -86,6 +86,8 @@ import { systemRestart, systemUpdate, systemVersion } from "./system";
- import { errorResponse, methodNotAllowed, requestLocale, successJson, toResponse, type AppLocale } from "./http";
+@@ -104,6 +104,8 @@ import { systemRestart, systemUpdate, systemUpdateStatus, systemVersion } from "
+ import { errorResponse, methodNotAllowed, requestLocale, requireSameOriginUnsafe, successJson, toResponse, type AppLocale } from "./http";
  import { serverText } from "./server-i18n";
  import type { Env } from "./types";
 +import { registerCarpoolRoutes } from "./custom/carpool/routes";
@@ -11,7 +11,7 @@ index fce7354..cd81225 100644
  
  type AppBindings = {
    Bindings: Env;
-@@ -121,6 +123,9 @@ app.notFound((context) => {
+@@ -148,6 +150,9 @@ app.notFound((context) => {
    return errorResponse(404, serverText(locale, "common.notFound"), "NOT_FOUND");
  });
  
@@ -21,7 +21,17 @@ index fce7354..cd81225 100644
  defineRoute(app, "/calendar/renewals.ics", {
    GET: (context) => calendarFeedIcs(context.req.raw, context.env),
  });
-@@ -334,6 +339,7 @@ async function runScheduledTasks(env: Env): Promise<void> {
+@@ -391,6 +396,9 @@ export function workerProductRouteManifest(): RuntimeRouteManifestEntry[] {
+     const method = route.method.toUpperCase();
+     if (!isRouteMethod(method)) continue;
+     const path = normalizeRuntimeRoutePath(route.path);
++    // 二次开发路由（/api/custom/*）不进产品路由对等清单：该清单用于 Worker 与 Go 两套产品运行时对账，
++    // 自定义功能只存在于 Worker 侧，收进来会被 check:route-parity 判成「Go 端缺失」。
++    if (path.startsWith("/api/custom/")) continue;
+     const methods = methodsByPath.get(path) ?? new Set<RouteMethod>();
+     methods.add(method);
+     methodsByPath.set(path, methods);
+@@ -414,6 +422,7 @@ async function runScheduledTasks(env: Env): Promise<void> {
    await runScheduledPhase("auto_renew_subscriptions", () => renewAutoSubscriptionsForAllUsers(env));
    await runScheduledPhase("notifications", () => runScheduledNotifications(env));
    await runScheduledPhase("cloud_backups", () => runDueCloudBackups(env));
