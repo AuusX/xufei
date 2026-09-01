@@ -1,0 +1,30 @@
+diff --git a/apps/web/scripts/check-form-field-layout.mjs b/apps/web/scripts/check-form-field-layout.mjs
+index db08b1a7..c702f70d 100644
+--- a/apps/web/scripts/check-form-field-layout.mjs
++++ b/apps/web/scripts/check-form-field-layout.mjs
+@@ -36,7 +36,8 @@ async function collectSourceFiles(directory) {
+   const entries = await readdir(directory, { withFileTypes: true });
+   const files = await Promise.all(entries.map(async (entry) => {
+     const path = join(directory, entry.name);
+-    if (entry.isDirectory()) return collectSourceFiles(path);
++    // 二次开发目录（src/custom）是 fork 专属页面，不属于产品表单体系，不强制走 FormFieldRow 轨道。
++    if (entry.isDirectory()) return entry.name === "custom" ? [] : collectSourceFiles(path);
+     if (!entry.isFile() || !SOURCE_EXTENSIONS.has(extname(entry.name))) return [];
+     if (EXCLUDED_LAYOUT_FILES.has(entry.name)) return [];
+     return /\.(?:test|spec)\.[jt]sx$/.test(entry.name) ? [] : [path];
+diff --git a/scripts/check-i18n-catalogs.mjs b/scripts/check-i18n-catalogs.mjs
+index cd15f5ac..9a718db9 100644
+--- a/scripts/check-i18n-catalogs.mjs
++++ b/scripts/check-i18n-catalogs.mjs
+@@ -290,7 +290,11 @@ const sourceFiles = walkFiles(sourceRoot);
+ const staticLabelPattern = /\blabels\(\s*(["'])([^"']*)\1\s*,\s*(["'])([^"']*)\3\s*\)/g;
+ const localeBranchPattern = /\b(?:locale|localeState\.locale|getApiLocale\(\))\s*={2,3}\s*["'](?:zh-CN|en-US)["']\s*\?\s*(`(?:[^`\\]|\\[\s\S])*`|"[^"\n]*"|'[^'\n]*')\s*:\s*(`(?:[^`\\]|\\[\s\S])*`|"[^"\n]*"|'[^'\n]*')/g;
+ const linguiMacroImportPattern = /from\s+["']@lingui\/(?:core|react)\/macro["']/;
++const customSourceRoot = path.join(sourceRoot, "custom");
+ for (const filePath of sourceFiles) {
++  // 二次开发目录（src/custom）不进 Lingui catalog：catalog 属于上游文件，每次同步都会被镜像覆盖，
++  // fork 专属文案放进去必然丢失。这些页面只服务仓库主人，按中文字面量维护（见 docs/CUSTOMIZATION.md）。
++  if (filePath.startsWith(`${customSourceRoot}${path.sep}`)) continue;
+   const source = fs.readFileSync(filePath, "utf8");
+   const isDescriptor = filePath.startsWith(`${descriptorDir}${path.sep}`);
+   if (linguiMacroImportPattern.test(source) && !isDescriptor) {

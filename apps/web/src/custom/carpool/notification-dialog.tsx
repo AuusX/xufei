@@ -55,7 +55,7 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
   });
   const testMutation = useMutation({
     mutationFn: (config: CarpoolNotification) => testCarpoolNotification(config),
-    onSuccess: () => { toast.success("测试通知已发送", { description: "去 webhook 目标看看有没有收到。" }); refreshLog(); },
+    onSuccess: () => { toast.success("测试通知已发送，请到 webhook 目标查收"); refreshLog(); },
     onError: (error: unknown) => { toast.error("测试失败", { description: error instanceof Error ? error.message : "请检查配置" }); refreshLog(); },
   });
 
@@ -142,7 +142,7 @@ export function NotificationDialog({ open, onOpenChange }: { open: boolean; onOp
                   <div className="min-w-0">
                     <span className="text-muted-foreground">{new Date(entry.createdAt).toLocaleString()}</span>
                     {entry.context ? <span className="ml-2 text-muted-foreground">· {entry.context}</span> : null}
-                    {!entry.ok && entry.error ? <div className="break-words text-destructive">{entry.error}</div> : null}
+                    {!entry.ok && entry.error ? <div className="wrap-break-word text-destructive">{entry.error}</div> : null}
                   </div>
                 </li>
               ))}

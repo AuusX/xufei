@@ -36,7 +36,8 @@ async function collectSourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = await Promise.all(entries.map(async (entry) => {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) return collectSourceFiles(path);
+    // 二次开发目录（src/custom）是 fork 专属页面，不属于产品表单体系，不强制走 FormFieldRow 轨道。
+    if (entry.isDirectory()) return entry.name === "custom" ? [] : collectSourceFiles(path);
     if (!entry.isFile() || !SOURCE_EXTENSIONS.has(extname(entry.name))) return [];
     if (EXCLUDED_LAYOUT_FILES.has(entry.name)) return [];
     return /\.(?:test|spec)\.[jt]sx$/.test(entry.name) ? [] : [path];

@@ -188,7 +188,7 @@ function PlanListView({ onOpenPlan }: { onOpenPlan: (planId: string) => void }) 
       {creating && (
         <Card className="mb-4">
           <CardContent className="flex flex-wrap items-end gap-3 py-4">
-            <div className="min-w-[12rem] flex-1">
+            <div className="min-w-48 flex-1">
               <Label className="text-xs">计划名称</Label>
               <Input autoFocus value={name} placeholder="例如：TEAM 计划" onChange={(e) => setName(e.target.value)} />
             </div>
@@ -291,7 +291,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
       invalidate();
       // 同步更新打开中的草稿，避免丢失其他未保存改动。
       setDraft((c) => (c ? { ...c, members: c.members.map((m) => (m.id === variables.memberId ? { ...m, expiryDate: result.newExpiry ?? m.expiryDate, autoCalcExpiry: false, status: "active" } : m)) } : c));
-      toast.success("已续费", result.newExpiry ? { description: `新到期日 ${result.newExpiry}` } : undefined);
+      toast.success(result.newExpiry ? `已续费，新到期日 ${result.newExpiry}` : "已续费");
     },
     onError: onMutationError("续费失败"),
   });
@@ -365,7 +365,7 @@ function PlanDetailView({ planId, onBack }: { planId: string; onBack: () => void
 
           <Card className="mb-6">
             <CardContent className="flex flex-wrap items-end gap-3 py-4">
-              <div className="min-w-[12rem] flex-1">
+              <div className="min-w-48 flex-1">
                 <Label className="text-xs">把订阅加入本计划</Label>
                 <select
                   className="mt-1 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
@@ -443,7 +443,7 @@ function CarCard({ subscription: sub, onManage }: { subscription: CarpoolSubscri
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onManage(); } }}
       className="flex h-full cursor-pointer flex-col overflow-hidden rounded-2xl border bg-card text-left shadow-sm transition hover:border-primary/60 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <div className="bg-gradient-to-b from-primary/15 to-transparent px-4 pb-3 pt-4">
+      <div className="bg-linear-to-b from-primary/15 to-transparent px-4 pb-3 pt-4">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
             <CarFront className="h-5 w-5 shrink-0 text-primary" />
